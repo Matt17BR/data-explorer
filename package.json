@@ -5,8 +5,24 @@
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Matt17BR/data-explorer.git"
+  },
+  "homepage": "https://github.com/Matt17BR/data-explorer#readme",
+  "bugs": {
+    "url": "https://github.com/Matt17BR/data-explorer/issues"
+  },
+  "keywords": [
+    "dataframe",
+    "polars",
+    "pandas",
+    "data-explorer",
+    "vscode",
+    "cursor"
+  ],
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.105.0"
   },
   "categories": [
     "Data Science",
@@ -142,7 +158,7 @@
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.120.0",
+    "@types/vscode": "^1.105.0",
     "@vitejs/plugin-react": "^6.0.2",
     "@vscode/vsce": "^3.9.1",
     "jsdom": "^29.1.1",

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Data Explorer notebook preview</title>
+  <desc id="desc">A screenshot-style preview of Data Explorer being used from a notebook with a Polars dataframe.</desc>
+  <rect width="1280" height="760" fill="#1e1e1e"/>
+  <rect x="0" y="0" width="1280" height="56" fill="#252526"/>
+  <text x="28" y="36" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="22" font-weight="700">Notebook support</text>
+  <rect x="36" y="88" width="1208" height="248" rx="10" fill="#202020" stroke="#3c3c3c"/>
+  <rect x="36" y="88" width="1208" height="42" rx="10" fill="#2d2d30"/>
+  <text x="58" y="116" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">Python cell</text>
+  <text x="64" y="168" fill="#c586c0" font-family="JetBrains Mono, Consolas, monospace" font-size="18">import</text>
+  <text x="138" y="168" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18"> polars </text>
+  <text x="232" y="168" fill="#c586c0" font-family="JetBrains Mono, Consolas, monospace" font-size="18">as</text>
+  <text x="260" y="168" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18"> pl</text>
+  <text x="64" y="204" fill="#9cdcfe" font-family="JetBrains Mono, Consolas, monospace" font-size="18">df</text>
+  <text x="92" y="204" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18"> = pl.read_csv(</text>
+  <text x="250" y="204" fill="#ce9178" font-family="JetBrains Mono, Consolas, monospace" font-size="18">"sales.csv"</text>
+  <text x="358" y="204" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18">)</text>
+  <text x="64" y="240" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18">from data_wrangler_runtime.notebook import show</text>
+  <text x="64" y="276" fill="#dcdcaa" font-family="JetBrains Mono, Consolas, monospace" font-size="18">show</text>
+  <text x="110" y="276" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18">(df, label=</text>
+  <text x="222" y="276" fill="#ce9178" font-family="JetBrains Mono, Consolas, monospace" font-size="18">"sales"</text>
+  <text x="292" y="276" fill="#d4d4d4" font-family="JetBrains Mono, Consolas, monospace" font-size="18">)</text>
+
+  <rect x="36" y="368" width="1208" height="306" rx="10" fill="#202020" stroke="#3c3c3c"/>
+  <rect x="36" y="368" width="1208" height="52" rx="10" fill="#252526"/>
+  <text x="62" y="400" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="18" font-weight="700">Data Explorer preview: sales (polars) - 4 x 4</text>
+  <g transform="translate(62 448)">
+    <rect width="1156" height="44" fill="#2d2d30"/>
+    <text x="20" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">city</text>
+    <text x="260" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">year</text>
+    <text x="500" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">sales</text>
+    <text x="740" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">active</text>
+    <g fill="none" stroke="#3c3c3c">
+      <path d="M0 44h1156M0 88h1156M0 132h1156M0 176h1156"/>
+      <path d="M240 0v176M480 0v176M720 0v176M960 0v176"/>
+    </g>
+    <g fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">
+      <text x="20" y="72">Milan</text><text x="260" y="72">2024</text><text x="500" y="72">10.5</text><text x="740" y="72">true</text>
+      <text x="20" y="116">Rome</text><text x="260" y="116">2024</text><text x="500" y="116">8.25</text><text x="740" y="116">true</text>
+      <text x="20" y="160">Berlin</text><text x="260" y="160">2023</text><text x="500" y="160">12</text><text x="740" y="160">false</text>
+    </g>
+  </g>
+</svg>

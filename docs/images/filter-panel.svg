@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Data Explorer filter panel</title>
+  <desc id="desc">A screenshot-style preview of the Excel-like filter panel in Data Explorer.</desc>
+  <rect width="1280" height="760" fill="#1e1e1e"/>
+  <rect x="0" y="0" width="1280" height="72" fill="#252526"/>
+  <text x="28" y="32" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="24" font-weight="700">Data Explorer</text>
+  <text x="28" y="56" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="14">Filtered sales view</text>
+  <rect x="1038" y="18" width="74" height="24" rx="12" fill="#0e639c"/>
+  <text x="1056" y="35" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="12" font-weight="700">POLARS</text>
+  <text x="1128" y="36" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="15">3 rows x 4 cols</text>
+
+  <rect x="24" y="96" width="420" height="616" rx="12" fill="#202020" stroke="#3c3c3c"/>
+  <text x="48" y="136" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="22" font-weight="700">Excel-like Filters</text>
+  <text x="48" y="164" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="14">Pick values, add predicates, and stack sorts.</text>
+
+  <text x="48" y="210" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="13">Column</text>
+  <rect x="48" y="222" width="348" height="38" rx="6" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="66" y="246" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="15">city</text>
+
+  <rect x="48" y="282" width="160" height="38" rx="6" fill="#0e639c"/>
+  <text x="82" y="306" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="14">Sort A to Z</text>
+  <rect x="224" y="282" width="172" height="38" rx="6" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="270" y="306" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">Add sort</text>
+
+  <rect x="48" y="342" width="232" height="38" rx="6" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="66" y="366" fill="#888888" font-family="Inter, Segoe UI, sans-serif" font-size="14">Search values</text>
+  <rect x="296" y="342" width="100" height="38" rx="6" fill="#0e639c"/>
+  <text x="326" y="366" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="14">Values</text>
+
+  <rect x="48" y="400" width="348" height="146" rx="8" fill="#252526" stroke="#3c3c3c"/>
+  <g font-family="Inter, Segoe UI, sans-serif" font-size="14">
+    <rect x="66" y="426" width="16" height="16" rx="3" fill="#0e639c"/>
+    <path d="M70 434l4 4 8-10" fill="none" stroke="#fff" stroke-width="2"/>
+    <text x="94" y="440" fill="#d4d4d4">Milan</text><text x="360" y="440" fill="#bdbdbd">1</text>
+    <rect x="66" y="466" width="16" height="16" rx="3" fill="#0e639c"/>
+    <path d="M70 474l4 4 8-10" fill="none" stroke="#fff" stroke-width="2"/>
+    <text x="94" y="480" fill="#d4d4d4">Berlin</text><text x="360" y="480" fill="#bdbdbd">1</text>
+    <rect x="66" y="506" width="16" height="16" rx="3" fill="#2d2d30" stroke="#5f5f5f"/>
+    <text x="94" y="520" fill="#d4d4d4">Paris</text><text x="360" y="520" fill="#bdbdbd">1</text>
+  </g>
+
+  <rect x="48" y="570" width="114" height="38" rx="6" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="70" y="594" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">contains</text>
+  <rect x="176" y="570" width="102" height="38" rx="6" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="196" y="594" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">i</text>
+  <rect x="292" y="570" width="104" height="38" rx="6" fill="#0e639c"/>
+  <text x="312" y="594" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="14">Predicate</text>
+
+  <g transform="translate(488 122)">
+    <rect width="736" height="488" rx="12" fill="#202020" stroke="#3c3c3c"/>
+    <rect width="736" height="48" rx="12" fill="#2d2d30"/>
+    <text x="24" y="31" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="16" font-weight="700">Filtered grid result</text>
+    <g transform="translate(24 78)">
+      <rect width="688" height="44" fill="#2d2d30"/>
+      <text x="24" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">city</text>
+      <text x="224" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">year</text>
+      <text x="424" y="28" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">sales desc</text>
+      <g fill="none" stroke="#3c3c3c">
+        <path d="M0 44h688M0 88h688M0 132h688M0 176h688"/>
+        <path d="M188 0v176M388 0v176M588 0v176"/>
+      </g>
+      <g fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">
+        <text x="24" y="72">Berlin</text><text x="224" y="72">2023</text><text x="424" y="72">12</text><text x="624" y="72">false</text>
+        <text x="24" y="116">Milan</text><text x="224" y="116">2024</text><text x="424" y="116">10.5</text><text x="624" y="116">true</text>
+        <text x="24" y="160">Paris</text><text x="224" y="160">2022</text><text x="424" y="160" fill="#888888">missing</text><text x="624" y="160">true</text>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Data Explorer grid view</title>
+  <desc id="desc">A screenshot-style preview of Data Explorer showing a dataframe grid, filters, and summary panel.</desc>
+  <rect width="1280" height="760" fill="#1e1e1e"/>
+  <rect x="0" y="0" width="1280" height="72" fill="#252526"/>
+  <text x="28" y="32" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="24" font-weight="700">Data Explorer</text>
+  <text x="28" y="56" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="14">sample.csv</text>
+  <rect x="1044" y="18" width="74" height="24" rx="12" fill="#0e639c"/>
+  <text x="1062" y="35" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="12" font-weight="700">POLARS</text>
+  <text x="1134" y="36" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="15">4 rows x 4 cols</text>
+
+  <rect x="0" y="72" width="332" height="688" fill="#202020"/>
+  <rect x="331" y="72" width="1" height="688" fill="#3c3c3c"/>
+  <text x="20" y="112" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="18" font-weight="700">Filters</text>
+  <rect x="20" y="134" width="292" height="34" rx="5" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="34" y="156" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">Column: city</text>
+  <rect x="20" y="184" width="136" height="32" rx="5" fill="#0e639c"/>
+  <text x="48" y="205" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="13">Sort A to Z</text>
+  <rect x="168" y="184" width="144" height="32" rx="5" fill="#2d2d30" stroke="#3c3c3c"/>
+  <text x="205" y="205" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="13">Search values</text>
+
+  <text x="20" y="258" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="18" font-weight="700">Summary</text>
+  <rect x="20" y="280" width="292" height="86" rx="6" fill="#252526" stroke="#3c3c3c"/>
+  <text x="34" y="306" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="15" font-weight="700">city</text>
+  <text x="34" y="330" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="13">String - 4 distinct - 0 missing</text>
+  <rect x="34" y="342" width="210" height="8" rx="4" fill="#0e639c"/>
+  <text x="254" y="350" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="12">1</text>
+  <rect x="20" y="382" width="292" height="112" rx="6" fill="#252526" stroke="#3c3c3c"/>
+  <text x="34" y="408" fill="#ffffff" font-family="Inter, Segoe UI, sans-serif" font-size="15" font-weight="700">sales</text>
+  <text x="34" y="432" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="13">Float64 - min 8.25 - max 12</text>
+  <text x="34" y="458" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="13">mean 10.25 - 1 missing</text>
+
+  <rect x="332" y="72" width="948" height="44" fill="#252526"/>
+  <rect x="352" y="84" width="82" height="24" rx="4" fill="#3c3c3c"/>
+  <text x="372" y="101" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="12">Previous</text>
+  <text x="454" y="101" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="13">Rows 1-4 of 4</text>
+  <rect x="558" y="84" width="60" height="24" rx="4" fill="#3c3c3c"/>
+  <text x="574" y="101" fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="12">Next</text>
+
+  <g transform="translate(352 138)">
+    <rect width="888" height="44" fill="#2d2d30"/>
+    <rect width="64" height="44" fill="#252526"/>
+    <text x="22" y="28" fill="#bdbdbd" font-family="Inter, Segoe UI, sans-serif" font-size="13">#</text>
+    <text x="86" y="22" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">city</text>
+    <text x="86" y="38" fill="#a8a8a8" font-family="Inter, Segoe UI, sans-serif" font-size="11">string</text>
+    <text x="286" y="22" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">year</text>
+    <text x="286" y="38" fill="#a8a8a8" font-family="Inter, Segoe UI, sans-serif" font-size="11">integer</text>
+    <text x="486" y="22" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">sales</text>
+    <text x="486" y="38" fill="#a8a8a8" font-family="Inter, Segoe UI, sans-serif" font-size="11">float</text>
+    <text x="686" y="22" fill="#f3f3f3" font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="700">active</text>
+    <text x="686" y="38" fill="#a8a8a8" font-family="Inter, Segoe UI, sans-serif" font-size="11">boolean</text>
+    <g fill="none" stroke="#3c3c3c">
+      <path d="M64 0v260M264 0v260M464 0v260M664 0v260"/>
+      <path d="M0 44h888M0 88h888M0 132h888M0 176h888M0 220h888"/>
+    </g>
+    <g fill="#d4d4d4" font-family="Inter, Segoe UI, sans-serif" font-size="14">
+      <text x="26" y="72">1</text><text x="86" y="72">Milan</text><text x="286" y="72">2024</text><text x="486" y="72">10.5</text><text x="686" y="72">true</text>
+      <text x="26" y="116">2</text><text x="86" y="116">Rome</text><text x="286" y="116">2024</text><text x="486" y="116">8.25</text><text x="686" y="116">true</text>
+      <text x="26" y="160">3</text><text x="86" y="160">Berlin</text><text x="286" y="160">2023</text><text x="486" y="160">12</text><text x="686" y="160">false</text>
+      <text x="26" y="204">4</text><text x="86" y="204">Paris</text><text x="286" y="204">2022</text><text x="486" y="204" fill="#888888">missing</text><text x="686" y="204">true</text>
+    </g>
+  </g>
+</svg>
