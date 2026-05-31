@@ -9,7 +9,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(bridge);
 
   registerFileCommands(context, bridge);
-  registerNotebookCommands(context, bridge);
+  registerNotebookCommands(context);
   registerNotebookRendererMessaging(context, bridge);
 }
 

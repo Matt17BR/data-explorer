@@ -29,6 +29,9 @@
     "Visualization"
   ],
   "main": "./dist/extension/activate.js",
+  "extensionDependencies": [
+    "ms-toolsai.jupyter"
+  ],
   "scripts": {
     "build": "npm run build:extension && npm run build:webview",
     "build:extension": "tsc -p tsconfig.extension.json",
@@ -45,6 +48,7 @@
   "activationEvents": [
     "onCommand:dataExplorer.openFile",
     "onCommand:dataExplorer.openPath",
+    "onCommand:dataExplorer.launchDataViewer",
     "onCommand:dataExplorer.openNotebookVariable",
     "onCommand:dataExplorer.checkJupyterIntegration",
     "onCustomEditor:dataExplorer.viewer",
@@ -61,12 +65,32 @@
         "title": "Data Explorer: Open File Path"
       },
       {
+        "command": "dataExplorer.launchDataViewer",
+        "title": "Open in Data Explorer"
+      },
+      {
         "command": "dataExplorer.openNotebookVariable",
         "title": "Data Explorer: Open Notebook Variable"
       },
       {
         "command": "dataExplorer.checkJupyterIntegration",
         "title": "Data Explorer: Check Jupyter Integration"
+      }
+    ],
+    "jupyterVariableViewers": [
+      {
+        "command": "dataExplorer.launchDataViewer",
+        "title": "Open in Data Explorer",
+        "dataTypes": [
+          "DataFrame",
+          "Series",
+          "pandas.core.frame.DataFrame",
+          "pandas.DataFrame",
+          "pandas.core.series.Series",
+          "pandas.Series",
+          "polars.dataframe.frame.DataFrame",
+          "polars.series.series.Series"
+        ]
       }
     ],
     "customEditors": [
@@ -118,7 +142,7 @@
       "notebook/title": [
         {
           "command": "dataExplorer.openNotebookVariable",
-          "when": "notebookType == jupyter-notebook",
+          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
           "group": "navigation@50"
         }
       ]

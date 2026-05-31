@@ -7,7 +7,7 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
-import { PythonBridge } from "./pythonBridge";
+import type { DataExplorerBridge } from "./dataBridge";
 
 export class DataExplorerPanel {
   private sessionId: string | undefined;
@@ -16,7 +16,7 @@ export class DataExplorerPanel {
   constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
-    private readonly bridge: PythonBridge,
+    private readonly bridge: DataExplorerBridge,
     private readonly source: SessionSource,
     private readonly backend?: DataBackend,
     private readonly initialResponse?: SessionOpenedResponse
@@ -28,7 +28,7 @@ export class DataExplorerPanel {
 
   static create(
     context: vscode.ExtensionContext,
-    bridge: PythonBridge,
+    bridge: DataExplorerBridge,
     source: SessionSource,
     backend?: DataBackend
   ): DataExplorerPanel {
@@ -48,7 +48,7 @@ export class DataExplorerPanel {
 
   static createFromPayload(
     context: vscode.ExtensionContext,
-    bridge: PythonBridge,
+    bridge: DataExplorerBridge,
     response: SessionOpenedResponse
   ): DataExplorerPanel {
     const panel = vscode.window.createWebviewPanel(
