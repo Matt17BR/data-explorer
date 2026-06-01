@@ -1,6 +1,6 @@
 # Data Explorer
 
-Data Explorer is a visualization-first extension for VS Code-compatible editors, including forks such as Cursor, for exploring dataframes and local data files. It focuses on fast viewing, paging, summaries, and Excel-like filters instead of transformation pipelines.
+Data Explorer is a visualization-first extension for VS Code-compatible editors, including forks such as Cursor, for exploring dataframes and local data files. It focuses on fast viewing, paging, Data Wrangler-style quick insights, summaries, and Excel-like filters instead of transformation pipelines.
 
 It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
 
@@ -16,12 +16,12 @@ These screenshots are generated from the real built webview/notebook renderer us
 
 ## Features
 
-- Native Polars and Pandas runtime backends.
+- Native Polars and Pandas runtime backends, including live notebook sessions backed by the active Jupyter kernel.
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
-- Paged dataframe grid with sticky headers and row numbers.
-- Column schema, summary statistics, top values, and missing value counts.
-- Multi-column sorting and column filters from the webview.
-- Notebook variable launch command for Pandas and Polars dataframe names.
+- Paged dataframe grid with sticky headers, row numbers, type icons, and per-column Quick Insights.
+- Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
+- Multi-column sorting and column filters from the webview or column header menus.
+- Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
 - Lightweight notebook output renderer for `data_wrangler_runtime.notebook.show(...)`.
 
 ## Example Usage
@@ -37,7 +37,7 @@ File-backed sessions default to Polars. Change `dataExplorer.defaultBackend` to 
 
 ### Open a notebook variable
 
-Use **Data Explorer: Open Notebook Variable** from a Jupyter notebook and enter the dataframe variable name:
+Run a cell that leaves a Pandas or Polars dataframe available in the active Jupyter kernel. Jupyter can surface **Open in Data Explorer** for supported variables via the variable viewer integration, or you can use **Data Explorer: Open Notebook Variable** and enter the dataframe variable name:
 
 ```python
 import polars as pl
@@ -45,7 +45,7 @@ import polars as pl
 df = pl.read_csv("sales.csv")
 ```
 
-Data Explorer detects Polars and Pandas dataframe variables and opens them with the matching backend.
+Data Explorer detects Polars and Pandas dataframe variables and opens them with the matching backend. For notebook variables, paging, filtering, sorting, and Quick Insights execute against the live kernel variable rather than a static snapshot.
 
 ### Render an inline notebook preview
 
@@ -85,8 +85,8 @@ cursor --install-extension data-explorer-0.1.0.vsix --force
 Reload the editor after installing the VSIX. Then:
 
 - Open `fixtures/sample.csv`, right-click the editor tab or Explorer item, and run **Data Explorer: Open Current File**.
-- Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. It should render an inline Data Explorer preview from a real Polars dataframe.
-- From an open notebook, run **Data Explorer: Open Notebook Variable** and enter `df` to open the dataframe in the full Data Explorer webview.
+- Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. The dataframe is a real Polars dataframe.
+- From the notebook, use **Open in Data Explorer** when Jupyter offers it for `df`, or run **Data Explorer: Open Notebook Variable** and enter `df`. The full Data Explorer webview should page, filter, sort, and summarize the live kernel dataframe.
 
 The extension setting `dataExplorer.pythonPath` defaults to `.venv/bin/python`, so the local development install uses the editable runtime environment above. If your editor opens the notebook with `fixtures/` as its working directory, `fixtures/example.ipynb` still works because it checks both `fixtures/sample.csv` and `sample.csv`.
 
@@ -121,7 +121,7 @@ Data Explorer currently prioritizes visualization and exploration:
 
 - grid viewing
 - file-backed sessions
-- notebook variable and notebook output entry points
-- filters, sorting, schema, and summaries
+- live notebook variable and notebook output entry points
+- filters, sorting, schema, summaries, and Quick Insights
 
 It intentionally does not yet implement Data Wrangler-style cleaning step history, transform code generation, or by-example/FlashFill operations.
