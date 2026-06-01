@@ -67,7 +67,7 @@ export function DataGrid({
                   title={`${column.rawType}${column.nullable ? " nullable" : ""}`}
                 >
                   <div className="columnHeader">
-                    <span className="typeIcon">{typeIcon(column.type)}</span>
+                    <span className={`typeIcon codicon ${typeIcon(column.type)}`} aria-hidden="true" />
                     <span className="columnTitle">{column.name}</span>
                     <details className="columnMenu">
                       <summary aria-label={`Column actions for ${column.name}`}>...</summary>
@@ -189,15 +189,15 @@ function MiniChart({ visualization }: { visualization: ColumnVisualization | und
 
 function typeIcon(type: string): string {
   if (type === "integer" || type === "float") {
-    return "#";
+    return "codicon-symbol-numeric";
   }
   if (type === "boolean") {
-    return "T/F";
+    return "codicon-symbol-boolean";
   }
   if (type === "datetime" || type === "date") {
-    return "DATE";
+    return "codicon-calendar";
   }
-  return "ABC";
+  return "codicon-symbol-string";
 }
 
 function formatPercent(value: number, total: number): string {

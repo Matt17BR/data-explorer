@@ -280,12 +280,13 @@ th,
 td {
   border-right: 1px solid var(--vscode-panel-border);
   border-bottom: 1px solid var(--vscode-panel-border);
-  max-width: 320px;
-  min-width: 140px;
-  padding: 5px 8px;
+  max-width: 360px;
+  min-width: 200px;
+  padding: 4px 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.35;
 }
 
 th {
@@ -294,6 +295,10 @@ th {
   z-index: 1;
   background: var(--vscode-editorGroupHeader-tabsBackground);
   text-align: left;
+}
+
+tbody tr:hover td {
+  background: var(--vscode-list-hoverBackground);
 }
 
 th small {
@@ -310,14 +315,9 @@ th small {
 }
 
 .typeIcon {
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 3px;
   color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-  font-weight: 600;
-  min-width: 22px;
-  padding: 0 3px;
-  text-align: center;
+  font-size: 14px;
+  min-width: 16px;
 }
 
 .columnTitle {
@@ -368,7 +368,7 @@ th small {
 }
 
 .insightRow th {
-  top: 43px;
+  top: 39px;
   background: var(--vscode-editor-background);
   font-weight: normal;
   vertical-align: top;

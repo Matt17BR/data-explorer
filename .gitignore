@@ -4,6 +4,7 @@ dist/
 media/webview.js
 media/webview.js.map
 media/webview.css
+media/codicon.ttf
 media/notebookRenderer.js
 media/notebookRenderer.js.map
 *.vsix
