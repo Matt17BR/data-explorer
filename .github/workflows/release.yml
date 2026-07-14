@@ -27,7 +27,7 @@ jobs:
       - run: npm run package -- --out data-explorer.vsix
       - run: npm run verify:vsix -- data-explorer.vsix
       - run: sha256sum data-explorer.vsix > data-explorer.vsix.sha256
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
