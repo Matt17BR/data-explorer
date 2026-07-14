@@ -10,12 +10,7 @@
     "resolveJsonModule": true,
     "sourceMap": true,
     "rootDir": ".",
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "exclude": [
-    "dist",
-    "node_modules"
-  ]
+  "exclude": ["dist", "node_modules"]
 }

@@ -4,6 +4,7 @@ import { resolve } from "path";
 
 export default defineConfig({
   plugins: [react()],
+  publicDir: "assets",
   build: {
     outDir: "media",
     emptyOutDir: false,

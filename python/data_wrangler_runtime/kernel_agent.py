@@ -4,8 +4,8 @@ import json
 import traceback
 from typing import Any
 
-from .session import SessionManager
 from .server import dispatch
+from .session import SessionManager
 
 _manager = SessionManager()
 

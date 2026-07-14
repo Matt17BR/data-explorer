@@ -2,8 +2,8 @@
   "name": "data-explorer",
   "displayName": "Data Explorer",
   "description": "A visualization-first dataframe explorer for VS Code-compatible editors with native Polars and Pandas support.",
-  "version": "0.1.0",
-  "publisher": "local",
+  "version": "0.2.0-alpha.1",
+  "publisher": "Matt17BR",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -28,22 +28,44 @@
     "Data Science",
     "Visualization"
   ],
-  "main": "./dist/extension/activate.js",
-  "extensionDependencies": [
-    "ms-toolsai.jupyter"
+  "icon": "media/icon.png",
+  "extensionKind": [
+    "workspace"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Data Explorer executes dataframe operations in the selected Python environment. Trust the workspace before opening data."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Desktop file and Python runtime access require a local or remote workspace file system."
+    }
+  },
+  "main": "./dist/extension/activate.js",
   "scripts": {
+    "clean": "node scripts/clean.mjs",
     "build": "npm run build:extension && npm run build:webview",
     "build:extension": "tsc -p tsconfig.extension.json",
     "build:webview": "vite build",
+    "typecheck": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "lint": "eslint .",
+    "lint:python": "node scripts/run-python.mjs -m ruff check python && node scripts/run-python.mjs -m ruff format --check python && node scripts/run-pyright.mjs python",
+    "format:check": "prettier --check .",
+    "format:write": "prettier --write .",
+    "docs:check": "node scripts/check-docs.mjs",
+    "check": "npm run format:check && npm run lint && npm run lint:python && npm run typecheck && npm run docs:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
     "watch:webview": "vite build --watch",
     "test": "npm run test:ts && npm run test:python",
     "test:ts": "vitest run",
-    "test:python": ".venv/bin/python -m pytest python/tests -q",
+    "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
+    "test:coverage": "vitest run --coverage",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
-    "package": "vsce package"
+    "prepackage": "npm run clean && npm run build && npm run check && npm test",
+    "package": "vsce package",
+    "verify:vsix": "node scripts/verify-vsix.mjs"
   },
   "activationEvents": [
     "onCommand:dataExplorer.openFile",
@@ -180,6 +202,7 @@
     "react-dom": "^19.2.6"
   },
   "devDependencies": {
+    "@eslint/js": "^9.32.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.9.1",
@@ -187,10 +210,17 @@
     "@types/react-dom": "^19.2.3",
     "@types/vscode": "^1.105.0",
     "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.7",
     "@vscode/vsce": "^3.9.1",
+    "eslint": "^9.32.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "globals": "^16.3.0",
     "jsdom": "^29.1.1",
     "npm-run-all": "^4.1.5",
+    "prettier": "^3.6.2",
+    "pyright": "^1.1.405",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.38.0",
     "vite": "^8.0.14",
     "vitest": "^4.1.7"
   }

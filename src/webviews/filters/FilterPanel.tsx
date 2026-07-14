@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { SessionMetadata, ValuesResponse } from "../../shared/protocol";
 import type { ColumnFilter, FilterModel, PredicateOperator, SortDirection } from "../../shared/filterModel";
 
@@ -20,24 +20,14 @@ export function FilterPanel({
   activeColumn: requestedColumn,
   onApply,
   onRequestValues
-}: FilterPanelProps): JSX.Element {
+}: FilterPanelProps) {
   const firstColumn = metadata?.schema[0]?.name ?? "";
-  const [column, setColumn] = useState(firstColumn);
+  const [column, setColumn] = useState(requestedColumn || firstColumn);
   const [search, setSearch] = useState("");
   const [predicateOperator, setPredicateOperator] = useState<PredicateOperator>("contains");
   const [predicateValue, setPredicateValue] = useState("");
   const [secondPredicateValue, setSecondPredicateValue] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-
-  useEffect(() => {
-    if (requestedColumn) {
-      setColumn(requestedColumn);
-      return;
-    }
-    if (!column && firstColumn) {
-      setColumn(firstColumn);
-    }
-  }, [column, firstColumn, requestedColumn]);
 
   const activeColumn = column || firstColumn;
   const columnSchema = metadata?.schema.find((item) => item.name === activeColumn);
@@ -162,7 +152,11 @@ export function FilterPanel({
         <div className="valueList">
           {(columnValueResponse?.values ?? []).map((item) => (
             <label key={item.value} className="checkboxRow">
-              <input type="checkbox" checked={selectedValues.has(item.value)} onChange={() => toggleValue(item.value)} />
+              <input
+                type="checkbox"
+                checked={selectedValues.has(item.value)}
+                onChange={() => toggleValue(item.value)}
+              />
               <span>{item.value}</span>
               <small>{item.count}</small>
             </label>
@@ -171,16 +165,27 @@ export function FilterPanel({
         </div>
 
         <div className="predicateBuilder">
-          <select value={predicateOperator} onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}>
+          <select
+            value={predicateOperator}
+            onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
+          >
             {operators.map((operator) => (
               <option key={operator} value={operator}>
                 {operator}
               </option>
             ))}
           </select>
-          <input value={predicateValue} placeholder="Value" onChange={(event) => setPredicateValue(event.target.value)} />
+          <input
+            value={predicateValue}
+            placeholder="Value"
+            onChange={(event) => setPredicateValue(event.target.value)}
+          />
           {predicateOperator === "between" && (
-            <input value={secondPredicateValue} placeholder="And" onChange={(event) => setSecondPredicateValue(event.target.value)} />
+            <input
+              value={secondPredicateValue}
+              placeholder="And"
+              onChange={(event) => setSecondPredicateValue(event.target.value)}
+            />
           )}
           <button type="button" onClick={addPredicate}>
             Add predicate

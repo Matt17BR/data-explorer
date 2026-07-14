@@ -6,7 +6,6 @@ import pandas as pd
 
 from data_wrangler_runtime.session import SessionManager
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -29,7 +28,12 @@ def test_pandas_file_session_matches_protocol():
             {
                 "column": "year",
                 "type": "integer",
-                "valueFilter": {"kind": "values", "selectedValues": ["2024"], "includeNulls": False, "includeNaN": False},
+                "valueFilter": {
+                    "kind": "values",
+                    "selectedValues": ["2024"],
+                    "includeNulls": False,
+                    "includeNaN": False,
+                },
                 "predicates": [],
             }
         ],

@@ -6,7 +6,7 @@ interface SummaryPanelProps {
   schemaByName: Map<string, ColumnSchema>;
 }
 
-export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanelProps): JSX.Element {
+export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanelProps) {
   const missingByColumn = metadata?.stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
 
   return (

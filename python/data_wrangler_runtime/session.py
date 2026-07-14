@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import importlib
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from .engines import DataFrameEngine, EngineError, PandasEngine, PolarsEngine
 
@@ -27,7 +28,9 @@ class SessionManager:
         }
         self.sessions: dict[str, Session] = {}
 
-    def open_session(self, source: Mapping[str, Any], backend: str | None = None, page_size: int = 200) -> dict[str, Any]:
+    def open_session(
+        self, source: Mapping[str, Any], backend: str | None = None, page_size: int = 200
+    ) -> dict[str, Any]:
         engine = self._engine_for_source(source, backend)
         frame = self._load_source(source, engine)
         frame = getattr(engine, "normalize", lambda value: value)(frame)

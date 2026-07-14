@@ -85,10 +85,7 @@ export interface DatetimeVisualization {
 }
 
 export type ColumnVisualization =
-  | NumericVisualization
-  | CategoricalVisualization
-  | BooleanVisualization
-  | DatetimeVisualization;
+  NumericVisualization | CategoricalVisualization | BooleanVisualization | DatetimeVisualization;
 
 export interface ColumnSummary {
   column: string;
@@ -191,8 +188,4 @@ export interface ErrorResponse {
 }
 
 export type DataExplorerResponse =
-  | SessionOpenedResponse
-  | PageResponse
-  | SummaryResponse
-  | ValuesResponse
-  | ErrorResponse;
+  SessionOpenedResponse | PageResponse | SummaryResponse | ValuesResponse | ErrorResponse;

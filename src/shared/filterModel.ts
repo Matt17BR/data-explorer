@@ -9,16 +9,7 @@ export interface SortRule {
 }
 
 export type PredicateOperator =
-  | "equals"
-  | "notEquals"
-  | "contains"
-  | "startsWith"
-  | "endsWith"
-  | "gt"
-  | "gte"
-  | "lt"
-  | "lte"
-  | "between";
+  "equals" | "notEquals" | "contains" | "startsWith" | "endsWith" | "gt" | "gte" | "lt" | "lte" | "between";
 
 export interface PredicateFilter {
   kind: "predicate";
@@ -57,7 +48,9 @@ export const hasActiveFilters = (model: FilterModel): boolean =>
     (filter) =>
       filter.predicates.length > 0 ||
       (filter.valueFilter !== undefined &&
-        (filter.valueFilter.selectedValues.length > 0 || filter.valueFilter.includeNulls || filter.valueFilter.includeNaN))
+        (filter.valueFilter.selectedValues.length > 0 ||
+          filter.valueFilter.includeNulls ||
+          filter.valueFilter.includeNaN))
   );
 
 export const hasActiveSort = (model: FilterModel): boolean => model.sort.length > 0;

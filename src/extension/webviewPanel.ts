@@ -22,7 +22,11 @@ export class DataExplorerPanel {
     private readonly initialResponse?: SessionOpenedResponse
   ) {
     this.panel.webview.html = this.renderHtml();
-    this.panel.webview.onDidReceiveMessage((message: unknown) => this.handleMessage(message), undefined, this.disposables);
+    this.panel.webview.onDidReceiveMessage(
+      (message: unknown) => this.handleMessage(message),
+      undefined,
+      this.disposables
+    );
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
   }
 
@@ -62,14 +66,7 @@ export class DataExplorerPanel {
       }
     );
 
-    return new DataExplorerPanel(
-      panel,
-      context,
-      bridge,
-      response.metadata.source,
-      response.metadata.backend,
-      response
-    );
+    return new DataExplorerPanel(panel, context, bridge, response.metadata.source, response.metadata.backend, response);
   }
 
   async open(): Promise<void> {
@@ -146,8 +143,12 @@ export class DataExplorerPanel {
 
   private renderHtml(): string {
     const webview = this.panel.webview;
-    const scriptUri = webview.asWebviewUri(vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.js")));
-    const styleUri = webview.asWebviewUri(vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css")));
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.js"))
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
+    );
     const nonce = randomNonce();
 
     return `<!DOCTYPE html>

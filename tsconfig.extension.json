@@ -3,16 +3,8 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "lib": [
-      "ES2022"
-    ]
+    "lib": ["ES2022"]
   },
-  "include": [
-    "src/extension/**/*.ts",
-    "src/shared/**/*.ts"
-  ],
-  "exclude": [
-    "src/webviews",
-    "src/test"
-  ]
+  "include": ["src/extension/**/*.ts", "src/shared/**/*.ts"],
+  "exclude": ["src/webviews", "src/test"]
 }

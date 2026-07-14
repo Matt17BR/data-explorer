@@ -1,0 +1,9 @@
+dist/
+media/
+node_modules/
+tmp/
+.venv/
+scratch.txt
+package-lock.json
+fixtures/*.ipynb
+docs/images/

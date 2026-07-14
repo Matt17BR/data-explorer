@@ -22,7 +22,7 @@ export function DataGrid({
   onPage,
   onSortColumn,
   onOpenFilter
-}: DataGridProps): JSX.Element {
+}: DataGridProps) {
   const previousOffset = Math.max(0, page.offset - pageSize);
   const nextOffset = page.offset + pageSize;
   const canGoNext = nextOffset < page.totalRows;
@@ -135,7 +135,7 @@ export function DataGrid({
   );
 }
 
-function MiniChart({ visualization }: { visualization: ColumnVisualization | undefined }): JSX.Element {
+function MiniChart({ visualization }: { visualization: ColumnVisualization | undefined }) {
   if (!visualization) {
     return <span className="miniChart emptyInsight">No chart</span>;
   }
@@ -175,7 +175,11 @@ function MiniChart({ visualization }: { visualization: ColumnVisualization | und
     return (
       <span className="categoryMiniChart">
         {visualization.categories.slice(0, 4).map((category) => (
-          <i key={category.value} title={`${category.value}: ${category.count}`} style={{ width: `${(category.count / max) * 100}%` }} />
+          <i
+            key={category.value}
+            title={`${category.value}: ${category.count}`}
+            style={{ width: `${(category.count / max) * 100}%` }}
+          />
         ))}
       </span>
     );

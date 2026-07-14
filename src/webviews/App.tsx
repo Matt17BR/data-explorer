@@ -17,7 +17,7 @@ import { vscode } from "./vscodeApi";
 
 const pageSize = 200;
 
-export function App(): JSX.Element {
+export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<GridPage | undefined>();
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
@@ -170,6 +170,7 @@ export function App(): JSX.Element {
         <aside className="sidebar">
           <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
           <FilterPanel
+            key={filterColumn}
             metadata={metadata}
             model={filterModel}
             values={columnValues}

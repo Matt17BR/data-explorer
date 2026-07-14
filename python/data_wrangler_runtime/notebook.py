@@ -13,8 +13,10 @@ def show(value: Any, label: str = "dataframe", backend: str | None = None, page_
     """Display a dataframe payload that the VS Code renderer can open in Data Explorer."""
     manager = SessionManager()
     source = {"kind": "notebookOutput", "label": label, "variableName": label}
-    engine = manager._engine(backend) if backend else next(
-        candidate for candidate in manager.engines.values() if candidate.detect(value)
+    engine = (
+        manager._engine(backend)
+        if backend
+        else next(candidate for candidate in manager.engines.values() if candidate.detect(value))
     )
     frame = getattr(engine, "normalize", lambda item: item)(value)
     session_id = label

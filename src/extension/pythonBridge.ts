@@ -163,7 +163,7 @@ export class PythonBridge implements vscode.Disposable {
     const stderrHint = stderr ? ` Runtime stderr: ${stderr}` : "";
     return new Error(
       `Data Explorer could not talk to its Python runtime (${reason}).${pathHint}${stderrHint} ` +
-        "Check the dataExplorer.pythonPath setting and make sure the runtime dependencies are installed with `.venv/bin/python -m pip install -e \"python[dev]\"`."
+        'Check the dataExplorer.pythonPath setting and make sure the runtime dependencies are installed with `.venv/bin/python -m pip install -e "python[dev]"`.'
     );
   }
 }

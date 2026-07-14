@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from .base import (
     DataFrameEngine,
@@ -141,12 +142,7 @@ class PolarsEngine(DataFrameEngine):
             series = df[column]
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
-            top_values = (
-                series.drop_nulls()
-                .value_counts(sort=True)
-                .head(10)
-                .iter_rows(named=True)
-            )
+            top_values = series.drop_nulls().value_counts(sort=True).head(10).iter_rows(named=True)
             summary: dict[str, Any] = {
                 "column": column,
                 "type": semantic_type,
@@ -227,8 +223,7 @@ class PolarsEngine(DataFrameEngine):
             series_df = series_df.filter(pl.col(column).cast(pl.Utf8).str.contains(search, literal=True))
         counts = series_df[column].value_counts(sort=True).head(limit + 1)
         values = [
-            {"value": str(row[column]), "count": int(row["count"])}
-            for row in counts.head(limit).iter_rows(named=True)
+            {"value": str(row[column]), "count": int(row["count"])} for row in counts.head(limit).iter_rows(named=True)
         ]
         return values, counts.height > limit
 

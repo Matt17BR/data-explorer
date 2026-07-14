@@ -4,12 +4,9 @@
     "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ES2022"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "allowSyntheticDefaultImports": true,
+    "types": ["node", "react", "react-dom", "vitest/globals"],
     "noEmit": true
   },
   "include": [

@@ -78,7 +78,7 @@ print(json.dumps({
     "values": values,
     "notebook": mime_payload,
 }))
-`,
+`
     ],
     { cwd: root, encoding: "utf8" }
   )
@@ -201,7 +201,7 @@ function screenshot(htmlPath, outputPath) {
       "--window-size=1280,760",
       "--virtual-time-budget=2500",
       `--screenshot=${outputPath}`,
-      pathToFileURL(htmlPath).href,
+      pathToFileURL(htmlPath).href
     ],
     { cwd: root, encoding: "utf8" }
   );

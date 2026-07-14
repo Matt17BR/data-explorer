@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from math import isfinite, isnan
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Literal
 
 ColumnType = Literal["string", "integer", "float", "boolean", "datetime", "date", "unknown"]
 

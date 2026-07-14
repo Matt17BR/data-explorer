@@ -5,7 +5,10 @@ import { PythonBridge } from "../pythonBridge";
 import { DataExplorerPanel } from "../webviewPanel";
 
 export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
-  constructor(private readonly context: vscode.ExtensionContext, private readonly bridge: PythonBridge) {}
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly bridge: PythonBridge
+  ) {}
 
   openCustomDocument(uri: vscode.Uri): vscode.CustomDocument {
     return {
@@ -24,12 +27,16 @@ export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEd
 
 export const registerFileCommands = (context: vscode.ExtensionContext, bridge: PythonBridge): void => {
   context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider("dataExplorer.viewer", new DataExplorerCustomEditorProvider(context, bridge), {
-      supportsMultipleEditorsPerDocument: true,
-      webviewOptions: {
-        retainContextWhenHidden: true
+    vscode.window.registerCustomEditorProvider(
+      "dataExplorer.viewer",
+      new DataExplorerCustomEditorProvider(context, bridge),
+      {
+        supportsMultipleEditorsPerDocument: true,
+        webviewOptions: {
+          retainContextWhenHidden: true
+        }
       }
-    })
+    )
   );
 
   context.subscriptions.push(

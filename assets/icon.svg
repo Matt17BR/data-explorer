@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Data Explorer faceted table</title>
+  <path d="M22 38 61 54v28L22 66V38Z" fill="#E8FFFD" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
+  <path d="m67 54 39-16v28L67 82V54Z" fill="#EAF2FF" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M22 66 61 82v24L22 90V66Z" fill="#63DDD5" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
+  <path d="m67 82 39-16v24l-39 16V82Z" fill="#77A7FF" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M41.5 46v28M86.5 46v28M41.5 74v24M86.5 74v24" stroke="#FFFFFF" stroke-opacity="0.52" stroke-width="2"/>
+  <circle cx="106" cy="25" r="10" fill="#FFE36D" stroke="#102A43" stroke-width="3"/>
+  <path d="M106 16v18M97 25h18" stroke="#102A43" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "data-wrangler-runtime"
-version = "0.1.0"
+version = "0.2.0a1"
 description = "Runtime backend for the Data Explorer VS Code extension."
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "polars",
   "pandas",
@@ -18,11 +18,27 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest",
+  "pytest-cov",
   "nbclient",
   "nbformat",
-  "ipykernel"
+  "ipykernel",
+  "tornado>=6.5.7",
+  "ruff",
+  "pip-audit"
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["data_wrangler_runtime*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+include = ["data_wrangler_runtime", "tests"]
