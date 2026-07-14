@@ -9,16 +9,22 @@ const pythonCandidates = [
   "python"
 ].filter(Boolean);
 
-function commandExists(command) {
+function resolveCommand(command) {
   if (command.includes("/") || command.includes("\\")) {
-    return existsSync(command);
+    return existsSync(command) ? command : undefined;
   }
-  return (process.env.PATH ?? "")
-    .split(delimiter)
-    .some((directory) => existsSync(join(directory, command)) || existsSync(join(directory, `${command}.exe`)));
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    for (const executable of [command, `${command}.exe`]) {
+      const candidate = join(directory, executable);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
 }
 
-const python = pythonCandidates.find(commandExists);
+const python = pythonCandidates.map(resolveCommand).find(Boolean);
 if (!python) {
   throw new Error("Python was not found. Set DATA_EXPLORER_PYTHON or create .venv.");
 }
