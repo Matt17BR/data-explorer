@@ -20,6 +20,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Isolated VS Code extension-host acceptance and minimum/current editor CI coverage.
 - A validated 26-operation transformation registry with native Pandas and Polars execution and standalone code generation.
 - Revision-safe draft preview, typed page diffs, apply/discard/latest-step edit/undo, and runtime plan replay.
+- A searchable VS Code-native operation builder, synchronized Cleaning Steps view, draft diff surface, and editable CodeMirror code panel.
 
 ### Changed
 
@@ -31,7 +32,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 
 ### Known gaps
 
-- Draft editing UI, notebook MIME v2, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Persisted editing plans, by-example operations, exports, notebook MIME v2, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

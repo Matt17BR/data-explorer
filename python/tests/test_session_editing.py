@@ -119,3 +119,30 @@ def test_viewing_sessions_cannot_preview_transformations(tmp_path):
             0,
             10,
         )
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_latest_structural_step_keeps_its_input_schema_for_editing(tmp_path, backend):
+    path = tmp_path / "structural.csv"
+    path.write_text("name,value\na,1\nb,2\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=10
+    )
+    session_id = opened["metadata"]["sessionId"]
+
+    manager.preview_step(session_id, 0, transform("drop", "dropColumns", columns=["name"]), 0, 10)
+    applied = manager.apply_draft(session_id, 1, 0, 10)
+
+    assert [column["name"] for column in applied["metadata"]["schema"]] == ["value"]
+    assert [column["name"] for column in applied["metadata"]["latestStepInputSchema"]] == ["name", "value"]
+
+    edited = manager.preview_step(
+        session_id,
+        2,
+        transform("drop-v2", "dropColumns", columns=["value"]),
+        0,
+        10,
+        replace_step_id="drop",
+    )
+    assert [column["name"] for column in edited["metadata"]["schema"]] == ["name"]

@@ -143,7 +143,11 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         if params["operator"] not in FORMULA_OPERATORS:
             raise OperationError("formula.operator is not supported.")
         has_column = isinstance(params.get("rightColumn"), str)
-        has_value = "value" in params and isinstance(params.get("value"), int | float)
+        has_value = (
+            "value" in params
+            and isinstance(params.get("value"), int | float)
+            and not isinstance(params.get("value"), bool)
+        )
         if has_column == has_value:
             raise OperationError("formula requires exactly one of rightColumn or numeric value.")
     elif kind == "splitText" and (not isinstance(params["index"], int) or params["index"] < 0):

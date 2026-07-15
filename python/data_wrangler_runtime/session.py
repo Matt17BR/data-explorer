@@ -22,6 +22,7 @@ class Session:
     filtered: Any
     filter_model: dict[str, Any]
     plan: list[dict[str, Any]]
+    plan_input_schemas: list[list[dict[str, Any]]]
     draft_step: dict[str, Any] | None
     draft_frame: Any | None
     draft_base: Any | None
@@ -84,6 +85,7 @@ class SessionManager:
             filtered=filtered,
             filter_model=filter_model,
             plan=[],
+            plan_input_schemas=[],
             draft_step=None,
             draft_frame=None,
             draft_base=None,
@@ -236,8 +238,10 @@ class SessionManager:
                 raise EngineError("There is no draft step to apply.")
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
+                session.plan_input_schemas.append(session.engine.schema(session.draft_base))
             else:
                 session.plan[-1] = session.draft_step
+                session.plan_input_schemas[-1] = session.engine.schema(session.draft_base)
             session.committed = session.draft_frame
             self._clear_draft(session)
             return self._finish_plan_change(session, "apply", offset, limit, reset_view=True)
@@ -261,6 +265,7 @@ class SessionManager:
             if not session.plan:
                 raise EngineError("There is no applied step to undo.")
             session.plan.pop()
+            session.plan_input_schemas.pop()
             session.committed = self._replay(session, session.plan)
             return self._finish_plan_change(session, "undo", offset, limit, reset_view=True)
 
@@ -302,6 +307,8 @@ class SessionManager:
             "filterModel": session.filter_model,
             "steps": session.plan,
         }
+        if session.plan_input_schemas:
+            metadata["latestStepInputSchema"] = session.plan_input_schemas[-1]
         if session.draft_step is not None:
             metadata["draftStep"] = session.draft_step
         if session.replace_step_id is not None:

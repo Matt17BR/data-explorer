@@ -305,6 +305,7 @@ export interface SessionMetadata {
   schema: ColumnSchema[];
   filterModel: FilterModel;
   steps: TransformStep[];
+  latestStepInputSchema?: ColumnSchema[];
   draftStep?: TransformStep;
   draftReplacesStepId?: string;
   stats?: DatasetStats;

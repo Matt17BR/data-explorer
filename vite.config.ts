@@ -13,7 +13,8 @@ export default defineConfig({
       preserveEntrySignatures: "strict",
       input: {
         webview: resolve(__dirname, "src/webviews/main.tsx"),
-        notebookRenderer: resolve(__dirname, "src/webviews/notebookRenderer.ts")
+        notebookRenderer: resolve(__dirname, "src/webviews/notebookRenderer.ts"),
+        codePreview: resolve(__dirname, "src/webviews/codePreviewMain.ts")
       },
       output: {
         entryFileNames: "[name].js",

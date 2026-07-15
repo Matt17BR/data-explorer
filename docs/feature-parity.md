@@ -13,10 +13,10 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive exact stats green; typed edges TBD  |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
 | Multi-column viewing sorts                          |    Yes |    Yes | Partial | Null-order and stability tests                  |
-| Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry validation green; editor search TBD    |
-| Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime page diff green; identity edges/UI TBD  |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Partial | Runtime replay green; UI/shortcuts TBD          |
-| Generated code preview and editing                  |    Yes |    Yes | Partial | Engine-native execution green; UI editing TBD   |
+| Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD     |
+| Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD  |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Partial | Runtime/UI green; persistence/shortcuts TBD     |
+| Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror green; export TBD   |
 | Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Missing/duplicate row operations                    |    Yes |    Yes | Partial | Core null/duplicate tests green; edges TBD      |
@@ -60,6 +60,15 @@ Editing session slice, 2026-07-15:
 - The extension coordinator maintains distinct public/runtime revisions and replays applied steps, the active draft, and the viewing query after runtime replacement.
 
 This evidence advances draft/history rows to **Partial**. Stable identities through structural operations, UI shortcuts, persisted-plan reload, failure-injected editor recovery, and real-editor acceptance remain mandatory.
+
+Editing UI slice, 2026-07-15:
+
+- `npm test`: 13 TypeScript and 36 Python tests passed. React tests verify all 26 catalog entries, validated form output, explicit conversion of viewing filters into a cleaning step, and structural-step editing against its original input schema.
+- `npm run test:extension-host` passed against local VS Code 1.128.0 with the new operation/apply/discard/edit/undo commands registered and the real custom editor opened.
+- The in-app browser verified the complete accessible operation dialog and editable generated-code textbox. Automated captures record the operation dialog, draft grid/diff/code layout, and VS Code-token CodeMirror highlighting in `docs/images/acceptance/`.
+- Custom-code preview requests are rejected by the extension host when Workspace Trust is absent. CodeMirror is shipped as a dedicated bottom-panel bundle; Monaco is not included.
+
+This evidence keeps editing rows **Partial**. Stable structural identities, persisted reload, exhaustive operation-edge UI tests, packaged VS Code/Cursor interaction, and keyboard shortcut coverage remain mandatory.
 
 ## Explicitly deferred from 1.0
 

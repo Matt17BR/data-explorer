@@ -21,11 +21,13 @@ interface CoordinatedSession {
   delegate: DataExplorerBridge;
   tail: Promise<void>;
   metadata: SessionMetadata;
+  code: string;
 }
 
 export interface ActiveSessionSnapshot {
   sessionId: string;
   metadata: SessionMetadata;
+  code: string;
 }
 
 export class SessionCoordinator implements vscode.Disposable {
@@ -50,7 +52,8 @@ export class SessionCoordinator implements vscode.Disposable {
       session
         ? {
             sessionId: session.publicId,
-            metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision)
+            metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
+            code: session.code
           }
         : undefined
     );
@@ -61,7 +64,8 @@ export class SessionCoordinator implements vscode.Disposable {
     return session
       ? {
           sessionId: session.publicId,
-          metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision)
+          metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
+          code: session.code
         }
       : undefined;
   }
@@ -132,7 +136,8 @@ export class SessionCoordinator implements vscode.Disposable {
       openRequest: request,
       delegate,
       tail: Promise.resolve(),
-      metadata: response.metadata
+      metadata: response.metadata,
+      code: ""
     };
     this.sessions.set(publicId, session);
     this.setActive(publicId);
@@ -182,6 +187,7 @@ export class SessionCoordinator implements vscode.Disposable {
       session.publicRevision += response.revision - requestRuntimeRevision;
       session.runtimeRevision = response.revision;
       session.metadata = response.metadata;
+      if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
       this.setActive(session.publicId);
       return {
         ...response,
@@ -233,6 +239,7 @@ export class SessionCoordinator implements vscode.Disposable {
         if (preview.kind !== "stepPreview") return false;
         session.runtimeRevision = preview.revision;
         session.metadata = preview.metadata;
+        session.code = preview.code;
         const applied = await session.delegate.request(
           {
             kind: "applyDraft",
@@ -246,6 +253,7 @@ export class SessionCoordinator implements vscode.Disposable {
         if (applied.kind !== "planUpdated") return false;
         session.runtimeRevision = applied.revision;
         session.metadata = applied.metadata;
+        session.code = applied.code;
       }
 
       if (previous.draftStep) {
@@ -264,6 +272,7 @@ export class SessionCoordinator implements vscode.Disposable {
         if (preview.kind !== "stepPreview") return false;
         session.runtimeRevision = preview.revision;
         session.metadata = preview.metadata;
+        session.code = preview.code;
       }
 
       const page = await session.delegate.request(

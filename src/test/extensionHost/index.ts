@@ -13,6 +13,11 @@ export async function run(): Promise<void> {
     "dataExplorer.openPath",
     "dataExplorer.openFile",
     "dataExplorer.changeRuntime",
+    "dataExplorer.startOperation",
+    "dataExplorer.applyStep",
+    "dataExplorer.discardStep",
+    "dataExplorer.editLatestStep",
+    "dataExplorer.undoStep",
     "dataExplorer.openSettings",
     "dataExplorer.reportIssue"
   ]) {

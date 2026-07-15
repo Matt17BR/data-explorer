@@ -425,6 +425,7 @@
         "schema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
         "steps": { "type": "array", "items": { "$ref": "#/definitions/TransformStep" } },
+        "latestStepInputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "draftStep": { "$ref": "#/definitions/TransformStep" },
         "draftReplacesStepId": { "type": "string" },
         "stats": { "$ref": "#/definitions/DatasetStats" }

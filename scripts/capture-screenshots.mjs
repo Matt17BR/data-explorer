@@ -57,6 +57,32 @@ filtered_page = manager.get_page(session_id, 0, 0, 4, filter_model)
 filtered_page["metadata"]["stats"] = manager.get_dataset_stats(session_id, 0, filter_model)["stats"]
 filtered_summary = manager.get_summary(session_id, 0, filter_model)
 values = manager.get_column_values(session_id, 0, "city", filter_model, None, 100)
+draft = manager.preview_step(
+    session_id,
+    0,
+    {
+        "id": "adjusted-sales",
+        "kind": "formula",
+        "params": {
+            "leftColumn": "sales",
+            "operator": "multiply",
+            "value": 1.1,
+            "newColumn": "adjusted_sales",
+        },
+    },
+    0,
+    4,
+)
+draft["summaries"] = manager.get_summary(
+    session_id,
+    draft["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
+draft["metadata"]["stats"] = manager.get_dataset_stats(
+    session_id,
+    draft["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["stats"]
 
 wide_path = root / "tmp" / "screenshots" / "wide.csv"
 pl.DataFrame({f"column_{column:02d}": [row + column for row in range(1000)] for column in range(40)}).write_csv(wide_path)
@@ -96,6 +122,7 @@ print(json.dumps({
         "summaries": filtered_summary["summaries"],
     },
     "values": values,
+    "draft": draft,
     "wide": wide,
     "widePages": wide_pages,
     "notebook": mime_payload,
@@ -107,6 +134,16 @@ print(json.dumps({
 );
 
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
+writeWebviewHarness(
+  "operation-dialog.html",
+  payloads.opened,
+  {},
+  "acceptance/operation-dialog-dark-1280.png",
+  {},
+  { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "formula" } }
+);
+writeWebviewHarness("draft-preview.html", payloads.draft, {}, "acceptance/draft-preview-dark-1280.png");
+writeCodePreviewHarness("code-preview.html", payloads.draft.code, "acceptance/code-preview-dark-1280.png");
 writeWebviewHarness(
   "filter-panel.html",
   payloads.filtered,
@@ -152,6 +189,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const zoom = appearance.zoom ?? 1;
   const width = appearance.width ?? 1280;
   const height = appearance.height ?? 760;
+  const editorAction = appearance.editorAction;
   const html = `<!doctype html>
 <html>
 <head>
@@ -170,6 +208,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
       postMessage(message) {
         if (message.kind === "ready") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);
+          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}
           for (const value of Object.values(columnValues)) {
             setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: value })), 80);
           }
@@ -261,6 +300,39 @@ show(df, label="sample.csv")</div>
 </html>`;
   writeFileSync(htmlPath, html);
   screenshot(htmlPath, outputPath);
+}
+
+function writeCodePreviewHarness(fileName, code, outputName) {
+  const htmlPath = resolve(tmpDir, fileName);
+  const outputPath = resolve(docsDir, outputName);
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    ${themeTokens("dark")}
+    html, body, #root { height: 100%; margin: 0; overflow: hidden; background: var(--vscode-editor-background); }
+  </style>
+  <script>
+    window.acquireVsCodeApi = () => ({
+      postMessage(message) {
+        if (message.kind === "ready") {
+          setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
+            data: { kind: "codePreview", code: ${JSON.stringify(code)} }
+          })), 20);
+        }
+      }
+    });
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="../../media/codePreview.js"></script>
+</body>
+</html>`;
+  writeFileSync(htmlPath, html);
+  screenshot(htmlPath, outputPath, 1280, 420);
 }
 
 function screenshot(htmlPath, outputPath, width = 1280, height = 760) {

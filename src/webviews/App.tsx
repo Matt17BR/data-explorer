@@ -2,10 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   CellValue,
   ColumnSummary,
+  DataDiff,
   DataRow,
   DataExplorerResponse,
   GridPage,
+  OperationKind,
   SessionMetadata,
+  TransformStep,
   ValueCount,
   ValuesResponse
 } from "../shared/protocol";
@@ -13,6 +16,7 @@ import { emptyFilterModel, type ColumnFilter, type FilterModel, type PredicateFi
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
+import { OperationBuilder } from "./operations/OperationBuilder";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
@@ -30,10 +34,39 @@ export function App() {
   const [goToColumn, setGoToColumn] = useState("");
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
+  const [operationOpen, setOperationOpen] = useState(false);
+  const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
+  const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
+  const [diff, setDiff] = useState<DataDiff | undefined>();
+  const [generatedCode, setGeneratedCode] = useState("");
 
   useEffect(() => {
-    const listener = (event: MessageEvent<DataExplorerResponse>) => {
+    const listener = (event: MessageEvent<DataExplorerResponse | EditorActionMessage>) => {
       const response = event.data;
+      if (response.kind === "editorAction") {
+        if (response.action === "openOperation") {
+          setEditingStep(undefined);
+          setOperationKind(response.operationKind);
+          setOperationOpen(true);
+        } else if (response.action === "editLatest") {
+          setMetadata((current) => {
+            const latest = current?.steps.at(-1);
+            if (latest) {
+              setEditingStep(latest);
+              setOperationKind(latest.kind);
+              setOperationOpen(true);
+            }
+            return current;
+          });
+        } else {
+          setLoading(true);
+          vscode.postMessage({
+            kind: "runtimeRequest",
+            request: { kind: response.action, offset: 0, limit: pageSize }
+          });
+        }
+        return;
+      }
       setLoading(false);
       if (response.kind === "error") {
         setError(response.message);
@@ -61,6 +94,22 @@ export function App() {
         setFilterModel(response.metadata.filterModel);
         setPage(response.page);
         setSnapshotRows(undefined);
+      }
+      if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        setMetadata(response.metadata);
+        setFilterModel(response.metadata.filterModel);
+        setPage(response.page);
+        setSnapshotRows(undefined);
+        setGeneratedCode(response.code);
+        setDiff(response.kind === "stepPreview" ? response.diff : undefined);
+        vscode.postMessage({
+          kind: "runtimeRequest",
+          request: { kind: "getSummary", filterModel: response.metadata.filterModel }
+        });
+        vscode.postMessage({
+          kind: "runtimeRequest",
+          request: { kind: "getDatasetStats", filterModel: response.metadata.filterModel }
+        });
       }
       if (response.kind === "summary") {
         setSummaries((current) => {
@@ -162,6 +211,37 @@ export function App() {
     });
   };
 
+  const previewStep = (step: TransformStep, replaceStepId?: string) => {
+    setLoading(true);
+    setOperationOpen(false);
+    vscode.postMessage({
+      kind: "runtimeRequest",
+      request: { kind: "previewStep", step, replaceStepId, offset: 0, limit: pageSize }
+    });
+  };
+
+  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep") => {
+    setLoading(true);
+    vscode.postMessage({
+      kind: "runtimeRequest",
+      request: { kind: action, offset: 0, limit: pageSize }
+    });
+  };
+
+  const openNewOperation = (kind?: OperationKind) => {
+    setEditingStep(undefined);
+    setOperationKind(kind);
+    setOperationOpen(true);
+  };
+
+  const editLatestStep = () => {
+    const latest = metadata?.steps.at(-1);
+    if (!latest) return;
+    setEditingStep(latest);
+    setOperationKind(latest.kind);
+    setOperationOpen(true);
+  };
+
   if (error && !metadata) {
     return (
       <main className="app app-error">
@@ -184,6 +264,11 @@ export function App() {
         </div>
         {metadata && (
           <div className="toolbarActions">
+            {metadata.mode === "editing" && !snapshotMode && (
+              <button type="button" onClick={() => openNewOperation()}>
+                <span className="codicon codicon-add" aria-hidden="true" /> Add step
+              </button>
+            )}
             <button
               type="button"
               className="toolbarButton"
@@ -212,6 +297,49 @@ export function App() {
           </div>
         )}
       </header>
+
+      {metadata && metadata.mode === "editing" && (
+        <section className="cleaningBar" aria-label="Cleaning plan">
+          <div className="cleaningSummary">
+            <span className="codicon codicon-layers" aria-hidden="true" />
+            <strong>
+              {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+            </strong>
+            {metadata.draftStep && <span className="draftBadge">Draft: {metadata.draftStep.kind}</span>}
+          </div>
+          <div className="cleaningActions">
+            {metadata.draftStep ? (
+              <>
+                <button type="button" className="secondaryButton" onClick={() => sendPlanAction("discardDraft")}>
+                  Discard
+                </button>
+                <button type="button" onClick={() => sendPlanAction("applyDraft")}>
+                  Apply step
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="secondaryButton"
+                  disabled={metadata.steps.length === 0}
+                  onClick={editLatestStep}
+                >
+                  Edit latest
+                </button>
+                <button
+                  type="button"
+                  className="secondaryButton"
+                  disabled={metadata.steps.length === 0}
+                  onClick={() => sendPlanAction("undoStep")}
+                >
+                  <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+                </button>
+              </>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
         <section className="gridShell">
@@ -272,6 +400,45 @@ export function App() {
           </aside>
         )}
       </section>
+      {metadata?.draftStep && (
+        <section className="draftPanel" aria-label="Draft preview">
+          <header>
+            <div>
+              <strong>Previewing {metadata.draftStep.kind}</strong>
+              <span>The grid shows the draft result. Apply or discard it explicitly.</span>
+            </div>
+            {diff && (
+              <div className="diffStats" aria-label="Data diff summary">
+                <span>+{diff.addedRows} rows</span>
+                <span>-{diff.removedRows} rows</span>
+                <span>+{diff.addedColumns.length} columns</span>
+                <span>-{diff.removedColumns.length} columns</span>
+                <span>
+                  {diff.changedCells} changed cells{diff.truncated ? " in this block" : ""}
+                </span>
+              </div>
+            )}
+          </header>
+          <details className="draftCode" open>
+            <summary>
+              Generated {metadata.backend === "pandas" ? "Pandas" : "Polars"} code · edit in Code Preview panel
+            </summary>
+            <pre>
+              <code>{generatedCode}</code>
+            </pre>
+          </details>
+        </section>
+      )}
+      {metadata && operationOpen && (
+        <OperationBuilder
+          metadata={metadata}
+          filterModel={filterModel}
+          initialKind={operationKind}
+          initialStep={editingStep}
+          onClose={() => setOperationOpen(false)}
+          onPreview={previewStep}
+        />
+      )}
     </main>
   );
 
@@ -297,6 +464,12 @@ export function App() {
     setLoading(false);
     setError(undefined);
   }
+}
+
+interface EditorActionMessage {
+  kind: "editorAction";
+  action: "openOperation" | "editLatest" | "applyDraft" | "discardDraft" | "undoStep";
+  operationKind?: OperationKind;
 }
 
 function readWebviewConfig(): {

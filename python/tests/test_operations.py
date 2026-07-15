@@ -42,6 +42,8 @@ def test_operation_registry_is_complete_and_validation_is_strict():
         validate_step({"id": "bad", "kind": "unknown", "params": {}})
     with pytest.raises(OperationError, match="exactly one"):
         step("bad-formula", "formula", leftColumn="value", operator="add", newColumn="result")
+    with pytest.raises(OperationError, match="exactly one"):
+        step("bool-formula", "formula", leftColumn="value", operator="add", value=True, newColumn="result")
 
 
 def test_rows_and_order_operations(engine_and_frame):
