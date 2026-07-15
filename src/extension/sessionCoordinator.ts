@@ -5,12 +5,20 @@ import type {
   DataExplorerResponse,
   ErrorResponse,
   OpenSessionRequest,
+  PageResponse,
   SessionMetadata,
   SessionOpenedResponse,
   SessionBoundRequest
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
 import type { BridgeRequestOptions, DataExplorerBridge } from "./dataBridge";
+import {
+  decodePersistedSession,
+  persistedStateFromMetadata,
+  persistenceKey,
+  SESSION_STORAGE_KEY,
+  type PersistedSessionState
+} from "./sessionPersistence";
 
 interface CoordinatedSession {
   publicId: string;
@@ -35,6 +43,9 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
   private disposed = false;
+  private persistenceTail: Promise<void> = Promise.resolve();
+
+  constructor(private readonly workspaceState?: vscode.Memento) {}
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
@@ -139,9 +150,52 @@ export class SessionCoordinator implements vscode.Disposable {
       metadata: response.metadata,
       code: ""
     };
+    let opened = response;
+    const persisted = this.loadPersistedSession(request);
+    if (persisted) {
+      try {
+        const page = await this.restoreRuntimeState(session, persisted, request.pageSize, options);
+        const summary = await delegate.request(
+          {
+            kind: "getSummary",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision,
+            filterModel: persisted.filterModel
+          },
+          options
+        );
+        if (summary.kind !== "summary") throw new Error("Could not restore persisted summaries.");
+        session.publicRevision = session.runtimeRevision;
+        opened = {
+          kind: "sessionOpened",
+          metadata: session.metadata,
+          page: page.page,
+          summaries: summary.summaries
+        };
+      } catch {
+        await delegate
+          .request({
+            kind: "closeSession",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision
+          })
+          .catch(() => undefined);
+        const clean = await delegate.request(request, options);
+        if (clean.kind !== "sessionOpened") return clean;
+        session.runtimeId = clean.metadata.sessionId;
+        session.runtimeRevision = clean.metadata.revision;
+        session.publicRevision = clean.metadata.revision;
+        session.metadata = clean.metadata;
+        session.code = "";
+        opened = clean;
+        void vscode.window.showWarningMessage(
+          `Data Explorer could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
+        );
+      }
+    }
     this.sessions.set(publicId, session);
     this.setActive(publicId);
-    return publicOpenedResponse(response, publicId, session.publicRevision);
+    return publicOpenedResponse(opened, publicId, session.publicRevision);
   }
 
   private async executeSessionRequest(
@@ -188,6 +242,7 @@ export class SessionCoordinator implements vscode.Disposable {
       session.runtimeRevision = response.revision;
       session.metadata = response.metadata;
       if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
+      await this.persistSession(session);
       this.setActive(session.publicId);
       return {
         ...response,
@@ -215,6 +270,99 @@ export class SessionCoordinator implements vscode.Disposable {
     return response;
   }
 
+  private loadPersistedSession(request: OpenSessionRequest): PersistedSessionState | undefined {
+    const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
+    return decodePersistedSession(stored?.[persistenceKey(request.source)]);
+  }
+
+  private async persistSession(session: CoordinatedSession): Promise<void> {
+    if (!this.workspaceState) return;
+    const key = persistenceKey(session.openRequest.source);
+    const state = persistedStateFromMetadata(session.metadata);
+    const task = this.persistenceTail
+      .catch(() => undefined)
+      .then(async () => {
+        const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
+      });
+    this.persistenceTail = task.catch(() => undefined);
+    await this.persistenceTail;
+  }
+
+  private async restoreRuntimeState(
+    session: CoordinatedSession,
+    state: PersistedSessionState,
+    pageSize: number,
+    options?: BridgeRequestOptions
+  ): Promise<PageResponse> {
+    for (const step of state.steps) {
+      const preview = await session.delegate.request(
+        {
+          kind: "previewStep",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          step,
+          offset: 0,
+          limit: 1
+        },
+        options
+      );
+      if (preview.kind !== "stepPreview") throw new Error("Could not replay a cleaning step.");
+      session.runtimeRevision = preview.revision;
+      session.metadata = preview.metadata;
+      session.code = preview.code;
+      const applied = await session.delegate.request(
+        {
+          kind: "applyDraft",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          offset: 0,
+          limit: 1
+        },
+        options
+      );
+      if (applied.kind !== "planUpdated") throw new Error("Could not apply a replayed cleaning step.");
+      session.runtimeRevision = applied.revision;
+      session.metadata = applied.metadata;
+      session.code = applied.code;
+    }
+
+    if (state.draftStep) {
+      const preview = await session.delegate.request(
+        {
+          kind: "previewStep",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          step: state.draftStep,
+          replaceStepId: state.draftReplacesStepId,
+          offset: 0,
+          limit: 1
+        },
+        options
+      );
+      if (preview.kind !== "stepPreview") throw new Error("Could not restore the draft cleaning step.");
+      session.runtimeRevision = preview.revision;
+      session.metadata = preview.metadata;
+      session.code = preview.code;
+    }
+
+    const page = await session.delegate.request(
+      {
+        kind: "getPage",
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision,
+        offset: 0,
+        limit: pageSize,
+        filterModel: state.filterModel
+      },
+      options
+    );
+    if (page.kind !== "page") throw new Error("Could not restore the saved viewing query.");
+    session.runtimeRevision = page.revision;
+    session.metadata = page.metadata;
+    return page;
+  }
+
   private async replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
     try {
       const previous = session.metadata;
@@ -223,72 +371,8 @@ export class SessionCoordinator implements vscode.Disposable {
       session.runtimeId = response.metadata.sessionId;
       session.runtimeRevision = response.metadata.revision;
       session.metadata = response.metadata;
-
-      for (const step of previous.steps) {
-        const preview = await session.delegate.request(
-          {
-            kind: "previewStep",
-            sessionId: session.runtimeId,
-            revision: session.runtimeRevision,
-            step,
-            offset: 0,
-            limit: 1
-          },
-          options
-        );
-        if (preview.kind !== "stepPreview") return false;
-        session.runtimeRevision = preview.revision;
-        session.metadata = preview.metadata;
-        session.code = preview.code;
-        const applied = await session.delegate.request(
-          {
-            kind: "applyDraft",
-            sessionId: session.runtimeId,
-            revision: session.runtimeRevision,
-            offset: 0,
-            limit: 1
-          },
-          options
-        );
-        if (applied.kind !== "planUpdated") return false;
-        session.runtimeRevision = applied.revision;
-        session.metadata = applied.metadata;
-        session.code = applied.code;
-      }
-
-      if (previous.draftStep) {
-        const preview = await session.delegate.request(
-          {
-            kind: "previewStep",
-            sessionId: session.runtimeId,
-            revision: session.runtimeRevision,
-            step: previous.draftStep,
-            replaceStepId: previous.draftReplacesStepId,
-            offset: 0,
-            limit: 1
-          },
-          options
-        );
-        if (preview.kind !== "stepPreview") return false;
-        session.runtimeRevision = preview.revision;
-        session.metadata = preview.metadata;
-        session.code = preview.code;
-      }
-
-      const page = await session.delegate.request(
-        {
-          kind: "getPage",
-          sessionId: session.runtimeId,
-          revision: session.runtimeRevision,
-          offset: 0,
-          limit: 1,
-          filterModel: previous.filterModel
-        },
-        options
-      );
-      if (page.kind !== "page") return false;
-      session.runtimeRevision = page.revision;
-      session.metadata = page.metadata;
+      session.code = "";
+      await this.restoreRuntimeState(session, persistedStateFromMetadata(previous), 1, options);
       this.setActive(session.publicId);
       return true;
     } catch {

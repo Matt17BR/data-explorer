@@ -32,6 +32,6 @@ Custom engine code is never dispatched from an untrusted workspace. The extensio
 
 ## Persistence and compatibility
 
-Serializable import options, viewing state, widths, and transformation steps are stored by source URI. Binary dataframe content is never persisted. Notebook sessions can only replay when their variable exists again.
+Serializable import options, viewing state, widths, and transformation steps are stored by source identity in VS Code workspace state. The persisted payload contains only the filter model, validated steps, and optional draft—not binary dataframe content, runtime IDs, profiles, or statistics. Reopening a source reconstructs the plan through the same preview/apply protocol before showing it; malformed or non-replayable state opens the immutable original with a warning. Notebook sessions can only replay when their variable exists again.
 
 Protocol v2 is the active internal contract. Notebook MIME v1 remains renderable so saved notebook output does not break; new helpers emit MIME v2.

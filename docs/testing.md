@@ -12,6 +12,8 @@
 
 Protocol fixtures and engine-operation cases must run through both TypeScript and Python decoders. Polars tests monkeypatch `DataFrame.to_pandas` to fail. Cross-engine operation tests compare normalized semantic output and separately validate engine-native generated code.
 
+Persistence tests must assert that only serializable replay state is stored, malformed operation kinds are rejected, import options participate in source identity, and runtime/public session identifiers never enter workspace state. Packaged release acceptance must still apply a plan, reload the editor, and verify the restored grid in both VS Code and Cursor.
+
 ## Visual and accessibility coverage
 
 `npm run build && npm run capture:screenshots` generates the browser harness from real Polars protocol responses and the production webview bundle. Checked-in baselines currently cover light, dark, and high contrast at 800, 1280, and 1920 pixels, plus 80%, 100%, 150%, and 200% zoom. The wide fixture contains 1,000 rows by 40 columns and supplies five independent 200-row blocks.

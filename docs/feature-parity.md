@@ -30,7 +30,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | CSV and Parquet data export                         |    Yes |    Yes | Planned | Atomic-write and source-protection tests        |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Partial | Contract tests green; editor injection TBD      |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Partial | Runtime/workspace replay green; injection TBD   |
 
 ## Recorded acceptance evidence
 
@@ -68,7 +68,15 @@ Editing UI slice, 2026-07-15:
 - The in-app browser verified the complete accessible operation dialog and editable generated-code textbox. Automated captures record the operation dialog, draft grid/diff/code layout, and VS Code-token CodeMirror highlighting in `docs/images/acceptance/`.
 - Custom-code preview requests are rejected by the extension host when Workspace Trust is absent. CodeMirror is shipped as a dedicated bottom-panel bundle; Monaco is not included.
 
-This evidence keeps editing rows **Partial**. Stable structural identities, persisted reload, exhaustive operation-edge UI tests, packaged VS Code/Cursor interaction, and keyboard shortcut coverage remain mandatory.
+This evidence keeps editing rows **Partial**. Stable structural identities, packaged reload acceptance, exhaustive operation-edge UI tests, packaged VS Code/Cursor interaction, and keyboard shortcut coverage remain mandatory.
+
+Persistence slice, 2026-07-15:
+
+- `npm test`: 16 TypeScript and 36 Python tests passed. Persistence tests cover stable source/import keys, replayable-state round trips, and rejection of malformed or unknown saved operations.
+- Applied steps, the optional draft, and the independent viewing query are stored in workspace state and replayed through the validated runtime protocol when a source is reopened.
+- `npm run test:extension-host` remained green on VS Code 1.128.0 after enabling workspace-state restoration.
+
+This advances reload replay but keeps the row **Partial** until a failure-injected packaged-editor test applies a plan, reloads VS Code and Cursor, and verifies the reconstructed grid and cleanup behavior.
 
 ## Explicitly deferred from 1.0
 
