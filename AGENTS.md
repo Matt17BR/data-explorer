@@ -29,6 +29,8 @@ This repository builds the open-source Data Explorer extension and its bundled P
 11. Every operation change needs matching Pandas/Polars runtime and executable generated-code tests. Generated categorical columns may not collide, and engine-specific null/Unicode/aggregate defaults must be normalized explicitly.
 12. Standalone runtime startup is single-flight. Restart must invalidate any pending start, and closing the final session must stop the Python process; packaged seed/verify acceptance guards these lifecycle rules.
 13. Cleaning-plan shortcuts must be state-scoped, mirrored inside the webview, documented in the generated reference, and tested without intercepting editable-field undo.
+14. Saved notebook-output queries use the pure `src/webviews/snapshotModel.ts` model. Null/NaN predicates and per-sort null placement must match live runtime semantics and remain directly unit-tested.
+15. Visual baselines and axe acceptance use the lockfile-pinned Playwright Chromium. Install it with `npx playwright-core install chromium`; do not silently fall back to a moving system browser.
 
 ## Required checks
 
@@ -43,6 +45,7 @@ npm run test:coverage
 npm run license:check
 npm run benchmark:runtime # required for performance/runtime changes and release candidates
 npm run test:packaged-editors -- data-explorer.vsix # after packaging
+npx playwright-core install chromium # before local visual capture/verification
 npm run clean
 npm run build
 npm run capture:screenshots # for visible changes

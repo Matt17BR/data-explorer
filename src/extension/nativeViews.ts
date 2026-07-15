@@ -251,7 +251,7 @@ export function registerNativeViews(
         await vscode.window.showErrorMessage("VS Code could not insert the generated Data Explorer function.");
         return;
       }
-      await vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
+      void vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
     }),
     vscode.commands.registerCommand("dataExplorer.exportData", async () => {
       if (!(await requireTrustedWorkspace("export cleaned data"))) return;

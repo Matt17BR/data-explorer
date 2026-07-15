@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -9,7 +8,7 @@ const root = resolve(import.meta.dirname, "..");
 const harnessDir = resolve(root, "tmp", "screenshots");
 const require = createRequire(import.meta.url);
 const axePath = require.resolve("axe-core/axe.min.js");
-const executablePath = process.env.CHROME_BIN ?? findChrome();
+const executablePath = process.env.CHROME_BIN ?? chromium.executablePath();
 const harnesses = readdirSync(harnessDir)
   .filter((file) => file.endsWith(".html"))
   .sort();
@@ -47,10 +46,32 @@ try {
     }
     await page.close();
   }
+  await verifyNotebookExpansion(browser);
   await verifyCleaningKeyboardShortcuts(browser);
   await verifyWideGridPerformance(browser);
 } finally {
   await browser.close();
+}
+
+async function verifyNotebookExpansion(browser) {
+  for (const harness of ["notebook-preview.html", "notebook-v1-preview.html"]) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+    const open = page.getByRole("button", { name: "Open Data Explorer" });
+    await open.waitFor();
+    await open.click();
+    await page.waitForFunction(() =>
+      globalThis.dataExplorerNotebookMessages.some((message) => message.kind === "openInDataExplorer")
+    );
+    const payload = await page.evaluate(
+      () => globalThis.dataExplorerNotebookMessages.find((message) => message.kind === "openInDataExplorer")?.payload
+    );
+    if (!payload || payload.metadata?.protocolVersion !== 2) {
+      throw new Error(`${harness} did not normalize and send a protocol v2 full-view payload.`);
+    }
+    await page.close();
+  }
+  console.log("Notebook MIME v1/v2 full-view expansion verified.");
 }
 
 if (failures.length > 0) {
@@ -70,21 +91,6 @@ if (failures.length > 0) {
 }
 
 console.log(`Accessibility verified for ${harnesses.length} production webview harnesses.`);
-
-function findChrome() {
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    try {
-      return execFileSync(process.platform === "win32" ? "where" : "which", [name], {
-        encoding: "utf8"
-      })
-        .split(/\r?\n/, 1)[0]
-        .trim();
-    } catch {
-      // Try the next common browser executable.
-    }
-  }
-  throw new Error("Chrome or Chromium is required for webview accessibility acceptance.");
-}
 
 async function verifyWideGridPerformance(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });

@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode } from "@vscode/test-electron";
-import { runEditorAcceptancePhase, writeEditorAcceptanceHarness } from "./editor-acceptance.mjs";
+import {
+  runEditorAcceptancePhase,
+  writeEditorAcceptanceHarness,
+  writeFakeJupyterExtension
+} from "./editor-acceptance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const vsix = resolve(root, process.argv[2] ?? "data-explorer.vsix");
@@ -70,6 +74,8 @@ for (const editor of candidates) {
   const extensions = resolve(profile, "extensions");
   try {
     writeEditorAcceptanceHarness(profile);
+    const fakeJupyter = resolve(profile, "fake-jupyter");
+    writeFakeJupyterExtension(fakeJupyter);
     const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
     execFileSync(
       editor.cli,
@@ -110,7 +116,7 @@ for (const editor of candidates) {
         workspace: root,
         userData,
         extensions,
-        developmentPaths: [profile],
+        developmentPaths: [profile, fakeJupyter],
         testModule,
         python: process.env.DATA_EXPLORER_TEST_PYTHON,
         phase,

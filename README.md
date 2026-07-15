@@ -6,7 +6,11 @@ It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it i
 
 ## Screenshots
 
-These screenshots are generated from the real built webview/notebook renderer using `npm run capture:screenshots`. The capture script loads `fixtures/sample.csv` through the Polars runtime and executes `fixtures/example.ipynb` with `nbclient` to capture the current notebook MIME renderer output.
+The full-workbench screenshots come from the real packaged VSIX installed into isolated VS Code and Cursor profiles. The focused UI screenshots are generated from the same production webview/notebook bundles using `npm run capture:screenshots`; the capture loads `fixtures/sample.csv` through Polars and executes `fixtures/example.ipynb` with `nbclient`.
+
+![Packaged Data Explorer in VS Code](docs/images/editor-acceptance/vscode-dark.png)
+
+![Packaged Data Explorer in Cursor](docs/images/editor-acceptance/cursor-light.png)
 
 ![Data Explorer grid view](docs/images/grid-view.png)
 
@@ -154,4 +158,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. Remote-kernel/permission matrices and the remaining packaged VS Code/Cursor notebook-export and editor-theme checklists are tracked in `docs/feature-parity.md`.
+Every in-scope row in the checked-in Data Wrangler 1.24.2 clean-room behavior matrix is now backed by automated or recorded acceptance evidence. This build remains an alpha prerelease while the cross-platform release/tag workflow is validated; intentionally deferred scope is listed in `docs/feature-parity.md`.

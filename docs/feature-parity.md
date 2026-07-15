@@ -4,33 +4,33 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Data Explorer 1.0 requires every in-scope row to be **Done**.
 
-| Surface                                             | Pandas | Polars | Status  | Required evidence                                 |
-| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------- |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Format/options/errors and packaged editors green  |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                  |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD        |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Done    | Browser perf/a11y plus packaged paging green      |
-| Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green  |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green        |
-| Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green       |
-| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Full registry plus packaged group matrix green    |
-| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green   |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green         |
-| Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green    |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Native/code edges plus packaged preview/apply     |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Native/code matrix plus packaged preview/apply    |
-| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Null/NaN, keep modes, generated-code parity       |
-| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity    |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply     |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply         |
-| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply        |
-| Custom engine-native code                           |    Yes |    Yes | Done    | Trust, diagnostics, packaged crash/replay green   |
-| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation       |
-| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD     |
-| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green    |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Done    | Resolver plus packaged missing/decline flow green |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD        |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green           |
+| Surface                                             | Pandas | Polars | Status | Required evidence                                 |
+| --------------------------------------------------- | -----: | -----: | ------ | ------------------------------------------------- |
+| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done   | Format/options/errors and packaged editors green  |
+| Notebook variable viewer and toolbar                |    Yes |    Yes | Done   | Real kernel plus packaged stable-API matrix green |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done   | Saved v1/v2, renderer, expansion, packaged green  |
+| Virtual grid, column sizing, navigation             |    Yes |    Yes | Done   | Browser perf/a11y plus packaged paging green      |
+| Dataset summary and quick insights                  |    Yes |    Yes | Done   | Typed profiles/stats plus packaged queries green  |
+| Basic and advanced viewing filters                  |    Yes |    Yes | Done   | AND/OR engine, browser, and packaged green        |
+| Multi-column viewing sorts                          |    Yes |    Yes | Done   | Stable null-order engine and packaged green       |
+| Editing mode and operation catalog                  |    Yes |    Yes | Done   | Full registry plus packaged group matrix green    |
+| Draft preview and data diff                         |    Yes |    Yes | Done   | Typed/identity diff and packaged previews green   |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done   | Runtime, reload, keyboard, packaged green         |
+| Generated code preview and editing                  |    Yes |    Yes | Done   | Native code plus edited packaged exports green    |
+| Sort/filter cleaning steps                          |    Yes |    Yes | Done   | Native/code edges plus packaged preview/apply     |
+| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done   | Native/code matrix plus packaged preview/apply    |
+| Missing/duplicate row operations                    |    Yes |    Yes | Done   | Null/NaN, keep modes, generated-code parity       |
+| One-hot and multi-label binarization                |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity    |
+| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply     |
+| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply         |
+| Group and aggregate                                 |    Yes |    Yes | Done   | Nullable order plus packaged preview/apply        |
+| Custom engine-native code                           |    Yes |    Yes | Done   | Trust, diagnostics, packaged crash/replay green   |
+| String/datetime/new-column by example               |    Yes |    Yes | Done   | Candidate matrix plus packaged confirmation       |
+| Copy/script/notebook code export                    |    Yes |    Yes | Done   | Edited clipboard/script/notebook packaged green   |
+| CSV and Parquet data export                         |    Yes |    Yes | Done   | Cross-engine atomic and packaged exports green    |
+| Runtime selection, setup, change, clear             |    Yes |    Yes | Done   | Resolver plus packaged missing/decline flow green |
+| Original icons, native views, themes, accessibility |    N/A |    N/A | Done   | Packaged VS Code/Cursor visual matrix green       |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Done   | Packaged injected recovery/replay green           |
 
 ## Recorded acceptance evidence
 
@@ -237,6 +237,33 @@ Editable code and runtime-selection slice, 2026-07-15:
 - These command paths pass the development host and the rebuilt allowlisted VSIX in isolated VS Code 1.128.0 and Cursor 3.11.19. All temporary scripts and exported code are removed with the editor profile.
 
 This makes generated-code preview/editing and runtime selection/setup/change/clear **Done**. The combined code-export row remains **Partial** only for its originating-notebook command path.
+
+Packaged notebook and remote-kernel slice, 2026-07-15:
+
+- Kernel bootstrap no longer inserts the local extension path. The extension validates and encodes only the packaged `data_wrangler_runtime` sources, transfers them over `executeCode`, writes them beneath a content-addressed kernel-temporary directory, and imports the agent there. Unit tests reject incomplete/path-unsafe bundles and prove generated bootstrap code contains no local extension path.
+- A stable-Jupyter-API acceptance extension runs a persistent Python namespace with an explicitly empty `PYTHONPATH`, creating a remote-filesystem boundary while retaining real Pandas and Polars dependencies. The installed Data Explorer package transfers its own runtime, opens live variables for both engines, resolves typed pages, and never converts Polars to Pandas.
+- A real local IPykernel test independently registers automatic Pandas/Polars MIME v2 formatters, renders both types, transports protocol v2 sessions, restarts the kernel, and bootstraps again. Lifecycle tests cover permission/acquisition denial, user cancellation, timeout cancellation, one-shot reacquisition, and repeated failure.
+- The packaged VS Code 1.128.0 and Cursor 3.11.19 flows open a real `.ipynb` containing saved MIME v1 and v2 outputs, verify both MIME items survive deserialization, apply a Pandas notebook step, and invoke Insert Generated Code. The inserted tagged cell contains the edited CodeMirror buffer exactly and targets the originating notebook.
+- The acceptance kernel object is then replaced while a Polars variable session is active. The first request rejects on the stale object, the stable API is reacquired, the transferred runtime is bootstrapped again, the unknown session is replayed from the still-live variable, and the original public session returns the expected page. A separate denied-access attempt creates no coordinator session.
+- The production renderer/axe harness renders both MIME versions, normalizes v1 to protocol v2, and clicks **Open Data Explorer**, asserting the full-view message contains the normalized payload. Malformed versions remain accessible errors. This entire matrix runs from the allowlisted 54-entry VSIX in isolated editor profiles.
+
+This makes notebook variable launch, inline v1/v2 rendering and full-view expansion, and clipboard/script/originating-notebook code export **Done**.
+
+Packaged editor visual acceptance slice, 2026-07-15:
+
+- The exact allowlisted VSIX is installed into disposable VS Code 1.128.0 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Data Explorer Activity Bar container, and captures the actual window rather than a reconstructed browser shell.
+- Both editors record dark and light themes at normal zoom plus a high-contrast theme at VS Code zoom level 5 (200%). The harness temporarily disables OS theme auto-detection, waits for the public active-theme kind to change, captures the workbench, and restores every setting. Cursor's isolated first-run login overlay is bypassed with its documented `--skip-onboarding` test-process flag; no normal editor profile is read or changed.
+- The six checked-in captures under `docs/images/editor-acceptance/` visibly include the original faceted-table Activity Bar mark, native Operations, Summary, Filters/Sorts, and Cleaning Steps views, the custom grid, and the Code Preview panel. Extension-host assertions independently verify that the 128/256px gallery PNG and monochrome `currentColor` SVG are present in the installed package.
+- The production-bundle matrix remains the exhaustive UI gate: 23 Playwright/axe harnesses cover dark, light, high-contrast dark/light, 800/1280/1920px widths, 80–200% zoom, interaction/state fixtures, keyboard paths, and WCAG 2.0/2.1/2.2 A/AA rules. The editor screenshots prove those token-driven surfaces integrate into both real workbench chromes.
+
+This makes original icons, native views, themes, and accessibility **Done**. Every in-scope row in the Data Explorer 1.0 clean-room parity matrix is now **Done**; `1.0.0` remains gated on the release workflow and cross-platform tag validation rather than an unfinished feature row.
+
+Final release-gate correction slice, 2026-07-15:
+
+- Focused snapshot-model and filter/summary interaction tests raised TypeScript/webview coverage to 69.70% statements, 68.15% branches, 71.90% functions, and 72.61% lines; Python remains at 80.37%. The combined suite now contains 51 TypeScript and 113 Python tests.
+- Those tests exposed and fixed saved-notebook snapshot semantics: null numeric cells no longer compare as zero, and multi-column sorts honor the requested null placement independently of ascending/descending direction.
+- Visual and axe acceptance now use the Chromium revision pinned by `playwright-core` and the lockfile. CI installs that exact browser instead of inheriting a moving system Chrome, retaining the 1% visual threshold while eliminating browser-version drift.
+- The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.0 and Cursor 3.11.19 after these corrections.
 
 ## Explicitly deferred from 1.0
 

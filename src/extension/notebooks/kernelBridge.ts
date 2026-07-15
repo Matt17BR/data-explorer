@@ -10,6 +10,7 @@ import type {
 import { PROTOCOL_VERSION } from "../../shared/protocol";
 import type { BridgeRequestOptions, DataExplorerBridge } from "../dataBridge";
 import { RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
+import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
 
 interface JupyterExtensionApi {
   kernels: {
@@ -23,12 +24,14 @@ interface JupyterKernel {
 
 export class KernelBridge implements DataExplorerBridge {
   private readonly lifecycle: RestartableKernel<JupyterKernel>;
+  private readonly bootstrapCode: string;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly notebookUri: vscode.Uri
   ) {
     this.lifecycle = new RestartableKernel(() => this.acquireKernel());
+    this.bootstrapCode = buildKernelBootstrapCode(readRuntimeFiles(path.join(this.context.extensionPath, "python")));
   }
 
   async request(request: DataExplorerRequest, options: BridgeRequestOptions = {}): Promise<DataExplorerResponse> {
@@ -66,14 +69,9 @@ print("__DATA_EXPLORER_END_${marker}__")
   }
 
   private async ensureKernelAgent(kernel: JupyterKernel, options: BridgeRequestOptions): Promise<void> {
-    const pythonRoot = path.join(this.context.extensionPath, "python");
     await this.executePython(
       kernel,
-      `
-import sys as __de_sys
-__de_python_root = ${JSON.stringify(pythonRoot)}
-if __de_python_root not in __de_sys.path:
-    __de_sys.path.insert(0, __de_python_root)
+      `${this.bootstrapCode}
 import data_wrangler_runtime.kernel_agent as __de_kernel_agent
 import data_wrangler_runtime.notebook as __de_notebook
 __de_notebook.register_formatters()

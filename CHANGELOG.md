@@ -42,6 +42,8 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Installed VS Code/Cursor acceptance for representative steps from every operation group on Pandas and Polars, including preview/diff/code/apply, deterministic by-example confirmation, custom-code crash replay, immutable sources, and leak-free disposal.
 - Installed VS Code/Cursor acceptance for native Pandas/Polars paging, advanced OR filters, multi-column sorts, progressive summaries, exact stats, searched values, view/plan separation, immutable sources, and leak-free disposal.
 - Installed VS Code/Cursor acceptance for edited Code Preview clipboard/script output and explicit runtime change, dependency diagnostics, declined installation, and fallback clearing.
+- Remote-compatible kernel runtime transfer plus installed VS Code/Cursor notebook acceptance for saved MIME v1/v2 output, live Pandas/Polars variables, permission denial, kernel replacement/replay, and edited originating-notebook insertion.
+- Real installed-VSIX workbench captures in VS Code and Cursor across dark, light, and high-contrast themes at 200% zoom, including the original Activity Bar/gallery identity and native views.
 
 ### Changed
 
@@ -57,10 +59,13 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Standalone Python startup is single-flight, restart-safe, and automatically stops after the final session closes.
 - Screenshot generation resolves hosted CI Python environments as well as local virtual environments.
 - Successful code-copy and script-export notifications no longer hold command completion open while awaiting toast dismissal.
+- Notebook kernels receive the packaged pure-Python runtime through the stable execution API and no longer require access to the local extension filesystem.
+- Saved notebook snapshots no longer treat null numeric cells as zero, and their multi-column sorts honor explicit null placement independently of direction.
+- Visual and accessibility acceptance use the lockfile-pinned Chromium revision instead of a moving system browser.
 
-### Known gaps
+### Release status
 
-- Remote-kernel acceptance and the remaining isolated VS Code/Cursor notebook-export and editor-theme matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Every in-scope row in the checked-in clean-room parity matrix has automated or recorded acceptance evidence. The version remains an alpha until the cross-platform release/tag workflow passes; no `1.0.0` tag is created by this prerelease.
 
 ## [0.1.0] - 2026-06-01
 

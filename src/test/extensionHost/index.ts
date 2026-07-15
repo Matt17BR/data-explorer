@@ -1,10 +1,12 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { chromium } from "playwright-core";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
+import { DATA_EXPLORER_MIME_V1, DATA_EXPLORER_MIME_V2 } from "../../shared/notebookOutput";
 import type {
   DataExplorerRequest,
   DataExplorerResponse,
@@ -31,6 +33,16 @@ interface TestApi {
 
 interface ExtensionApi {
   testing?: TestApi;
+}
+
+interface FakeJupyterApi {
+  testing: {
+    execute(uri: vscode.Uri, code: string): Promise<string>;
+    restart(uri: vscode.Uri, setupCode?: string): Promise<number>;
+    setDenied(value: boolean): void;
+    denialCalls(): number;
+    stats(uri: vscode.Uri): { generation: number; executions: number } | undefined;
+  };
 }
 
 export async function run(): Promise<void> {
@@ -158,7 +170,7 @@ export async function run(): Promise<void> {
       const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
       return input instanceof vscode.TabInputCustom && input.viewType === "dataExplorer.viewer";
     },
-    15_000,
+    45_000,
     "the Data Explorer custom editor"
   );
 
@@ -191,28 +203,224 @@ export async function run(): Promise<void> {
   }
   await exercisePackagedViewingQueries(testing, fixture);
   await exercisePackagedOperationGroups(testing, fixture);
+  await exercisePackagedNotebookFlows(testing);
+  if (process.env.DATA_EXPLORER_CAPTURE_EDITOR_SCREENSHOTS) {
+    await capturePackagedEditorScreenshots(testing, fixture, process.env.DATA_EXPLORER_CAPTURE_EDITOR_SCREENSHOTS);
+  }
 
-  const notebookDirectory = mkdtempSync(path.join(tmpdir(), "data-explorer-notebook-"));
+  console.log("Data Explorer extension-host acceptance passed.");
+}
+
+async function capturePackagedEditorScreenshots(
+  testing: TestApi,
+  fixture: vscode.Uri,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  mkdirSync(outputDirectory, { recursive: true });
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "dataExplorer.viewer", vscode.ViewColumn.One);
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
+    30_000,
+    "the custom editor before screenshot capture"
+  );
+  await vscode.commands.executeCommand("workbench.view.extension.dataExplorer");
+
+  const workbench = vscode.workspace.getConfiguration("workbench");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const originalTheme = workbench.get<string>("colorTheme");
+  const originalZoom = windowConfiguration.get<number>("zoomLevel");
+  const originalAutoDetectColorScheme = windowConfiguration.get<boolean>("autoDetectColorScheme");
+  const originalAutoDetectHighContrast = windowConfiguration.get<boolean>("autoDetectHighContrast");
+  const editor = process.env.DATA_EXPLORER_TEST_EDITOR ?? "editor";
+  const cdpPort = Number(process.env.DATA_EXPLORER_EDITOR_CDP_PORT);
+  assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Editor screenshot capture requires a CDP port.");
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+  const pages = browser.contexts().flatMap((context) => context.pages());
+  let workbenchPage = pages.find((page) => page.url().includes("workbench"));
+  for (const page of pages) {
+    if ((await page.locator(".monaco-workbench").count()) > 0) {
+      workbenchPage = page;
+      break;
+    }
+  }
+  assert.ok(workbenchPage, "The editor CDP endpoint must expose its workbench page.");
+  const capturePage = workbenchPage;
+  const darkTheme = contributedTheme("vs-dark", "Default Dark Modern");
+  const lightTheme = contributedTheme("vs", "Default Light Modern");
+  const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
   try {
-    const notebookPath = path.join(notebookDirectory, "insertion.ipynb");
-    writeFileSync(
-      notebookPath,
-      JSON.stringify({
-        cells: [
-          {
-            cell_type: "code",
-            execution_count: null,
-            metadata: {},
-            outputs: [],
-            source: ["value = 1"]
-          }
-        ],
-        metadata: {},
-        nbformat: 4,
-        nbformat_minor: 5
-      })
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, `${editor}-dark.png`);
+    await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, `${editor}-light.png`);
+    await captureTheme(
+      highContrastTheme,
+      vscode.ColorThemeKind.HighContrast,
+      5,
+      `${editor}-high-contrast-zoom-200.png`
     );
+  } finally {
+    await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "autoDetectColorScheme",
+      originalAutoDetectColorScheme,
+      vscode.ConfigurationTarget.Global
+    );
+    await windowConfiguration.update(
+      "autoDetectHighContrast",
+      originalAutoDetectHighContrast,
+      vscode.ConfigurationTarget.Global
+    );
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      "the screenshot session and runtime to close"
+    );
+  }
+
+  async function captureTheme(
+    theme: string,
+    expectedKind: vscode.ColorThemeKind,
+    zoomLevel: number,
+    fileName: string
+  ): Promise<void> {
+    await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("zoomLevel", zoomLevel, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === expectedKind,
+      10_000,
+      `${theme} to activate before screenshot capture`
+    );
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const destination = path.resolve(outputDirectory, fileName);
+    await capturePage.bringToFront();
+    await capturePage.screenshot({ path: destination, animations: "disabled" });
+    const image = readFileSync(destination);
+    assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  }
+
+  function contributedTheme(uiTheme: string, fallback: string): string {
+    const themes = vscode.extensions.all.flatMap(
+      (extension) =>
+        (extension.packageJSON.contributes?.themes ?? []) as Array<{
+          id?: string;
+          label?: string;
+          uiTheme?: string;
+        }>
+    );
+    const candidates = themes.filter((theme) => theme.uiTheme === uiTheme);
+    if (editor === "cursor") {
+      const cursorTheme = candidates.find((theme) =>
+        uiTheme === "vs-dark"
+          ? theme.label === "Cursor Dark"
+          : uiTheme === "vs"
+            ? theme.label === "Cursor Light"
+            : theme.label === "Cursor Dark High Contrast"
+      );
+      if (cursorTheme) return cursorTheme.id ?? cursorTheme.label ?? fallback;
+    }
+    const preferred = candidates.find((theme) => /default|modern/i.test(theme.label ?? theme.id ?? ""));
+    return preferred?.id ?? preferred?.label ?? candidates[0]?.id ?? candidates[0]?.label ?? fallback;
+  }
+}
+
+async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
+  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-notebook-"));
+  const notebookPath = path.join(directory, "notebook-acceptance.ipynb");
+  const configuration = vscode.workspace.getConfiguration("dataExplorer");
+  const originalMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
+  const page = {
+    offset: 0,
+    limit: 1,
+    totalRows: 1,
+    rows: [
+      {
+        id: "r:0",
+        rowNumber: 0,
+        values: [{ kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false }]
+      }
+    ]
+  };
+  const schema = [{ id: "c:0", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }];
+  const legacyPayload = {
+    metadata: {
+      sessionId: "legacy",
+      backend: "pandas",
+      source: { kind: "notebookOutput", label: "legacy frame" },
+      shape: { rows: 1, columns: 1 },
+      filteredShape: { rows: 1, columns: 1 },
+      schema,
+      filterModel: { filters: [], sort: [] }
+    },
+    page,
+    summaries: []
+  };
+  const currentPayload = {
+    mimeVersion: 2,
+    metadata: {
+      protocolVersion: 2,
+      sessionId: "snapshot",
+      revision: 0,
+      backend: "polars",
+      mode: "viewing",
+      source: { kind: "notebookOutput", label: "current frame" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: 1, columns: 1 },
+      filteredShape: { rows: 1, columns: 1 },
+      schema,
+      filterModel: { filters: [], sort: [] },
+      steps: []
+    },
+    page,
+    summaries: []
+  };
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: 1,
+          metadata: {},
+          outputs: [
+            {
+              output_type: "display_data",
+              metadata: {},
+              data: {
+                "text/plain": ["Data Explorer saved output"],
+                [DATA_EXPLORER_MIME_V1]: legacyPayload,
+                [DATA_EXPLORER_MIME_V2]: currentPayload
+              }
+            }
+          ],
+          source: ["value = 1"]
+        }
+      ],
+      metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+
+  try {
+    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     const notebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
+    await vscode.window.showNotebookDocument(notebook);
+    const outputMimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    assert.ok(outputMimes.includes(DATA_EXPLORER_MIME_V1), "Saved MIME v1 output must remain readable.");
+    assert.ok(outputMimes.includes(DATA_EXPLORER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
+
     const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
       source: "df",
       backend: "polars"
@@ -225,12 +433,140 @@ export async function run(): Promise<void> {
       backend: "polars",
       generated: true
     });
-    assert.equal(await notebook.save(), true);
-  } finally {
-    rmSync(notebookDirectory, { recursive: true, force: true });
-  }
 
-  console.log("Data Explorer extension-host acceptance passed.");
+    const jupyterExtension = vscode.extensions.getExtension<FakeJupyterApi>("ms-toolsai.jupyter");
+    assert.ok(jupyterExtension, "The stable Jupyter API acceptance extension must be available.");
+    const jupyter = await jupyterExtension.activate();
+    const setupCode = [
+      "import pandas as pd",
+      "import polars as pl",
+      "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
+      "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})"
+    ].join("\n");
+    await jupyter.testing.execute(notebook.uri, setupCode);
+
+    await vscode.commands.executeCommand("dataExplorer.launchDataViewer", {
+      variableName: "pandas_frame",
+      notebookUri: notebook.uri
+    });
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.variableName === "pandas_frame",
+      30_000,
+      "the packaged Pandas notebook variable session"
+    );
+    let active = testing.activeSession();
+    assert.equal(active?.metadata.backend, "pandas");
+    assert.equal(active?.metadata.capabilities.notebookInsert, true);
+    if (!active) throw new Error("Pandas notebook session did not become active.");
+    const pandasPage = await testing.request({
+      kind: "getPage",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(pandasPage.kind, "page");
+    if (pandasPage.kind !== "page") throw new Error("Pandas notebook page did not resolve.");
+    assert.equal(pandasPage.page.rows[1]?.values[0]?.display, "2");
+    const preview = await testing.request({
+      kind: "previewStep",
+      sessionId: active.sessionId,
+      revision: pandasPage.revision,
+      step: {
+        id: "notebook-score",
+        kind: "formula",
+        params: { leftColumn: "value", operator: "multiply", value: 2, newColumn: "score" }
+      },
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(preview.kind, "stepPreview");
+    if (preview.kind !== "stepPreview") throw new Error("Pandas notebook step did not preview.");
+    const applied = await testing.request({
+      kind: "applyDraft",
+      sessionId: active.sessionId,
+      revision: preview.revision,
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(applied.kind, "planUpdated");
+    if (applied.kind !== "planUpdated") throw new Error("Pandas notebook step did not apply.");
+    const editedNotebookCode = "# edited notebook export\ndef clean_data(df):\n    return df\n";
+    testing.setCodeForExport(editedNotebookCode);
+    const insertionIndex = notebook.cellCount;
+    await vscode.commands.executeCommand("dataExplorer.insertNotebookCode");
+    await waitFor(
+      () => notebook.cellCount === insertionIndex + 1,
+      10_000,
+      "the notebook export command to insert a cell"
+    );
+    assert.equal(notebook.cellAt(insertionIndex).document.getText(), editedNotebookCode);
+    assert.deepEqual(notebook.cellAt(insertionIndex).metadata.dataExplorer, {
+      source: "pandas_frame",
+      backend: "pandas",
+      generated: true
+    });
+    const pandasClosed = await testing.request({
+      kind: "closeSession",
+      sessionId: active.sessionId,
+      revision: applied.revision
+    });
+    assert.equal(pandasClosed.kind, "sessionClosed");
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
+
+    await vscode.commands.executeCommand("dataExplorer.launchDataViewer", {
+      variableName: "polars_frame",
+      notebookUri: notebook.uri
+    });
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.variableName === "polars_frame",
+      30_000,
+      "the packaged Polars notebook variable session"
+    );
+    active = testing.activeSession();
+    assert.equal(active?.metadata.backend, "polars");
+    if (!active) throw new Error("Polars notebook session did not become active.");
+    const generation = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
+    const replacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
+    assert.ok(replacementGeneration > generation);
+    const recovered = await testing.request({
+      kind: "getPage",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(recovered.kind, "page", "The Polars notebook session must replay after kernel replacement.");
+    if (recovered.kind !== "page") throw new Error("Polars notebook recovery did not return a page.");
+    assert.equal(recovered.page.rows[0]?.values[0]?.display, "3");
+    const polarsClosed = await testing.request({
+      kind: "closeSession",
+      sessionId: active.sessionId,
+      revision: recovered.revision
+    });
+    assert.equal(polarsClosed.kind, "sessionClosed");
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Polars notebook session to close");
+
+    const denialCalls = jupyter.testing.denialCalls();
+    jupyter.testing.setDenied(true);
+    await vscode.commands.executeCommand("dataExplorer.launchDataViewer", {
+      variableName: "pandas_frame",
+      notebookUri: notebook.uri
+    });
+    await waitFor(() => jupyter.testing.denialCalls() > denialCalls, 10_000, "the packaged Jupyter permission denial");
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    jupyter.testing.setDenied(false);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    assert.equal(await notebook.save(), true);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  } finally {
+    await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {

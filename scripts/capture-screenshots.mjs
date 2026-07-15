@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pixelmatch from "pixelmatch";
+import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,7 +24,7 @@ const python =
   [process.env.DATA_EXPLORER_PYTHON, hostedPython, localPython].find(
     (candidate) => candidate && existsSync(candidate)
   ) ?? (process.platform === "win32" ? "python" : "python3");
-const chrome = process.env.CHROME_BIN ?? "google-chrome";
+const chrome = process.env.CHROME_BIN ?? chromium.executablePath();
 const verify = process.argv.includes("--verify");
 
 mkdirSync(tmpDir, { recursive: true });
@@ -455,7 +456,10 @@ show(df, label="sample.csv")</div>
   </div>
   <script type="module">
     import { activate } from "${rendererUrl}";
-    const renderer = activate({});
+    window.dataExplorerNotebookMessages = [];
+    const renderer = activate({
+      postMessage(message) { window.dataExplorerNotebookMessages.push(message); }
+    });
     renderer.renderOutputItem({ json: () => (${JSON.stringify(payload)}) }, document.getElementById("notebook-output"));
   </script>
 </body>

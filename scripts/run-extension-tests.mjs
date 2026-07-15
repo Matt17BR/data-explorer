@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
-import { runEditorAcceptancePhase, writeEditorAcceptanceHarness } from "./editor-acceptance.mjs";
+import {
+  runEditorAcceptancePhase,
+  writeEditorAcceptanceHarness,
+  writeFakeJupyterExtension
+} from "./editor-acceptance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hostedPython = process.env.pythonLocation
@@ -32,12 +36,14 @@ const vscodeExecutablePath = requestedVersion
   : existsSync(installedExecutable)
     ? installedExecutable
     : await downloadAndUnzipVSCode("stable");
+const fakeJupyter = resolve(profile, "fake-jupyter");
+writeFakeJupyterExtension(fakeJupyter);
 
 try {
   process.env.DATA_EXPLORER_TEST_PHASE = "single";
   await runTests({
     vscodeExecutablePath,
-    extensionDevelopmentPath: root,
+    extensionDevelopmentPath: [root, fakeJupyter],
     extensionTestsPath: resolve(root, "dist-test", "test", "extensionHost", "index.js"),
     launchArgs: [
       root,
@@ -59,14 +65,14 @@ try {
   const resultPath = resolve(profile, "reload-result.json");
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
   writeEditorAcceptanceHarness(harness);
-  const editor = { name: "VS Code", executable: vscodeExecutablePath, sharedDataDir: true };
+  const editor = { name: "VS Code", key: "vscode", executable: vscodeExecutablePath, sharedDataDir: true };
   for (const phase of ["seed", "verify"]) {
     await runEditorAcceptancePhase({
       editor,
       workspace: root,
       userData,
       extensions,
-      developmentPaths: [root, harness],
+      developmentPaths: [root, harness, fakeJupyter],
       testModule,
       python: process.env.DATA_EXPLORER_TEST_PYTHON,
       phase,
