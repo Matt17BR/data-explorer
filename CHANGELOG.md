@@ -18,7 +18,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Advanced AND/OR viewing predicates with null/NaN operators and cross-engine tests.
 - Light, dark, high-contrast, responsive-width, zoom, and wide-data browser acceptance baselines.
 - Isolated VS Code extension-host acceptance and minimum/current editor CI coverage.
-- A validated 26-operation transformation registry with native Pandas and Polars execution and standalone code generation.
+- A validated 27-operation transformation registry with native Pandas and Polars execution and standalone code generation.
 - Revision-safe draft preview, typed page diffs, apply/discard/latest-step edit/undo, and runtime plan replay.
 - A searchable VS Code-native operation builder, synchronized Cleaning Steps view, draft diff surface, and editable CodeMirror code panel.
 - Workspace-scoped persistence and validated replay for applied steps, an optional draft, and independent viewing state.
@@ -39,6 +39,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Required TypeScript/Python coverage floors, bundled-production license policy checks, and Linux/macOS/Windows tag validation.
 - State-scoped, accessible keyboard shortcuts for draft apply/discard and latest-step edit/undo, with production-bundle Playwright acceptance.
 - Installed VS Code/Cursor input acceptance for CSV, TSV, JSONL, Parquet, and Excel plus native Pandas/Polars CSV and Parquet export verification.
+- Installed VS Code/Cursor acceptance for representative steps from every operation group on Pandas and Polars, including preview/diff/code/apply, deterministic by-example confirmation, custom-code crash replay, immutable sources, and leak-free disposal.
 
 ### Changed
 
@@ -56,7 +57,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 
 ### Known gaps
 
-- Remote-kernel acceptance, identifier-based duplicate-column operations, broader by-example inference, and the remaining isolated VS Code/Cursor interaction/theme matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Remote-kernel acceptance and the remaining isolated VS Code/Cursor viewing, code-export, runtime-setup, and theme matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

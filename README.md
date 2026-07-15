@@ -154,4 +154,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. Remote-kernel/permission matrices, identifier-based duplicate-column operations, broader by-example inference, and the remaining packaged VS Code/Cursor interaction/theme checklist are tracked in `docs/feature-parity.md`.
+It does not yet claim Data Wrangler parity. Remote-kernel/permission matrices and the remaining packaged VS Code/Cursor viewing, export, runtime-setup, and theme checklists are tracked in `docs/feature-parity.md`.

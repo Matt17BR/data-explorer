@@ -13,19 +13,19 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive and nested-type tests green          |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD       |
 | Multi-column viewing sorts                          |    Yes |    Yes | Partial | Per-column null order/stability green; editor    |
-| Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD      |
-| Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD   |
+| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Full registry plus packaged group matrix green   |
+| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green  |
 | Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green        |
 | Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green         |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green          |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green          |
-| Missing/duplicate row operations                    |    Yes |    Yes | Partial | Null/NaN and keep-mode edges green; editor TBD   |
-| One-hot and multi-label binarization                |    Yes |    Yes | Partial | Null/blank/collision edges green; editor TBD     |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Partial | Unicode/null cross-engine tests green            |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Partial | Non-finite/constant edges green; editor TBD      |
-| Group and aggregate                                 |    Yes |    Yes | Partial | Ordered nullable aggregates green; editor TBD    |
-| Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD       |
-| String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green      |
+| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Native/code edges plus packaged preview/apply    |
+| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Native/code matrix plus packaged preview/apply   |
+| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Null/NaN, keep modes, generated-code parity      |
+| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity   |
+| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply    |
+| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply        |
+| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply       |
+| Custom engine-native code                           |    Yes |    Yes | Done    | Trust, diagnostics, packaged crash/replay green  |
+| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation      |
 | Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD    |
 | CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green   |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD  |
@@ -47,7 +47,7 @@ This evidence advances viewing rows to **Partial**, not **Done**. Full interacti
 
 Editing engine slice, 2026-07-15:
 
-- `npm test`: 9 TypeScript and 27 Python tests passed. Eleven parameterized operation tests cover the complete 26-operation registry across Pandas and Polars.
+- `npm test`: 9 TypeScript and 27 Python tests passed. Eleven parameterized operation tests cover the complete 27-operation registry across Pandas and Polars.
 - Representative multi-step plans compile to standalone engine-native code and execute to the same semantic output as the runtime adapters.
 - Polars transformation tests replace `DataFrame.to_pandas()` with a hard failure. No operation or generated Polars plan crosses through Pandas.
 
@@ -208,6 +208,16 @@ Packaged file and data-export slice, 2026-07-15:
 - The same expanded matrix passes development-host, installed-VSIX, reload/replay, and cleanup paths; temporary generated inputs and outputs are removed from isolated test directories.
 
 This makes file entry points and CSV/Parquet data export **Done**. Code/notebook export remains a separate **Partial** row until its remaining real-kernel command interactions are green.
+
+Packaged operation-group slice, 2026-07-15:
+
+- The extension-host and installed-VSIX suites open independent Pandas and Polars editing sessions and run representative row/order, column/formula, text, numeric, by-example, custom-code, and group/aggregation steps. Every step must complete draft preview, typed page diff, engine-native generated-code inspection, and explicit apply before the next step begins.
+- The complete 27-operation registry remains covered by parameterized native-runtime and executable generated-code tests for both engines. Operation-edge fixtures add null/NaN, stable sort, duplicate keep modes, categorical collisions, Unicode, non-finite numbers, nullable aggregation, invalid parameters, and structured custom-code failures; Polars fails immediately on any `to_pandas()` path.
+- The packaged by-example draft resolves and persists a deterministic uppercase program before confirmation. The broader automated candidate matrix covers slicing, splitting, concatenation, literals, regex extraction/replacement, casing, datetime parsing/formatting, and simple arithmetic, including ambiguity and failure diagnostics.
+- Both engine sessions force a standalone runtime restart immediately after applying custom code, then fetch the replayed plan before grouping. The final schema and seven-step history are asserted, source CSV bytes remain unchanged, and close waits for zero coordinator sessions and no Python process.
+- This matrix passes the development host plus the exact allowlisted VSIX in isolated VS Code 1.128.0 and Cursor 3.11.19 profiles. The production-bundle browser suite separately exercises the complete operation dialog, validated forms, draft/diff/code layout, by-example warnings, and apply/discard/edit/undo keyboard paths.
+
+This makes the editing catalog, draft/diff, every deterministic operation family, custom code, and by-example rows **Done**. Generated-code editing/export remains a separate **Partial** row until its clipboard/script/originating-notebook command matrix is fully recorded.
 
 ## Explicitly deferred from 1.0
 

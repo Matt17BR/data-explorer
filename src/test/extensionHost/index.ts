@@ -10,7 +10,8 @@ import type {
   DataExplorerResponse,
   FilterModel,
   SessionMetadata,
-  SessionSource
+  SessionSource,
+  TransformStep
 } from "../../shared/protocol";
 
 interface TestApi {
@@ -184,6 +185,7 @@ export async function run(): Promise<void> {
   );
 
   if (testPython) await exercisePackagedFileInputs(testing, workspace, testPython);
+  await exercisePackagedOperationGroups(testing, fixture);
 
   const notebookDirectory = mkdtempSync(path.join(tmpdir(), "data-explorer-notebook-"));
   try {
@@ -545,6 +547,160 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
+  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-operation-groups-"));
+  const sourcePath = path.join(directory, "operations.csv");
+  const original = readFileSync(sourceFixture.fsPath, "utf8");
+  writeFileSync(sourcePath, original);
+
+  try {
+    for (const backend of ["pandas", "polars"] as const) {
+      const opened = await testing.request({
+        kind: "openSession",
+        source: csvSource(vscode.Uri.file(sourcePath)),
+        backend,
+        pageSize: 20,
+        mode: "editing"
+      });
+      assert.equal(opened.kind, "sessionOpened", `${backend} operation-group session must open.`);
+      if (opened.kind !== "sessionOpened") continue;
+
+      let revision = opened.metadata.revision;
+      let stepCount = 0;
+      const steps: TransformStep[] = [
+        {
+          id: `${backend}-sort`,
+          kind: "sortRows",
+          params: { rules: [{ column: "sales", direction: "desc", nulls: "last" }] }
+        },
+        {
+          id: `${backend}-formula`,
+          kind: "formula",
+          params: { leftColumn: "sales", operator: "multiply", value: 2, newColumn: "score" }
+        },
+        {
+          id: `${backend}-text`,
+          kind: "upperText",
+          params: { column: "city", newColumn: "city_upper" }
+        },
+        {
+          id: `${backend}-numeric`,
+          kind: "roundNumber",
+          params: { column: "score", decimals: 0, newColumn: "rounded_score" }
+        },
+        {
+          id: `${backend}-example`,
+          kind: "byExample",
+          params: {
+            sourceColumns: ["city"],
+            newColumn: "city_example",
+            examples: [
+              { inputs: { city: "Milan" }, output: "MILAN" },
+              { inputs: { city: "Rome" }, output: "ROME" }
+            ]
+          }
+        },
+        {
+          id: `${backend}-custom`,
+          kind: "customCode",
+          params: {
+            code:
+              backend === "pandas"
+                ? 'result = df.assign(custom=df["sales"] + 1)'
+                : 'result = df.with_columns((pl.col("sales") + 1).alias("custom"))'
+          }
+        },
+        {
+          id: `${backend}-group`,
+          kind: "groupBy",
+          params: {
+            keys: ["active"],
+            aggregations: [{ column: "sales", operation: "sum", alias: "total_sales" }]
+          }
+        }
+      ];
+
+      for (const step of steps) {
+        const preview = await testing.request({
+          kind: "previewStep",
+          sessionId: opened.metadata.sessionId,
+          revision,
+          step,
+          offset: 0,
+          limit: 20
+        });
+        assert.equal(preview.kind, "stepPreview", `${backend} ${step.kind} must preview.`);
+        if (preview.kind !== "stepPreview") break;
+        assert.equal(preview.metadata.draftStep?.kind, step.kind);
+        assert.match(preview.code, /def clean_data\(df\):/);
+        assert.equal(preview.diff.truncated, false);
+        if (backend === "polars") assert.doesNotMatch(preview.code, /to_pandas|import pandas/);
+        if (step.kind === "byExample") {
+          assert.ok(preview.metadata.draftStep?.params.program, "By-example preview must resolve a program.");
+        }
+
+        revision = preview.revision;
+        const applied = await testing.request({
+          kind: "applyDraft",
+          sessionId: opened.metadata.sessionId,
+          revision,
+          offset: 0,
+          limit: 20
+        });
+        assert.equal(applied.kind, "planUpdated", `${backend} ${step.kind} must apply.`);
+        if (applied.kind !== "planUpdated") break;
+        stepCount += 1;
+        revision = applied.revision;
+        assert.equal(applied.metadata.steps.length, stepCount);
+
+        if (step.kind === "customCode") {
+          const generation = testing.runtimeGeneration();
+          testing.restartRuntime(`${backend} custom-code replay acceptance`);
+          const replayed = await testing.request({
+            kind: "getPage",
+            sessionId: opened.metadata.sessionId,
+            revision,
+            offset: 0,
+            limit: 20,
+            filterModel: applied.metadata.filterModel
+          });
+          assert.equal(replayed.kind, "page", `${backend} custom-code plan must replay after restart.`);
+          assert.equal(testing.runtimeGeneration(), generation + 1);
+          if (replayed.kind === "page") revision = replayed.revision;
+        }
+      }
+
+      assert.equal(stepCount, steps.length, `${backend} must apply every representative operation group.`);
+      const active = testing.activeSession();
+      assert.equal(active?.metadata.steps.length, steps.length);
+      assert.deepEqual(
+        active?.metadata.schema.map((column) => column.name),
+        ["active", "total_sales"]
+      );
+
+      const closed = await testing.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision
+      });
+      assert.equal(closed.kind, "sessionClosed");
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        10_000,
+        `${backend} operation-group session to dispose`
+      );
+    }
+
+    assert.equal(
+      readFileSync(sourcePath, "utf8"),
+      original,
+      "Operation previews and applies must not alter the source."
+    );
+  } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 }
