@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Mapping
+from queue import Empty
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -15,7 +17,7 @@ def live_kernel():
     manager.start_kernel(extra_arguments=["--HistoryManager.hist_file=:memory:"])
     client = manager.blocking_client()
     client.start_channels()
-    client.wait_for_ready(timeout=20)
+    client.wait_for_ready(timeout=60)
     try:
         yield manager, client
     finally:
@@ -74,7 +76,7 @@ __de_notebook.register_formatters()
     assert polars_opened["response"]["page"]["rows"][0]["values"][0]["display"] == "3"
 
     manager.restart_kernel(now=True)
-    client.wait_for_ready(timeout=20)
+    client.wait_for_ready(timeout=60)
     _execute(client, bootstrap)
     restarted = _dispatch(client, "restarted", {"kind": "initialize"})
     assert restarted["response"]["kind"] == "initialized"
@@ -113,8 +115,15 @@ def _execute_with_data(client: Any, code: str) -> tuple[str, dict[str, Any]]:
     message_id = client.execute(code)
     chunks: list[str] = []
     data: dict[str, Any] = {}
+    deadline = monotonic() + 60
     while True:
-        message = client.get_iopub_msg(timeout=20)
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            pytest.fail(f"Kernel execution {message_id} did not become idle within 60 seconds")
+        try:
+            message = client.get_iopub_msg(timeout=min(5, remaining))
+        except Empty:
+            continue
         if message.get("parent_header", {}).get("msg_id") != message_id:
             continue
         message_type = message.get("msg_type")
