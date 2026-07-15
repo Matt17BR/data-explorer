@@ -53,6 +53,36 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             request.get("search"),
             int(request.get("limit", 100)),
         )
+    if kind == "previewStep":
+        return manager.preview_step(
+            request["sessionId"],
+            int(request["revision"]),
+            request["step"],
+            int(request.get("offset", 0)),
+            int(request.get("limit", 200)),
+            request.get("replaceStepId"),
+        )
+    if kind == "applyDraft":
+        return manager.apply_draft(
+            request["sessionId"],
+            int(request["revision"]),
+            int(request.get("offset", 0)),
+            int(request.get("limit", 200)),
+        )
+    if kind == "discardDraft":
+        return manager.discard_draft(
+            request["sessionId"],
+            int(request["revision"]),
+            int(request.get("offset", 0)),
+            int(request.get("limit", 200)),
+        )
+    if kind == "undoStep":
+        return manager.undo_step(
+            request["sessionId"],
+            int(request["revision"]),
+            int(request.get("offset", 0)),
+            int(request.get("limit", 200)),
+        )
     if kind == "closeSession":
         return manager.close_session(request["sessionId"], int(request["revision"]))
     raise ProtocolError(f"Unsupported request kind: {kind}")

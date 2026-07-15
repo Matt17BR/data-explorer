@@ -22,6 +22,7 @@ const metadata: SessionMetadata = {
   shape: { rows: 2, columns: 2 },
   filteredShape: { rows: 2, columns: 2 },
   filterModel: { filters: [], sort: [] },
+  steps: [],
   schema: [
     { id: "c:0", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
     { id: "c:1", name: "sales", position: 1, rawType: "Float64", type: "float", nullable: true }

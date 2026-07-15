@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .engines import DataFrameEngine, EngineError, PandasEngine, PolarsEngine
+from .operations import OperationError, validate_step
 
 
 @dataclass
@@ -17,8 +18,14 @@ class Session:
     backend: str
     engine: DataFrameEngine
     original: Any
+    committed: Any
     filtered: Any
     filter_model: dict[str, Any]
+    plan: list[dict[str, Any]]
+    draft_step: dict[str, Any] | None
+    draft_frame: Any | None
+    draft_base: Any | None
+    replace_step_id: str | None
     stats: dict[str, Any] | None
     source_shape: dict[str, int]
     source_schema: list[dict[str, Any]]
@@ -73,8 +80,14 @@ class SessionManager:
             backend=engine.name,
             engine=engine,
             original=frame,
+            committed=frame,
             filtered=filtered,
             filter_model=filter_model,
+            plan=[],
+            draft_step=None,
+            draft_frame=None,
+            draft_base=None,
+            replace_step_id=None,
             stats=None,
             source_shape=source_shape,
             source_schema=source_schema,
@@ -169,6 +182,88 @@ class SessionManager:
                 "stats": session.stats,
             }
 
+    def preview_step(
+        self,
+        session_id: str,
+        revision: int,
+        step: Mapping[str, Any],
+        offset: int,
+        limit: int,
+        replace_step_id: str | None = None,
+    ) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            self._assert_editable(session)
+            try:
+                normalized = validate_step(step)
+            except OperationError as error:
+                raise EngineError(str(error)) from error
+
+            diff_base = session.committed
+            base = session.committed
+            candidate_plan = [*session.plan, normalized]
+            if replace_step_id is not None:
+                if not session.plan or session.plan[-1]["id"] != replace_step_id:
+                    raise EngineError("Only the latest applied step can be edited.")
+                candidate_plan = [*session.plan[:-1], normalized]
+                base = self._replay(session, session.plan[:-1])
+
+            draft = session.engine.apply_transform(base, normalized)
+            session.draft_step = normalized
+            session.draft_frame = draft
+            session.draft_base = base
+            session.replace_step_id = replace_step_id
+            session.stats = None
+            session.revision += 1
+            filtered = self._filtered(session, session.filter_model)
+            return {
+                "kind": "stepPreview",
+                "revision": session.revision,
+                "metadata": self._metadata(session),
+                "page": session.engine.page(filtered, offset, limit),
+                "diff": self._diff(session, diff_base, draft, offset, limit),
+                "code": session.engine.compile_plan(candidate_plan),
+                "warnings": [],
+            }
+
+    def apply_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            self._assert_editable(session)
+            if session.draft_step is None or session.draft_frame is None:
+                raise EngineError("There is no draft step to apply.")
+            if session.replace_step_id is None:
+                session.plan.append(session.draft_step)
+            else:
+                session.plan[-1] = session.draft_step
+            session.committed = session.draft_frame
+            self._clear_draft(session)
+            return self._finish_plan_change(session, "apply", offset, limit, reset_view=True)
+
+    def discard_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            if session.draft_step is None:
+                raise EngineError("There is no draft step to discard.")
+            self._clear_draft(session)
+            return self._finish_plan_change(session, "discard", offset, limit, reset_view=False)
+
+    def undo_step(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            self._assert_editable(session)
+            if session.draft_step is not None:
+                raise EngineError("Discard the draft step before undoing an applied step.")
+            if not session.plan:
+                raise EngineError("There is no applied step to undo.")
+            session.plan.pop()
+            session.committed = self._replay(session, session.plan)
+            return self._finish_plan_change(session, "undo", offset, limit, reset_view=True)
+
     def close_session(self, session_id: str, revision: int) -> dict[str, Any]:
         self._assert_revision(self._session(session_id), revision)
         with self._sessions_lock:
@@ -179,13 +274,20 @@ class SessionManager:
 
     def _filtered(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
         model = dict(filter_model)
+        if session.draft_frame is not None:
+            if model != session.filter_model:
+                session.filter_model = model
+                session.stats = None
+            return session.engine.apply_filter_model(session.draft_frame, model)
         if model != session.filter_model:
-            session.filtered = session.engine.apply_filter_model(session.original, model)
+            session.filtered = session.engine.apply_filter_model(session.committed, model)
             session.filter_model = model
             session.stats = None
         return session.filtered
 
     def _metadata(self, session: Session) -> dict[str, Any]:
+        display_frame = session.draft_frame if session.draft_frame is not None else session.committed
+        filtered = self._filtered(session, session.filter_model)
         metadata = {
             "protocolVersion": 2,
             "sessionId": session.session_id,
@@ -194,14 +296,99 @@ class SessionManager:
             "mode": session.mode,
             "source": session.source,
             "capabilities": self._capabilities(session),
-            "shape": session.source_shape,
-            "filteredShape": session.engine.shape(session.filtered),
-            "schema": session.source_schema,
+            "shape": session.engine.shape(display_frame),
+            "filteredShape": session.engine.shape(filtered),
+            "schema": session.engine.schema(display_frame),
             "filterModel": session.filter_model,
+            "steps": session.plan,
         }
+        if session.draft_step is not None:
+            metadata["draftStep"] = session.draft_step
+        if session.replace_step_id is not None:
+            metadata["draftReplacesStepId"] = session.replace_step_id
         if session.stats is not None:
             metadata["stats"] = session.stats
         return metadata
+
+    def _finish_plan_change(
+        self,
+        session: Session,
+        action: str,
+        offset: int,
+        limit: int,
+        *,
+        reset_view: bool,
+    ) -> dict[str, Any]:
+        if reset_view:
+            session.filter_model = {"filters": [], "sort": []}
+        session.filtered = session.engine.apply_filter_model(session.committed, session.filter_model)
+        session.stats = None
+        session.revision += 1
+        return {
+            "kind": "planUpdated",
+            "action": action,
+            "revision": session.revision,
+            "metadata": self._metadata(session),
+            "page": session.engine.page(session.filtered, offset, limit),
+            "code": session.engine.compile_plan(session.plan),
+        }
+
+    def _replay(self, session: Session, plan: list[dict[str, Any]]) -> Any:
+        frame = session.original
+        for step in plan:
+            frame = session.engine.apply_transform(frame, step)
+        return frame
+
+    def _clear_draft(self, session: Session) -> None:
+        session.draft_step = None
+        session.draft_frame = None
+        session.draft_base = None
+        session.replace_step_id = None
+
+    def _diff(self, session: Session, before: Any, after: Any, offset: int, limit: int) -> dict[str, Any]:
+        before_shape = session.engine.shape(before)
+        after_shape = session.engine.shape(after)
+        before_schema = session.engine.schema(before)
+        after_schema = session.engine.schema(after)
+        before_names = [column["name"] for column in before_schema]
+        after_names = [column["name"] for column in after_schema]
+        common_names = [name for name in before_names if name in after_names]
+        before_page = session.engine.page(before, offset, limit)
+        after_page = session.engine.page(after, offset, limit)
+        before_positions = {name: index for index, name in enumerate(before_names)}
+        after_positions = {name: index for index, name in enumerate(after_names)}
+        cells: list[dict[str, Any]] = []
+        changed_cells = 0
+        for before_row, after_row in zip(before_page["rows"], after_page["rows"], strict=False):
+            for name in common_names:
+                old = before_row["values"][before_positions[name]]
+                new = after_row["values"][after_positions[name]]
+                if old != new:
+                    changed_cells += 1
+                    if len(cells) < 500:
+                        cells.append(
+                            {
+                                "rowNumber": after_row["rowNumber"],
+                                "column": name,
+                                "before": old,
+                                "after": new,
+                            }
+                        )
+        return {
+            "addedRows": max(0, after_shape["rows"] - before_shape["rows"]),
+            "removedRows": max(0, before_shape["rows"] - after_shape["rows"]),
+            "addedColumns": [name for name in after_names if name not in before_names],
+            "removedColumns": [name for name in before_names if name not in after_names],
+            "changedCells": changed_cells,
+            "cells": cells,
+            "truncated": changed_cells > len(cells)
+            or before_page["totalRows"] > offset + limit
+            or after_page["totalRows"] > offset + limit,
+        }
+
+    def _assert_editable(self, session: Session) -> None:
+        if session.mode != "editing":
+            raise EngineError("This session is in viewing mode. Change it to editing before adding steps.")
 
     def _session(self, session_id: str) -> Session:
         with self._sessions_lock:

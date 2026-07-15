@@ -158,9 +158,9 @@ export class DataExplorerPanel {
         this.sessionRevision = response.metadata.revision;
         this.snapshot = response;
       }
-      if (response.kind === "page") {
+      if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         this.sessionId = response.metadata.sessionId;
-        this.sessionRevision = response.metadata.revision;
+        this.sessionRevision = response.revision;
         if (this.snapshot) {
           this.snapshot = { ...this.snapshot, metadata: response.metadata, page: response.page };
         }

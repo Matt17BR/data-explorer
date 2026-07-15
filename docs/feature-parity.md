@@ -14,8 +14,8 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
 | Multi-column viewing sorts                          |    Yes |    Yes | Partial | Null-order and stability tests                  |
 | Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry validation green; editor search TBD    |
-| Draft preview and data diff                         |    Yes |    Yes | Planned | Row/column/cell diff fixtures                   |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Planned | Reducer, replay, and shortcut tests             |
+| Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime page diff green; identity edges/UI TBD  |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Partial | Runtime replay green; UI/shortcuts TBD          |
 | Generated code preview and editing                  |    Yes |    Yes | Partial | Engine-native execution green; UI editing TBD   |
 | Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
@@ -51,7 +51,15 @@ Editing engine slice, 2026-07-15:
 - Representative multi-step plans compile to standalone engine-native code and execute to the same semantic output as the runtime adapters.
 - Polars transformation tests replace `DataFrame.to_pandas()` with a hard failure. No operation or generated Polars plan crosses through Pandas.
 
-This evidence advances the operation rows to **Partial**. Draft protocol/session state, preview diffs, editor controls, exhaustive typed-edge fixtures, workspace-trust enforcement for custom code, and real-editor acceptance remain mandatory.
+This evidence advances the operation rows to **Partial**. Editor controls, exhaustive typed-edge fixtures, workspace-trust enforcement for custom code, and real-editor acceptance remain mandatory.
+
+Editing session slice, 2026-07-15:
+
+- `npm test`: 9 TypeScript and 34 Python tests passed. Both engines cover preview, typed page diff, apply, latest-step edit, discard, stale-revision rejection, undo replay, immutable source protection, and viewing-mode rejection.
+- Protocol v2 now validates transform steps and carries applied steps, an optional draft, preview diffs, generated code, and plan mutation responses.
+- The extension coordinator maintains distinct public/runtime revisions and replays applied steps, the active draft, and the viewing query after runtime replacement.
+
+This evidence advances draft/history rows to **Partial**. Stable identities through structural operations, UI shortcuts, persisted-plan reload, failure-injected editor recovery, and real-editor acceptance remain mandatory.
 
 ## Explicitly deferred from 1.0
 

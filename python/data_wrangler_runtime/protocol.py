@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .operations import OperationError, validate_step
+
 PROTOCOL_VERSION = 2
 REQUEST_PRIORITIES = {"interactive", "background"}
 REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
@@ -12,6 +14,10 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "getSummary": ("sessionId", "revision", "filterModel"),
     "getDatasetStats": ("sessionId", "revision", "filterModel"),
     "getColumnValues": ("sessionId", "revision", "column", "filterModel", "limit"),
+    "previewStep": ("sessionId", "revision", "step", "offset", "limit"),
+    "applyDraft": ("sessionId", "revision", "offset", "limit"),
+    "discardDraft": ("sessionId", "revision", "offset", "limit"),
+    "undoStep": ("sessionId", "revision", "offset", "limit"),
     "closeSession": ("sessionId", "revision"),
     "cancelRequest": ("targetRequestId",),
 }
@@ -22,6 +28,10 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
     "getSummary": {"kind", "sessionId", "revision", "filterModel", "columns"},
     "getDatasetStats": {"kind", "sessionId", "revision", "filterModel"},
     "getColumnValues": {"kind", "sessionId", "revision", "column", "filterModel", "search", "limit"},
+    "previewStep": {"kind", "sessionId", "revision", "step", "replaceStepId", "offset", "limit"},
+    "applyDraft": {"kind", "sessionId", "revision", "offset", "limit"},
+    "discardDraft": {"kind", "sessionId", "revision", "offset", "limit"},
+    "undoStep": {"kind", "sessionId", "revision", "offset", "limit"},
     "closeSession": {"kind", "sessionId", "revision"},
     "cancelRequest": {"kind", "targetRequestId"},
 }
@@ -66,6 +76,17 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("backend must be pandas or polars.")
         if request.get("mode") not in {None, "viewing", "editing"}:
             raise ProtocolError("mode must be viewing or editing.")
+    if kind == "previewStep":
+        step = _mapping(request["step"], "step")
+        try:
+            request = dict(request)
+            request["step"] = validate_step(step)
+        except OperationError as error:
+            raise ProtocolError(str(error)) from error
+        if "replaceStepId" in request and (
+            not isinstance(request["replaceStepId"], str) or not request["replaceStepId"]
+        ):
+            raise ProtocolError("replaceStepId must be a non-empty string.")
     return dict(request)
 
 

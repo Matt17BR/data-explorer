@@ -19,6 +19,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Light, dark, high-contrast, responsive-width, zoom, and wide-data browser acceptance baselines.
 - Isolated VS Code extension-host acceptance and minimum/current editor CI coverage.
 - A validated 26-operation transformation registry with native Pandas and Polars execution and standalone code generation.
+- Revision-safe draft preview, typed page diffs, apply/discard/latest-step edit/undo, and runtime plan replay.
 
 ### Changed
 

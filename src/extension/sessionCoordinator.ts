@@ -15,7 +15,8 @@ import type { BridgeRequestOptions, DataExplorerBridge } from "./dataBridge";
 interface CoordinatedSession {
   publicId: string;
   runtimeId: string;
-  revision: number;
+  publicRevision: number;
+  runtimeRevision: number;
   openRequest: OpenSessionRequest;
   delegate: DataExplorerBridge;
   tail: Promise<void>;
@@ -47,7 +48,10 @@ export class SessionCoordinator implements vscode.Disposable {
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
     this.activeSessionEmitter.fire(
       session
-        ? { sessionId: session.publicId, metadata: publicMetadata(session.metadata, session.publicId) }
+        ? {
+            sessionId: session.publicId,
+            metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision)
+          }
         : undefined
     );
   }
@@ -55,7 +59,10 @@ export class SessionCoordinator implements vscode.Disposable {
   activeSession(): ActiveSessionSnapshot | undefined {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
     return session
-      ? { sessionId: session.publicId, metadata: publicMetadata(session.metadata, session.publicId) }
+      ? {
+          sessionId: session.publicId,
+          metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision)
+        }
       : undefined;
   }
 
@@ -65,7 +72,7 @@ export class SessionCoordinator implements vscode.Disposable {
       void session.delegate.request({
         kind: "closeSession",
         sessionId: session.runtimeId,
-        revision: session.revision
+        revision: session.runtimeRevision
       });
     }
     this.sessions.clear();
@@ -91,10 +98,10 @@ export class SessionCoordinator implements vscode.Disposable {
     if (!session) {
       return protocolError("unknown_session", `Unknown Data Explorer session: ${request.sessionId}`, true);
     }
-    if (request.revision !== session.revision) {
+    if (request.revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
-        `Ignored stale request revision ${request.revision}; current revision is ${session.revision}.`,
+        `Ignored stale request revision ${request.revision}; current revision is ${session.publicRevision}.`,
         true,
         session.publicId
       );
@@ -120,7 +127,8 @@ export class SessionCoordinator implements vscode.Disposable {
     const session: CoordinatedSession = {
       publicId,
       runtimeId: response.metadata.sessionId,
-      revision: response.metadata.revision,
+      publicRevision: response.metadata.revision,
+      runtimeRevision: response.metadata.revision,
       openRequest: request,
       delegate,
       tail: Promise.resolve(),
@@ -128,7 +136,7 @@ export class SessionCoordinator implements vscode.Disposable {
     };
     this.sessions.set(publicId, session);
     this.setActive(publicId);
-    return publicOpenedResponse(response, publicId);
+    return publicOpenedResponse(response, publicId, session.publicRevision);
   }
 
   private async executeSessionRequest(
@@ -136,31 +144,29 @@ export class SessionCoordinator implements vscode.Disposable {
     publicRequest: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<DataExplorerResponse> {
-    const runtimeRequest = {
-      ...publicRequest,
-      sessionId: session.runtimeId,
-      revision: session.revision
-    } as SessionBoundRequest;
+    let requestRuntimeRevision = session.runtimeRevision;
+    const runtimeRequest = (): SessionBoundRequest =>
+      ({
+        ...publicRequest,
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision
+      }) as SessionBoundRequest;
 
     let response: DataExplorerResponse;
     try {
-      response = await session.delegate.request(runtimeRequest, options);
+      response = await session.delegate.request(runtimeRequest(), options);
     } catch (error) {
       const recovered = await this.replay(session, options);
       if (!recovered) throw error;
-      response = await session.delegate.request(
-        { ...runtimeRequest, sessionId: session.runtimeId, revision: session.revision } as SessionBoundRequest,
-        options
-      );
+      requestRuntimeRevision = session.runtimeRevision;
+      response = await session.delegate.request(runtimeRequest(), options);
     }
 
     if (isUnknownRuntimeSession(response)) {
       const recovered = await this.replay(session, options);
       if (recovered) {
-        response = await session.delegate.request(
-          { ...runtimeRequest, sessionId: session.runtimeId, revision: session.revision } as SessionBoundRequest,
-          options
-        );
+        requestRuntimeRevision = session.runtimeRevision;
+        response = await session.delegate.request(runtimeRequest(), options);
       }
     }
 
@@ -169,29 +175,33 @@ export class SessionCoordinator implements vscode.Disposable {
       if (this.activeSessionId === session.publicId) this.setActive(undefined);
       return { ...response, sessionId: session.publicId };
     }
-    if (response.kind === "page") {
-      if (response.revision < session.revision) {
+    if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
+      if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored a stale grid response.", true, session.publicId);
       }
-      session.revision = response.revision;
+      session.publicRevision += response.revision - requestRuntimeRevision;
+      session.runtimeRevision = response.revision;
       session.metadata = response.metadata;
       this.setActive(session.publicId);
       return {
         ...response,
-        metadata: publicMetadata(response.metadata, session.publicId)
+        revision: session.publicRevision,
+        metadata: publicMetadata(response.metadata, session.publicId, session.publicRevision)
       };
     }
     if (response.kind === "summary" || response.kind === "columnValues") {
-      if (response.revision < session.revision) {
+      if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored a stale profiling response.", true, session.publicId);
       }
+      return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "datasetStats") {
-      if (response.revision < session.revision) {
+      if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored stale dataset statistics.", true, session.publicId);
       }
       session.metadata = { ...session.metadata, stats: response.stats };
       this.setActive(session.publicId);
+      return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "error" && response.sessionId) {
       return { ...response, sessionId: session.publicId };
@@ -201,11 +211,75 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private async replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
     try {
+      const previous = session.metadata;
       const response = await session.delegate.request(session.openRequest, options);
       if (response.kind !== "sessionOpened") return false;
       session.runtimeId = response.metadata.sessionId;
-      session.revision = response.metadata.revision;
+      session.runtimeRevision = response.metadata.revision;
       session.metadata = response.metadata;
+
+      for (const step of previous.steps) {
+        const preview = await session.delegate.request(
+          {
+            kind: "previewStep",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision,
+            step,
+            offset: 0,
+            limit: 1
+          },
+          options
+        );
+        if (preview.kind !== "stepPreview") return false;
+        session.runtimeRevision = preview.revision;
+        session.metadata = preview.metadata;
+        const applied = await session.delegate.request(
+          {
+            kind: "applyDraft",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision,
+            offset: 0,
+            limit: 1
+          },
+          options
+        );
+        if (applied.kind !== "planUpdated") return false;
+        session.runtimeRevision = applied.revision;
+        session.metadata = applied.metadata;
+      }
+
+      if (previous.draftStep) {
+        const preview = await session.delegate.request(
+          {
+            kind: "previewStep",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision,
+            step: previous.draftStep,
+            replaceStepId: previous.draftReplacesStepId,
+            offset: 0,
+            limit: 1
+          },
+          options
+        );
+        if (preview.kind !== "stepPreview") return false;
+        session.runtimeRevision = preview.revision;
+        session.metadata = preview.metadata;
+      }
+
+      const page = await session.delegate.request(
+        {
+          kind: "getPage",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          offset: 0,
+          limit: 1,
+          filterModel: previous.filterModel
+        },
+        options
+      );
+      if (page.kind !== "page") return false;
+      session.runtimeRevision = page.revision;
+      session.metadata = page.metadata;
       this.setActive(session.publicId);
       return true;
     } catch {
@@ -214,12 +288,16 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 }
 
-function publicMetadata(metadata: SessionMetadata, publicId: string): SessionMetadata {
-  return { ...metadata, sessionId: publicId };
+function publicMetadata(metadata: SessionMetadata, publicId: string, publicRevision: number): SessionMetadata {
+  return { ...metadata, sessionId: publicId, revision: publicRevision };
 }
 
-function publicOpenedResponse(response: SessionOpenedResponse, publicId: string): SessionOpenedResponse {
-  return { ...response, metadata: publicMetadata(response.metadata, publicId) };
+function publicOpenedResponse(
+  response: SessionOpenedResponse,
+  publicId: string,
+  publicRevision: number
+): SessionOpenedResponse {
+  return { ...response, metadata: publicMetadata(response.metadata, publicId, publicRevision) };
 }
 
 function isUnknownRuntimeSession(response: DataExplorerResponse): response is ErrorResponse {

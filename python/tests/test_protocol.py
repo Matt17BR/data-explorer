@@ -20,6 +20,49 @@ def test_protocol_v2_decodes_correlated_request() -> None:
     assert request == {"kind": "initialize"}
 
 
+def test_protocol_v2_validates_transformation_steps() -> None:
+    _, _, request = decode_envelope(
+        {
+            "protocolVersion": 2,
+            "requestId": "preview-1",
+            "priority": "interactive",
+            "request": {
+                "kind": "previewStep",
+                "sessionId": "session-1",
+                "revision": 0,
+                "step": {
+                    "id": "rename-1",
+                    "kind": "renameColumn",
+                    "params": {"column": "old", "newName": "new"},
+                },
+                "offset": 0,
+                "limit": 200,
+            },
+        }
+    )
+
+    assert request["step"]["kind"] == "renameColumn"
+
+
+def test_protocol_v2_rejects_malformed_transformation_steps() -> None:
+    with pytest.raises(ProtocolError, match="missing required"):
+        decode_envelope(
+            {
+                "protocolVersion": 2,
+                "requestId": "preview-bad",
+                "priority": "interactive",
+                "request": {
+                    "kind": "previewStep",
+                    "sessionId": "session-1",
+                    "revision": 0,
+                    "step": {"id": "rename-1", "kind": "renameColumn", "params": {"column": "old"}},
+                    "offset": 0,
+                    "limit": 200,
+                },
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "envelope",
     [
