@@ -10,6 +10,7 @@ This repository builds the open-source Data Explorer extension and its bundled P
 - `python/data_wrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
 - `docs/architecture.md` records boundaries and invariants.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
+- `docs/reference.md` is generated from public interface registries; never edit it by hand.
 - `docs/testing.md` defines required checks and manual editor scenarios.
 - `docs/releasing.md` defines packaging and release rules.
 
@@ -46,9 +47,10 @@ For editor-facing changes, also complete the relevant scenarios in `docs/testing
 
 - Protocol, session, runtime, or engine boundary changes: update `docs/architecture.md` and protocol tests.
 - New or changed operation, filter, export, or entry point: update `docs/feature-parity.md` and its acceptance evidence.
+- New or changed command, setting, operation, MIME type, or protocol message: run `npm run generate:reference` and commit `docs/reference.md`.
 - Test commands, fixtures, or release gates: update `docs/testing.md`.
 - Package contents, versioning, CI, publishing, or credentials: update `docs/releasing.md` and `CHANGELOG.md`.
 - User-visible setup or behavior: update `README.md` and `CHANGELOG.md`.
 - New third-party runtime or bundled asset: update `THIRD_PARTY_NOTICES.md` and verify its license.
 
-CI runs `npm run docs:check`; do not bypass it or hand-edit generated reference sections once generation markers are introduced.
+CI runs `npm run reference:check` and `npm run docs:check`; do not bypass them or hand-edit `docs/reference.md`.

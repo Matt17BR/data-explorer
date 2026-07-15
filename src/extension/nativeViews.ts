@@ -286,6 +286,18 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("dataExplorer.openSourceFile", async () => {
+      const snapshot = coordinator.activeSession();
+      const source = snapshot ? sourceUri(snapshot) : undefined;
+      if (!source) {
+        await vscode.window.showInformationMessage("The active Data Explorer session has no reopenable source.");
+        return;
+      }
+      await vscode.commands.executeCommand("vscode.open", source);
+    }),
+    vscode.commands.registerCommand("dataExplorer.openWalkthrough", () =>
+      vscode.commands.executeCommand("workbench.action.openWalkthrough", "Matt17BR.data-explorer#gettingStarted", false)
+    ),
     vscode.commands.registerCommand("dataExplorer.openSettings", () =>
       vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.data-explorer")
     ),
@@ -297,6 +309,17 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
       )
     )
   );
+}
+
+export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefined {
+  const source = snapshot.metadata.source;
+  if (source.path) return vscode.Uri.file(source.path);
+  if (!source.uri) return undefined;
+  try {
+    return vscode.Uri.parse(source.uri, true);
+  } catch {
+    return undefined;
+  }
 }
 
 function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {

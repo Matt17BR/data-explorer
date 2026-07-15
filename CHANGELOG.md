@@ -25,6 +25,8 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Editable-code clipboard/script export and atomic native Pandas/Polars cleaned-data export to CSV or Parquet.
 - Deterministic by-example synthesis with ranked expression programs, ambiguity warnings, native engine execution, and generated code.
 - Complete notebook MIME v2 snapshots, saved MIME v1 normalization, permission-aware kernel formatters, and originating-notebook code insertion.
+- Generated command, setting, operation, protocol, and MIME references with byte-for-byte CI drift detection.
+- Source reopening and Getting Started walkthrough commands.
 
 ### Changed
 

@@ -13,7 +13,12 @@ export async function run(): Promise<void> {
   for (const command of [
     "dataExplorer.openPath",
     "dataExplorer.openFile",
+    "dataExplorer.launchDataViewer",
+    "dataExplorer.openNotebookVariable",
+    "dataExplorer.checkJupyterIntegration",
     "dataExplorer.changeRuntime",
+    "dataExplorer.clearRuntime",
+    "dataExplorer.installRuntimeDependencies",
     "dataExplorer.startOperation",
     "dataExplorer.applyStep",
     "dataExplorer.discardStep",
@@ -23,6 +28,8 @@ export async function run(): Promise<void> {
     "dataExplorer.exportCode",
     "dataExplorer.insertNotebookCode",
     "dataExplorer.exportData",
+    "dataExplorer.openSourceFile",
+    "dataExplorer.openWalkthrough",
     "dataExplorer.openSettings",
     "dataExplorer.reportIssue"
   ]) {
@@ -41,6 +48,11 @@ export async function run(): Promise<void> {
   );
   assert.ok(contributions.configuration?.properties?.["dataExplorer.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["dataExplorer.filterMode"]);
+  assert.ok(
+    extension.packageJSON.contributes.walkthroughs?.some(
+      (walkthrough: { id?: string }) => walkthrough.id === "gettingStarted"
+    )
+  );
 
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   assert.ok(workspace, "The extension-host fixture workspace must be open.");

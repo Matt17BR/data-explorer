@@ -19,6 +19,7 @@ Set `DATA_EXPLORER_PYTHON` when the development interpreter is not `.venv/bin/py
 - Keep a pull request limited to one documented milestone or issue.
 - Add or update tests with every behavior change.
 - Update the documentation listed in the `AGENTS.md` matrix.
+- Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
 - Do not commit generated VSIX files, local virtual environments, editor profiles, notebook execution caches, or user scratch files.
 

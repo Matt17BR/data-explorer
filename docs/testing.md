@@ -7,6 +7,7 @@
 - `npm run test:ts` covers shared models, extension helpers, reducers, and React behavior.
 - `npm run test:python` covers Pandas/Polars engines, transformations, code generation, exports, and runtime dispatch.
 - `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and validates activation, commands, native contributions, and fixture opening.
+- `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content from a package.
 

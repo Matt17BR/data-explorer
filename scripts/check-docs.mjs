@@ -10,6 +10,7 @@ const required = [
   "THIRD_PARTY_NOTICES.md",
   "docs/architecture.md",
   "docs/feature-parity.md",
+  "docs/reference.md",
   "docs/releasing.md",
   "docs/testing.md"
 ];
