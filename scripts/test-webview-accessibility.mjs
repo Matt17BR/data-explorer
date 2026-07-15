@@ -47,6 +47,7 @@ try {
     }
     await page.close();
   }
+  await verifyCleaningKeyboardShortcuts(browser);
   await verifyWideGridPerformance(browser);
 } finally {
   await browser.close();
@@ -123,6 +124,58 @@ async function verifyWideGridPerformance(browser) {
   }
   console.log(
     `Wide-grid performance verified: cached p95 ${cachedP95.toFixed(1)}ms, uncached p95 ${uncachedP95.toFixed(1)}ms.`
+  );
+}
+
+async function verifyCleaningKeyboardShortcuts(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "draft-preview.html")).href, { waitUntil: "load" });
+  const apply = page.getByRole("button", { name: "Apply step" });
+  await apply.waitFor();
+  await apply.focus();
+  await page.keyboard.press("Control+Enter");
+  await waitForRuntimeRequest(page, "applyDraft");
+
+  const discard = page.getByRole("button", { name: "Discard" });
+  await discard.focus();
+  await page.keyboard.press("Escape");
+  await waitForRuntimeRequest(page, "discardDraft");
+
+  await page.evaluate(() => {
+    const payload = globalThis.dataExplorerSessionPayload;
+    const step = payload.metadata.draftStep;
+    const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code }
+      })
+    );
+  });
+  const undo = page.getByRole("button", { name: "Undo" });
+  await undo.waitFor();
+  await undo.focus();
+  await page.keyboard.press("Control+Alt+z");
+  await waitForRuntimeRequest(page, "undoStep");
+
+  const edit = page.getByRole("button", { name: "Edit latest" });
+  await edit.focus();
+  await page.keyboard.press("Control+Shift+e");
+  await page.getByRole("dialog", { name: "Edit cleaning step" }).waitFor();
+  await page.keyboard.press("Escape");
+  if (await page.getByRole("dialog", { name: "Edit cleaning step" }).isVisible()) {
+    throw new Error("Escape did not close the operation dialog.");
+  }
+  await page.close();
+  console.log("Cleaning-plan keyboard shortcuts verified.");
+}
+
+async function waitForRuntimeRequest(page, kind) {
+  await page.waitForFunction(
+    (requestKind) =>
+      globalThis.dataExplorerMessages.some(
+        (message) => message.kind === "runtimeRequest" && message.request?.kind === requestKind
+      ),
+    kind
   );
 }
 

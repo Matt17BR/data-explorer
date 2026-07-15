@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   CellValue,
   ColumnSummary,
@@ -244,6 +244,41 @@ export function App() {
     setOperationOpen(true);
   };
 
+  const handleKeyboardShortcut = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const modifier = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    const editableTarget = isEditableKeyboardTarget(event.target);
+    let handled = false;
+
+    if (event.key === "Escape") {
+      if (operationOpen) {
+        setOperationOpen(false);
+        handled = true;
+      } else if (metadata?.draftStep) {
+        sendPlanAction("discardDraft");
+        handled = true;
+      }
+    } else if (modifier && !event.altKey && !event.shiftKey && event.key === "Enter" && metadata?.draftStep) {
+      sendPlanAction("applyDraft");
+      handled = true;
+    } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
+      if (!metadata?.draftStep && metadata?.steps.length) {
+        sendPlanAction("undoStep");
+        handled = true;
+      }
+    } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
+      if (!metadata?.draftStep && metadata?.steps.length) {
+        editLatestStep();
+        handled = true;
+      }
+    }
+
+    if (handled) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+
   if (error && !metadata) {
     return (
       <main className="app app-error">
@@ -254,7 +289,7 @@ export function App() {
   }
 
   return (
-    <main className="app">
+    <main className="app" onKeyDown={handleKeyboardShortcut}>
       <header className="toolbar">
         <div className="toolbarIdentity">
           <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
@@ -312,10 +347,21 @@ export function App() {
           <div className="cleaningActions">
             {metadata.draftStep ? (
               <>
-                <button type="button" className="secondaryButton" onClick={() => sendPlanAction("discardDraft")}>
+                <button
+                  type="button"
+                  className="secondaryButton"
+                  aria-keyshortcuts="Escape"
+                  title="Discard draft (Escape)"
+                  onClick={() => sendPlanAction("discardDraft")}
+                >
                   Discard
                 </button>
-                <button type="button" onClick={() => sendPlanAction("applyDraft")}>
+                <button
+                  type="button"
+                  aria-keyshortcuts="Control+Enter Meta+Enter"
+                  title="Apply draft (Ctrl/Cmd+Enter)"
+                  onClick={() => sendPlanAction("applyDraft")}
+                >
                   Apply step
                 </button>
               </>
@@ -325,6 +371,8 @@ export function App() {
                   type="button"
                   className="secondaryButton"
                   disabled={metadata.steps.length === 0}
+                  aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                  title="Edit latest step (Ctrl/Cmd+Shift+E)"
                   onClick={editLatestStep}
                 >
                   Edit latest
@@ -333,6 +381,8 @@ export function App() {
                   type="button"
                   className="secondaryButton"
                   disabled={metadata.steps.length === 0}
+                  aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                  title="Undo latest step (Ctrl/Cmd+Alt+Z)"
                   onClick={() => sendPlanAction("undoStep")}
                 >
                   <span className="codicon codicon-discard" aria-hidden="true" /> Undo
@@ -489,6 +539,13 @@ interface EditorActionMessage {
   kind: "editorAction";
   action: "openOperation" | "editLatest" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
+}
+
+function isEditableKeyboardTarget(target: EventTarget): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+  );
 }
 
 function readWebviewConfig(): {

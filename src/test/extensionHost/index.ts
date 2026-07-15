@@ -74,6 +74,7 @@ export async function run(): Promise<void> {
     views?: Record<string, Array<{ id?: string }>>;
     configuration?: { properties?: Record<string, unknown> };
     notebookRenderer?: Array<{ mimeTypes?: string[] }>;
+    keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
   };
   assert.ok(
     contributions.viewsContainers?.activitybar?.some(
@@ -86,6 +87,40 @@ export async function run(): Promise<void> {
   );
   assert.ok(contributions.configuration?.properties?.["dataExplorer.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["dataExplorer.filterMode"]);
+  assert.deepEqual(
+    contributions.keybindings?.map((binding) => ({
+      command: binding.command,
+      key: binding.key,
+      mac: binding.mac,
+      when: binding.when
+    })),
+    [
+      {
+        command: "dataExplorer.applyStep",
+        key: "ctrl+enter",
+        mac: "cmd+enter",
+        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+      },
+      {
+        command: "dataExplorer.discardStep",
+        key: "escape",
+        mac: undefined,
+        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+      },
+      {
+        command: "dataExplorer.editLatestStep",
+        key: "ctrl+shift+e",
+        mac: "cmd+shift+e",
+        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+      },
+      {
+        command: "dataExplorer.undoStep",
+        key: "ctrl+alt+z",
+        mac: "cmd+alt+z",
+        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+      }
+    ]
+  );
   assert.deepEqual(contributions.notebookRenderer?.[0]?.mimeTypes, [
     "application/vnd.data-explorer.viewer.v1+json",
     "application/vnd.data-explorer.viewer.v2+json"

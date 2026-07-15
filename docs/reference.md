@@ -28,6 +28,15 @@
 | `dataExplorer.openSettings`               | Data Explorer: Open Settings                             |
 | `dataExplorer.reportIssue`                | Data Explorer: Report Issue                              |
 
+## Keyboard shortcuts
+
+| Command                       | Windows / Linux | macOS         | Context                                                                   |
+| ----------------------------- | --------------- | ------------- | ------------------------------------------------------------------------- |
+| `dataExplorer.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft`      |
+| `dataExplorer.discardStep`    | `escape`        | `escape`      | `activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft`      |
+| `dataExplorer.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan` |
+| `dataExplorer.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan` |
+
 ## Settings
 
 | Setting                            | Type      | Default                                        | Allowed values                     | Description                                                                                                                                         |

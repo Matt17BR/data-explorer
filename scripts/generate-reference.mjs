@@ -22,6 +22,18 @@ const output = await prettier.format(
       packageJson.contributes.commands.map((command) => [code(command.command), escapeCell(command.title)])
     ),
     "",
+    "## Keyboard shortcuts",
+    "",
+    table(
+      ["Command", "Windows / Linux", "macOS", "Context"],
+      packageJson.contributes.keybindings.map((binding) => [
+        code(binding.command),
+        code(binding.key),
+        code(binding.mac ?? binding.key),
+        code(binding.when)
+      ])
+    ),
+    "",
     "## Settings",
     "",
     table(

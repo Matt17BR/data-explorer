@@ -359,10 +359,13 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   </style>
   <script>
     const sessionPayload = ${JSON.stringify(sessionPayload)};
+    window.dataExplorerSessionPayload = sessionPayload;
     const columnValues = ${JSON.stringify(columnValues)};
     const pages = ${JSON.stringify(suppliedPages)};
+    window.dataExplorerMessages = [];
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
+        window.dataExplorerMessages.push(message);
         if (message.kind === "ready") {
           ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);'}
           ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}

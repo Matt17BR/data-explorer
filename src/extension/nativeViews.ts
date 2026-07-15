@@ -132,6 +132,16 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 }
 
 export function registerNativeViews(context: vscode.ExtensionContext, coordinator: SessionCoordinator): void {
+  const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
+    void vscode.commands.executeCommand("setContext", "dataExplorer.hasDraft", Boolean(snapshot?.metadata.draftStep));
+    void vscode.commands.executeCommand(
+      "setContext",
+      "dataExplorer.canChangePlan",
+      Boolean(snapshot && !snapshot.metadata.draftStep && snapshot.metadata.steps.length > 0)
+    );
+  };
+  updatePlanContexts(coordinator.activeSession());
+  const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
   const providers = {
     "dataExplorer.operations": new DataExplorerTreeProvider("operations", coordinator),
     "dataExplorer.summary": new DataExplorerTreeProvider("summary", coordinator),
@@ -143,6 +153,7 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
   }
   const codePreview = new CodePreviewViewProvider(context, coordinator);
   context.subscriptions.push(
+    contextSubscription,
     vscode.commands.registerCommand("dataExplorer.startOperation", async (kind?: OperationKind) => {
       if (!kind || !operationCatalog.some((operation) => operation.kind === kind)) return;
       if (!DataExplorerPanel.sendEditorAction({ action: "openOperation", operationKind: kind })) {

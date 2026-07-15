@@ -15,7 +15,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Multi-column viewing sorts                          |    Yes |    Yes | Partial | Per-column null order/stability green; editor   |
 | Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD     |
 | Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD  |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Partial | Runtime/UI green; persistence/shortcuts TBD     |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green       |
 | Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green        |
 | Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
@@ -190,6 +190,15 @@ Release-guardrail slice, 2026-07-15:
 - Screenshot capture now resolves the hosted CI interpreter before a local `.venv`, fixing the first full validate run's only failure while keeping local deterministic-environment preference.
 
 These are release guardrails rather than user-visible parity rows. They remain mandatory for every subsequent slice and release tag.
+
+Cleaning-history keyboard slice, 2026-07-15:
+
+- Editing sessions expose state-scoped shortcuts for apply (`Ctrl/Cmd+Enter`), discard (`Escape`), edit latest (`Ctrl/Cmd+Shift+E`), and undo latest (`Ctrl/Cmd+Alt+Z`). VS Code context keys enable them only for an active Data Explorer custom editor with the matching draft/history state.
+- The production webview handles the same keys when focus remains inside its sandbox. It does not steal undo/edit shortcuts from inputs, textareas, selects, or editable code; buttons publish `aria-keyshortcuts` and visible hover titles.
+- React interaction tests cover all four actions and editable-field isolation. Playwright loads the production draft bundle, triggers every shortcut by keyboard, validates the emitted protocol request, opens the latest-step editor, and closes it with Escape while the normal 23-harness axe/pixel/performance matrix remains green.
+- The generated public reference includes the keybinding table. Real extension-host and installed-VSIX acceptance verify the exact VS Code/Cursor keybinding contributions, stateful history replay, and final cleanup.
+
+This makes cleaning-step history/edit/discard/undo **Done**. The wider editing-mode row remains **Partial** until its complete packaged operation interaction checklist is green.
 
 ## Explicitly deferred from 1.0
 

@@ -210,6 +210,31 @@
         "icon": "$(github)"
       }
     ],
+    "keybindings": [
+      {
+        "command": "dataExplorer.applyStep",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+      },
+      {
+        "command": "dataExplorer.discardStep",
+        "key": "escape",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+      },
+      {
+        "command": "dataExplorer.editLatestStep",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+      },
+      {
+        "command": "dataExplorer.undoStep",
+        "key": "ctrl+alt+z",
+        "mac": "cmd+alt+z",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
