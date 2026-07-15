@@ -329,6 +329,73 @@
         }
       }
     },
+    "OperationKind": {
+      "type": "string",
+      "enum": [
+        "sortRows",
+        "filterRows",
+        "dropMissingRows",
+        "dropDuplicates",
+        "selectColumns",
+        "dropColumns",
+        "renameColumn",
+        "cloneColumn",
+        "castColumn",
+        "formula",
+        "textLength",
+        "oneHotEncode",
+        "multiLabelBinarize",
+        "findReplace",
+        "stripText",
+        "splitText",
+        "capitalizeText",
+        "lowerText",
+        "upperText",
+        "minMaxScale",
+        "roundNumber",
+        "floorNumber",
+        "ceilNumber",
+        "formatDatetime",
+        "groupBy",
+        "byExample",
+        "customCode"
+      ]
+    },
+    "TransformStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "params"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/definitions/OperationKind" },
+        "params": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "CellDiff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rowNumber", "column", "before", "after"],
+      "properties": {
+        "rowNumber": { "type": "integer", "minimum": 0 },
+        "column": { "type": "string" },
+        "before": { "oneOf": [{ "$ref": "#/definitions/CellValue" }, { "type": "null" }] },
+        "after": { "oneOf": [{ "$ref": "#/definitions/CellValue" }, { "type": "null" }] }
+      }
+    },
+    "DataDiff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["addedRows", "removedRows", "addedColumns", "removedColumns", "changedCells", "cells", "truncated"],
+      "properties": {
+        "addedRows": { "type": "integer", "minimum": 0 },
+        "removedRows": { "type": "integer", "minimum": 0 },
+        "addedColumns": { "type": "array", "items": { "type": "string" } },
+        "removedColumns": { "type": "array", "items": { "type": "string" } },
+        "changedCells": { "type": "integer", "minimum": 0 },
+        "cells": { "type": "array", "items": { "$ref": "#/definitions/CellDiff" } },
+        "truncated": { "type": "boolean" }
+      }
+    },
     "SessionMetadata": {
       "type": "object",
       "additionalProperties": false,
@@ -343,7 +410,8 @@
         "shape",
         "filteredShape",
         "schema",
-        "filterModel"
+        "filterModel",
+        "steps"
       ],
       "properties": {
         "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
@@ -357,6 +425,10 @@
         "filteredShape": { "$ref": "#/definitions/DataShape" },
         "schema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
+        "steps": { "type": "array", "items": { "$ref": "#/definitions/TransformStep" } },
+        "latestStepInputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
+        "draftStep": { "$ref": "#/definitions/TransformStep" },
+        "draftReplacesStepId": { "type": "string" },
         "stats": { "$ref": "#/definitions/DatasetStats" }
       }
     },
@@ -441,6 +513,68 @@
         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
       }
     },
+    "PreviewStepRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "step", "offset", "limit"],
+      "properties": {
+        "kind": { "const": "previewStep" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "step": { "$ref": "#/definitions/TransformStep" },
+        "replaceStepId": { "type": "string" },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "ApplyDraftRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "offset", "limit"],
+      "properties": {
+        "kind": { "const": "applyDraft" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "DiscardDraftRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "offset", "limit"],
+      "properties": {
+        "kind": { "const": "discardDraft" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "UndoStepRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "offset", "limit"],
+      "properties": {
+        "kind": { "const": "undoStep" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "ExportDataRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "path", "format"],
+      "properties": {
+        "kind": { "const": "exportData" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "path": { "type": "string", "minLength": 1 },
+        "format": { "type": "string", "enum": ["csv", "parquet"] }
+      }
+    },
     "CloseSessionRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -468,6 +602,11 @@
         { "$ref": "#/definitions/SummaryRequest" },
         { "$ref": "#/definitions/DatasetStatsRequest" },
         { "$ref": "#/definitions/ValuesRequest" },
+        { "$ref": "#/definitions/PreviewStepRequest" },
+        { "$ref": "#/definitions/ApplyDraftRequest" },
+        { "$ref": "#/definitions/DiscardDraftRequest" },
+        { "$ref": "#/definitions/UndoStepRequest" },
+        { "$ref": "#/definitions/ExportDataRequest" },
         { "$ref": "#/definitions/CloseSessionRequest" },
         { "$ref": "#/definitions/CancelRequest" }
       ]
@@ -537,6 +676,45 @@
         "hasMore": { "type": "boolean" }
       }
     },
+    "StepPreviewResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "metadata", "page", "diff", "code"],
+      "properties": {
+        "kind": { "const": "stepPreview" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "metadata": { "$ref": "#/definitions/SessionMetadata" },
+        "page": { "$ref": "#/definitions/GridPage" },
+        "diff": { "$ref": "#/definitions/DataDiff" },
+        "code": { "type": "string" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "PlanUpdatedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "action", "revision", "metadata", "page", "code"],
+      "properties": {
+        "kind": { "const": "planUpdated" },
+        "action": { "type": "string", "enum": ["apply", "discard", "undo"] },
+        "revision": { "type": "integer", "minimum": 0 },
+        "metadata": { "$ref": "#/definitions/SessionMetadata" },
+        "page": { "$ref": "#/definitions/GridPage" },
+        "code": { "type": "string" }
+      }
+    },
+    "DataExportedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "path", "format", "shape"],
+      "properties": {
+        "kind": { "const": "dataExported" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "path": { "type": "string" },
+        "format": { "type": "string", "enum": ["csv", "parquet"] },
+        "shape": { "$ref": "#/definitions/DataShape" }
+      }
+    },
     "SessionClosedResponse": {
       "type": "object",
       "additionalProperties": false,
@@ -576,6 +754,9 @@
         { "$ref": "#/definitions/SummaryResponse" },
         { "$ref": "#/definitions/DatasetStatsResponse" },
         { "$ref": "#/definitions/ValuesResponse" },
+        { "$ref": "#/definitions/StepPreviewResponse" },
+        { "$ref": "#/definitions/PlanUpdatedResponse" },
+        { "$ref": "#/definitions/DataExportedResponse" },
         { "$ref": "#/definitions/SessionClosedResponse" },
         { "$ref": "#/definitions/CancelledResponse" },
         { "$ref": "#/definitions/ErrorResponse" }

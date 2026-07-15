@@ -64,6 +64,26 @@ class PolarsEngine(DataFrameEngine):
             return value.collect()
         return value
 
+    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+        import polars as pl
+
+        if isinstance(frame, pl.LazyFrame):
+            if format_name == "csv":
+                frame.sink_csv(path)
+                return
+            if format_name == "parquet":
+                frame.sink_parquet(path)
+                return
+        else:
+            df = self.normalize(frame)
+            if format_name == "csv":
+                df.write_csv(path)
+                return
+            if format_name == "parquet":
+                df.write_parquet(path)
+                return
+        raise EngineError(f"Unsupported Polars export format: {format_name}")
+
     def shape(self, frame: Any) -> dict[str, int]:
         import polars as pl
 
@@ -310,7 +330,7 @@ class PolarsEngine(DataFrameEngine):
         if operator == "notEquals":
             return expr != value
         if operator == "contains":
-            return expr.cast(pl.Utf8).str.contains(str(value), literal=True)
+            return expr.cast(pl.Utf8).str.to_lowercase().str.contains(str(value).lower(), literal=True)
         if operator == "startsWith":
             return expr.cast(pl.Utf8).str.starts_with(str(value))
         if operator == "endsWith":
@@ -340,6 +360,550 @@ class PolarsEngine(DataFrameEngine):
             return int(series.is_nan().sum())
         except Exception:
             return 0
+
+    def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
+        import polars as pl
+
+        df = frame
+        kind = str(step["kind"])
+        params = step["params"]
+        if kind == "sortRows":
+            return self.apply_filter_model(df, {"filters": [], "sort": params["rules"]})
+        if kind == "filterRows":
+            return self.apply_filter_model(df, params["filterModel"])
+        if kind == "dropMissingRows":
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            columns = params.get("columns") or list(schema.names())
+            valid = [_polars_valid_value(pl.col(column), schema[column]) for column in columns]
+            expression = pl.any_horizontal(valid) if params.get("how", "any") == "all" else pl.all_horizontal(valid)
+            return df.filter(expression)
+        if kind == "dropDuplicates":
+            return df.unique(
+                subset=params.get("columns") or None, keep=params.get("keep", "first"), maintain_order=True
+            )
+        if kind == "selectColumns":
+            return df.select(params["columns"])
+        if kind == "dropColumns":
+            return df.drop(params["columns"])
+        if kind == "renameColumn":
+            return df.rename({params["column"]: params["newName"]})
+        if kind == "cloneColumn":
+            return df.with_columns(pl.col(params["column"]).alias(params["newName"]))
+        if kind == "castColumn":
+            dtype = {
+                "string": pl.String,
+                "integer": pl.Int64,
+                "float": pl.Float64,
+                "boolean": pl.Boolean,
+                "date": pl.Date,
+                "datetime": pl.Datetime,
+            }[params["dtype"]]
+            return df.with_columns(pl.col(params["column"]).cast(dtype, strict=False))
+        if kind == "formula":
+            right = pl.col(params["rightColumn"]) if params.get("rightColumn") else pl.lit(params["value"])
+            expression = _polars_formula(pl.col(params["leftColumn"]), right, params["operator"])
+            return df.with_columns(expression.alias(params["newColumn"]))
+        if kind == "textLength":
+            return df.with_columns(pl.col(params["column"]).cast(pl.String).str.len_chars().alias(params["newColumn"]))
+        if kind == "oneHotEncode":
+            eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
+            columns = params["columns"]
+            encoded = eager.select(columns).to_dummies(separator=params.get("prefixSeparator", "_"))
+            base = eager.drop(columns) if params.get("dropOriginal", True) else eager
+            return base.hstack(encoded)
+        if kind == "multiLabelBinarize":
+            eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
+            column = params["column"]
+            delimiter = params["delimiter"]
+            labels = (
+                eager.select(pl.col(column).cast(pl.String).str.split(delimiter).explode().drop_nulls().unique())
+                .get_column(column)
+                .to_list()
+            )
+            expressions = [
+                pl.col(column)
+                .fill_null("")
+                .cast(pl.String)
+                .str.split(delimiter)
+                .list.contains(label)
+                .cast(pl.Int8)
+                .alias(f"{params.get('prefix', f'{column}_')}{label}")
+                for label in sorted(str(label) for label in labels if str(label))
+            ]
+            base = eager.drop(column) if params.get("dropOriginal", False) else eager
+            return base.hstack(eager.select(expressions))
+        if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
+            column = params["column"]
+            target = params.get("newColumn", column)
+            expression = pl.col(column).cast(pl.String)
+            if kind == "findReplace":
+                expression = expression.str.replace_all(
+                    params["find"], params["replacement"], literal=not params.get("regex", False)
+                )
+            elif kind == "stripText":
+                expression = expression.str.strip_chars(params.get("characters"))
+            elif kind == "splitText":
+                expression = expression.str.split(params["delimiter"]).list.get(params["index"], null_on_oob=True)
+            elif kind == "capitalizeText":
+                expression = expression.str.slice(0, 1).str.to_uppercase() + expression.str.slice(1).str.to_lowercase()
+            elif kind == "lowerText":
+                expression = expression.str.to_lowercase()
+            else:
+                expression = expression.str.to_uppercase()
+            return df.with_columns(expression.alias(target))
+        if kind == "minMaxScale":
+            column = params["column"]
+            expression = pl.col(column).cast(pl.Float64, strict=False)
+            scaled = (
+                pl.when(expression.max() == expression.min())
+                .then(pl.lit(0.0))
+                .otherwise((expression - expression.min()) / (expression.max() - expression.min()))
+            )
+            return df.with_columns(scaled.alias(params.get("newColumn", column)))
+        if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
+            column = params["column"]
+            expression = pl.col(column).cast(pl.Float64, strict=False)
+            if kind == "roundNumber":
+                expression = expression.round(params.get("decimals", 0))
+            elif kind == "floorNumber":
+                expression = expression.floor()
+            else:
+                expression = expression.ceil()
+            return df.with_columns(expression.alias(params.get("newColumn", column)))
+        if kind == "formatDatetime":
+            column = params["column"]
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            expression = pl.col(column)
+            if schema[column].base_type() not in {pl.Datetime, pl.Date}:
+                expression = expression.cast(pl.String).str.to_datetime(strict=False)
+            return df.with_columns(expression.dt.strftime(params["format"]).alias(params.get("newColumn", column)))
+        if kind == "groupBy":
+            expressions = [_polars_aggregation(aggregation) for aggregation in params["aggregations"]]
+            return df.group_by(params["keys"], maintain_order=True).agg(expressions)
+        if kind == "byExample":
+            return df.with_columns(_polars_by_example_expression(params["program"]).alias(params["newColumn"]))
+        if kind == "customCode":
+            namespace = {"df": df, "pl": pl}
+            exec(params["code"], namespace, namespace)
+            result = namespace.get("result")
+            if not self.detect(result):
+                raise EngineError("Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.")
+            return result.to_frame() if isinstance(result, pl.Series) else result
+        raise EngineError(f"Polars does not implement transformation: {kind}")
+
+    def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
+        lines = ["import polars as pl", "", "", "def clean_data(df):"]
+        for index, step in enumerate(steps):
+            lines.extend(self._compile_step(step, index))
+        lines.append("    return df")
+        return "\n".join(lines) + "\n"
+
+    def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
+        kind = str(step["kind"])
+        params = step["params"]
+        prefix = "    "
+        if kind == "sortRows":
+            rules = params["rules"]
+            return [
+                f"{prefix}df = df.sort({[rule['column'] for rule in rules]!r},",
+                f"{prefix}    descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
+                f"{prefix}    nulls_last={rules[0].get('nulls', 'last') == 'last'!r})",
+            ]
+        if kind == "filterRows":
+            return _compile_polars_filter(params["filterModel"], index)
+        if kind == "dropMissingRows":
+            columns = params.get("columns")
+            name = f"_columns_{index}"
+            schema = f"_schema_{index}"
+            horizontal = "all_horizontal" if params.get("how", "any") == "any" else "any_horizontal"
+            return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                f"{prefix}{name} = {columns!r} or {schema}.names()",
+                (
+                    f"{prefix}_valid_{index} = [pl.col(column).is_not_null() & "
+                    f"(~pl.col(column).is_nan() if {schema}[column].is_float() else pl.lit(True)) "
+                    f"for column in {name}]"
+                ),
+                f"{prefix}df = df.filter(pl.{horizontal}(_valid_{index}))",
+            ]
+        if kind == "dropDuplicates":
+            return [
+                (
+                    f"{prefix}df = df.unique(subset={params.get('columns') or None!r}, "
+                    f"keep={params.get('keep', 'first')!r}, maintain_order=True)"
+                )
+            ]
+        if kind == "selectColumns":
+            return [f"{prefix}df = df.select({params['columns']!r})"]
+        if kind == "dropColumns":
+            return [f"{prefix}df = df.drop({params['columns']!r})"]
+        if kind == "renameColumn":
+            return [f"{prefix}df = df.rename({{{params['column']!r}: {params['newName']!r}}})"]
+        if kind == "cloneColumn":
+            return [f"{prefix}df = df.with_columns(pl.col({params['column']!r}).alias({params['newName']!r}))"]
+        if kind == "castColumn":
+            dtype = {
+                "string": "pl.String",
+                "integer": "pl.Int64",
+                "float": "pl.Float64",
+                "boolean": "pl.Boolean",
+                "date": "pl.Date",
+                "datetime": "pl.Datetime",
+            }[params["dtype"]]
+            return [f"{prefix}df = df.with_columns(pl.col({params['column']!r}).cast({dtype}, strict=False))"]
+        if kind == "formula":
+            right = (
+                f"pl.col({params['rightColumn']!r})" if params.get("rightColumn") else f"pl.lit({params['value']!r})"
+            )
+            symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%", "power": "**"}[
+                params["operator"]
+            ]
+            return [
+                (
+                    f"{prefix}df = df.with_columns((pl.col({params['leftColumn']!r}) {symbol} {right})"
+                    f".alias({params['newColumn']!r}))"
+                )
+            ]
+        if kind == "textLength":
+            return [
+                (
+                    f"{prefix}df = df.with_columns(pl.col({params['column']!r}).cast(pl.String)"
+                    f".str.len_chars().alias({params['newColumn']!r}))"
+                )
+            ]
+        if kind == "oneHotEncode":
+            columns = params["columns"]
+            eager = f"_eager_{index}"
+            encoded = f"_encoded_{index}"
+            return [
+                f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
+                (
+                    f"{prefix}{encoded} = {eager}.select({columns!r})"
+                    f".to_dummies(separator={params.get('prefixSeparator', '_')!r})"
+                ),
+                (
+                    f"{prefix}df = ({eager}.drop({columns!r}) if {params.get('dropOriginal', True)!r} "
+                    f"else {eager}).hstack({encoded})"
+                ),
+            ]
+        if kind == "multiLabelBinarize":
+            column = params["column"]
+            delimiter = params["delimiter"]
+            eager = f"_eager_{index}"
+            labels = f"_labels_{index}"
+            return [
+                f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
+                f"{prefix}{labels} = {eager}.select(",
+                f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})",
+                f"{prefix}    .explode().drop_nulls().unique()",
+                f"{prefix}).get_column({column!r}).to_list()",
+                f"{prefix}_encoded_{index} = {eager}.select([",
+                f"{prefix}    pl.col({column!r}).fill_null('').cast(pl.String)",
+                f"{prefix}    .str.split({delimiter!r}).list.contains(label).cast(pl.Int8)",
+                f"{prefix}    .alias({params.get('prefix', f'{column}_')!r} + str(label))",
+                f"{prefix}    for label in sorted(str(label) for label in {labels} if str(label))",
+                f"{prefix}])",
+                (
+                    f"{prefix}df = ({eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} "
+                    f"else {eager}).hstack(_encoded_{index})"
+                ),
+            ]
+        if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
+            column = params["column"]
+            target = params.get("newColumn", column)
+            base = f"pl.col({column!r}).cast(pl.String)"
+            if kind == "findReplace":
+                expression = (
+                    f"{base}.str.replace_all({params['find']!r}, {params['replacement']!r}, "
+                    f"literal={not params.get('regex', False)!r})"
+                )
+            elif kind == "stripText":
+                expression = f"{base}.str.strip_chars({params.get('characters')!r})"
+            elif kind == "splitText":
+                expression = (
+                    f"{base}.str.split({params['delimiter']!r}).list.get({params['index']!r}, null_on_oob=True)"
+                )
+            elif kind == "capitalizeText":
+                expression = f"({base}.str.slice(0, 1).str.to_uppercase() + {base}.str.slice(1).str.to_lowercase())"
+            elif kind == "lowerText":
+                expression = f"{base}.str.to_lowercase()"
+            else:
+                expression = f"{base}.str.to_uppercase()"
+            return [f"{prefix}df = df.with_columns({expression}.alias({target!r}))"]
+        if kind == "minMaxScale":
+            column = params["column"]
+            target = params.get("newColumn", column)
+            name = f"_value_{index}"
+            return [
+                f"{prefix}{name} = pl.col({column!r}).cast(pl.Float64, strict=False)",
+                (
+                    f"{prefix}df = df.with_columns(pl.when({name}.max() == {name}.min())"
+                    f".then(pl.lit(0.0)).otherwise(({name} - {name}.min()) / "
+                    f"({name}.max() - {name}.min())).alias({target!r}))"
+                ),
+            ]
+        if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
+            column = params["column"]
+            target = params.get("newColumn", column)
+            method = (
+                f"round({params.get('decimals', 0)!r})"
+                if kind == "roundNumber"
+                else "floor()"
+                if kind == "floorNumber"
+                else "ceil()"
+            )
+            return [
+                (
+                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.Float64, strict=False)"
+                    f".{method}.alias({target!r}))"
+                )
+            ]
+        if kind == "formatDatetime":
+            column = params["column"]
+            target = params.get("newColumn", column)
+            return [
+                (
+                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
+                    f".str.to_datetime(strict=False).dt.strftime({params['format']!r})"
+                    f".alias({target!r}))"
+                )
+            ]
+        if kind == "groupBy":
+            expressions = ", ".join(_compile_polars_aggregation(aggregation) for aggregation in params["aggregations"])
+            return [f"{prefix}df = df.group_by({params['keys']!r}, maintain_order=True).agg([{expressions}])"]
+        if kind == "byExample":
+            expression = _compile_polars_by_example(params["program"])
+            return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
+        if kind == "customCode":
+            function_name = f"_custom_step_{index}"
+            code_lines = str(params["code"]).splitlines()
+            return [
+                f"{prefix}def {function_name}(df):",
+                *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
+                f"{prefix}    return result",
+                f"{prefix}df = {function_name}(df)",
+            ]
+        raise EngineError(f"Polars cannot compile transformation: {kind}")
+
+
+def _polars_by_example_expression(program: Mapping[str, Any]) -> Any:
+    import polars as pl
+
+    kind = program["kind"]
+    if kind == "column":
+        return pl.col(program["column"])
+    if kind == "literal":
+        return pl.lit(program.get("value"))
+    if kind == "slice":
+        start = program["start"]
+        stop = program.get("stop")
+        length = None if stop is None else stop - start
+        return _polars_by_example_expression(program["input"]).cast(pl.String).str.slice(start, length)
+    if kind == "split":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.split(program["delimiter"])
+            .list.get(program["index"], null_on_oob=True)
+        )
+    if kind == "concat":
+        return pl.concat_str([_polars_by_example_expression(part) for part in program["parts"]], separator="")
+    if kind == "regexExtract":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.extract(program["pattern"], group_index=program["group"])
+        )
+    if kind == "regexReplace":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.replace_all(program["pattern"], program["replacement"])
+        )
+    if kind == "case":
+        value = _polars_by_example_expression(program["input"]).cast(pl.String)
+        if program["style"] == "lower":
+            return value.str.to_lowercase()
+        if program["style"] == "upper":
+            return value.str.to_uppercase()
+        return value.str.slice(0, 1).str.to_uppercase() + value.str.slice(1).str.to_lowercase()
+    if kind == "datetimeFormat":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.strptime(pl.Datetime, format=program["inputFormat"], strict=False)
+            .dt.strftime(program["outputFormat"])
+        )
+    if kind == "arithmetic":
+        return _polars_formula(
+            _polars_by_example_expression(program["left"]),
+            _polars_by_example_expression(program["right"]),
+            program["operator"],
+        )
+    raise EngineError(f"Unsupported Polars by-example expression: {kind}")
+
+
+def _compile_polars_by_example(program: Mapping[str, Any]) -> str:
+    kind = program["kind"]
+    if kind == "column":
+        return f"pl.col({program['column']!r})"
+    if kind == "literal":
+        return f"pl.lit({program.get('value')!r})"
+    if kind == "slice":
+        start = program["start"]
+        stop = program.get("stop")
+        length = None if stop is None else stop - start
+        return f"{_compile_polars_by_example(program['input'])}.cast(pl.String).str.slice({start!r}, {length!r})"
+    if kind == "split":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String).str.split({program['delimiter']!r})"
+            f".list.get({program['index']!r}, null_on_oob=True)"
+        )
+    if kind == "concat":
+        parts = ", ".join(_compile_polars_by_example(part) for part in program["parts"])
+        return f"pl.concat_str([{parts}], separator='')"
+    if kind == "regexExtract":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f".str.extract({program['pattern']!r}, group_index={program['group']!r})"
+        )
+    if kind == "regexReplace":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f".str.replace_all({program['pattern']!r}, {program['replacement']!r})"
+        )
+    if kind == "case":
+        value = f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+        if program["style"] == "lower":
+            return f"{value}.str.to_lowercase()"
+        if program["style"] == "upper":
+            return f"{value}.str.to_uppercase()"
+        return f"({value}.str.slice(0, 1).str.to_uppercase() + {value}.str.slice(1).str.to_lowercase())"
+    if kind == "datetimeFormat":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f".str.strptime(pl.Datetime, format={program['inputFormat']!r}, strict=False)"
+            f".dt.strftime({program['outputFormat']!r})"
+        )
+    if kind == "arithmetic":
+        symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[program["operator"]]
+        return (
+            f"({_compile_polars_by_example(program['left'])} {symbol} {_compile_polars_by_example(program['right'])})"
+        )
+    raise EngineError(f"Unsupported Polars by-example expression: {kind}")
+
+
+def _polars_valid_value(expression: Any, dtype: Any) -> Any:
+
+    valid = expression.is_not_null()
+    return valid & ~expression.is_nan() if dtype.is_float() else valid
+
+
+def _polars_formula(left: Any, right: Any, operator: str) -> Any:
+    if operator == "add":
+        return left + right
+    if operator == "subtract":
+        return left - right
+    if operator == "multiply":
+        return left * right
+    if operator == "divide":
+        return left / right
+    if operator == "modulo":
+        return left % right
+    if operator == "power":
+        return left**right
+    raise EngineError(f"Unsupported formula operator: {operator}")
+
+
+def _polars_aggregation(aggregation: Mapping[str, Any]) -> Any:
+    import polars as pl
+
+    expression = pl.col(aggregation["column"])
+    operation = aggregation["operation"]
+    if operation == "nUnique":
+        result = expression.n_unique()
+    elif operation == "count":
+        result = expression.count()
+    else:
+        result = getattr(expression, operation)()
+    return result.alias(aggregation["alias"])
+
+
+def _compile_polars_aggregation(aggregation: Mapping[str, Any]) -> str:
+    operation = aggregation["operation"]
+    method = "n_unique" if operation == "nUnique" else operation
+    return f"pl.col({aggregation['column']!r}).{method}().alias({aggregation['alias']!r})"
+
+
+def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
+    column_masks: list[str] = []
+    for column_filter in model.get("filters", []):
+        column = column_filter["column"]
+        expression = f"pl.col({column!r})"
+        conditions: list[str] = []
+        value_filter = column_filter.get("valueFilter")
+        if value_filter and (
+            value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
+        ):
+            parts = []
+            if value_filter.get("selectedValues"):
+                selected = [str(value) for value in value_filter["selectedValues"]]
+                parts.append(f"{expression}.cast(pl.String).is_in({selected!r})")
+            if value_filter.get("includeNulls"):
+                parts.append(f"{expression}.is_null()")
+            if value_filter.get("includeNaN") and column_filter.get("type") == "float":
+                parts.append(f"{expression}.is_nan()")
+            conditions.append("(" + " | ".join(parts) + ")")
+        for predicate in column_filter.get("predicates", []):
+            conditions.append(_polars_predicate_expression(expression, predicate, column_filter.get("type")))
+        if conditions:
+            operator = " | " if column_filter.get("logic") == "or" else " & "
+            column_masks.append("(" + operator.join(conditions) + ")")
+
+    lines: list[str] = []
+    if column_masks:
+        operator = " | " if model.get("logic") == "or" else " & "
+        lines.append(f"    _filter_expression_{index} = " + operator.join(column_masks))
+        lines.append(f"    df = df.filter(_filter_expression_{index})")
+    rules = model.get("sort", [])
+    if rules:
+        lines.extend(
+            [
+                f"    df = df.sort({[rule['column'] for rule in rules]!r},",
+                f"        descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
+                f"        nulls_last={rules[0].get('nulls', 'last') == 'last'!r})",
+            ]
+        )
+    return lines
+
+
+def _polars_predicate_expression(expression: str, predicate: Mapping[str, Any], column_type: str | None) -> str:
+    operator = predicate.get("operator")
+    value = predicate.get("value")
+    if operator == "equals":
+        return f"({expression} == pl.lit({value!r}))"
+    if operator == "notEquals":
+        return f"({expression} != pl.lit({value!r}))"
+    if operator == "contains":
+        return f"{expression}.cast(pl.String).str.to_lowercase().str.contains({str(value).lower()!r}, literal=True)"
+    if operator == "startsWith":
+        return f"{expression}.cast(pl.String).str.starts_with({str(value)!r})"
+    if operator == "endsWith":
+        return f"{expression}.cast(pl.String).str.ends_with({str(value)!r})"
+    if operator in {"gt", "gte", "lt", "lte"}:
+        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[str(operator)]
+        return f"({expression} {symbol} pl.lit({value!r}))"
+    if operator == "between":
+        return f"(({expression} >= pl.lit({value!r})) & ({expression} <= pl.lit({predicate.get('secondValue')!r})))"
+    if operator == "isNull":
+        return f"{expression}.is_null()"
+    if operator == "isNotNull":
+        return f"{expression}.is_not_null()"
+    if operator == "isNaN":
+        return f"{expression}.is_nan()" if column_type == "float" else "pl.lit(False)"
+    if operator == "isNotNaN":
+        return f"{expression}.is_not_nan()" if column_type == "float" else "pl.lit(True)"
+    return f"{expression}.is_not_null()"
 
 
 def _maybe_float(value: Any) -> float | None:

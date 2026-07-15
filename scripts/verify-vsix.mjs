@@ -25,7 +25,7 @@ const allowed = [
   /^extension\/dist\/(extension|shared)\/$/u,
   /^extension\/dist\/(extension|shared)\/.+\.js$/u,
   /^extension\/media\/$/u,
-  /^extension\/media\/(activity-icon\.svg|codicon\.ttf|icon(-128)?\.png|icon\.svg|notebookRenderer\.js|webview\.(css|js))$/u,
+  /^extension\/media\/(activity-icon\.svg|codicon\.ttf|icon(-128)?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|webview\.(css|js))$/u,
   /^extension\/python\/$/u,
   /^extension\/python\/data_wrangler_runtime\/$/u,
   /^extension\/python\/data_wrangler_runtime\/[^/]+\.py$/u,

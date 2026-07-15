@@ -80,6 +80,14 @@
     "onCommand:dataExplorer.changeRuntime",
     "onCommand:dataExplorer.clearRuntime",
     "onCommand:dataExplorer.installRuntimeDependencies",
+    "onCommand:dataExplorer.startOperation",
+    "onCommand:dataExplorer.applyStep",
+    "onCommand:dataExplorer.discardStep",
+    "onCommand:dataExplorer.editLatestStep",
+    "onCommand:dataExplorer.undoStep",
+    "onCommand:dataExplorer.copyCode",
+    "onCommand:dataExplorer.exportCode",
+    "onCommand:dataExplorer.exportData",
     "onCommand:dataExplorer.openSettings",
     "onCommand:dataExplorer.reportIssue",
     "onCustomEditor:dataExplorer.viewer",
@@ -123,6 +131,45 @@
       {
         "command": "dataExplorer.installRuntimeDependencies",
         "title": "Data Explorer: Install Runtime Dependencies"
+      },
+      {
+        "command": "dataExplorer.startOperation",
+        "title": "Data Explorer: Add Cleaning Step"
+      },
+      {
+        "command": "dataExplorer.applyStep",
+        "title": "Data Explorer: Apply Draft Step",
+        "icon": "$(check)"
+      },
+      {
+        "command": "dataExplorer.discardStep",
+        "title": "Data Explorer: Discard Draft Step",
+        "icon": "$(close)"
+      },
+      {
+        "command": "dataExplorer.editLatestStep",
+        "title": "Data Explorer: Edit Latest Step",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "dataExplorer.undoStep",
+        "title": "Data Explorer: Undo Latest Step",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "dataExplorer.copyCode",
+        "title": "Data Explorer: Copy Generated Code",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "dataExplorer.exportCode",
+        "title": "Data Explorer: Export Python Script",
+        "icon": "$(save-as)"
+      },
+      {
+        "command": "dataExplorer.exportData",
+        "title": "Data Explorer: Export Cleaned Data",
+        "icon": "$(export)"
       },
       {
         "command": "dataExplorer.openSettings",
@@ -254,6 +301,16 @@
         }
       ],
       "view/title": [
+        {
+          "command": "dataExplorer.copyCode",
+          "when": "view == dataExplorer.codePreview",
+          "group": "navigation@10"
+        },
+        {
+          "command": "dataExplorer.exportCode",
+          "when": "view == dataExplorer.codePreview",
+          "group": "navigation@11"
+        },
         {
           "command": "dataExplorer.openSettings",
           "when": "viewContainer == dataExplorer",
@@ -387,6 +444,12 @@
     }
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.6",
+    "@lezer/highlight": "^1.2.3",
     "@vscode/codicons": "^0.0.45",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

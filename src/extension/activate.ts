@@ -9,7 +9,7 @@ import { registerNativeViews } from "./nativeViews";
 
 export function activate(context: vscode.ExtensionContext): void {
   const bridge = new PythonBridge(context);
-  const coordinator = new SessionCoordinator();
+  const coordinator = new SessionCoordinator(context.workspaceState);
   const coordinatedBridge = coordinator.createBridge(bridge);
   context.subscriptions.push(coordinator, bridge);
 

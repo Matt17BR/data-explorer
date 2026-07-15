@@ -1,6 +1,6 @@
 # Data Explorer
 
-Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease has a fast Polars/Pandas viewing foundation; the 1.0 plan adds non-destructive cleaning, generated engine-native code, history, diffs, notebook insertion, and exports.
+Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, and explicit exports. Notebook insertion remains 1.0 work in progress.
 
 It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
 
@@ -9,6 +9,12 @@ It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it i
 These screenshots are generated from the real built webview/notebook renderer using `npm run capture:screenshots`. The capture script loads `fixtures/sample.csv` through the Polars runtime and executes `fixtures/example.ipynb` with `nbclient` to capture the current notebook MIME renderer output.
 
 ![Data Explorer grid view](docs/images/grid-view.png)
+
+![Searchable cleaning operation catalog](docs/images/acceptance/operation-dialog-dark-1280.png)
+
+![Draft data and generated-code preview](docs/images/acceptance/draft-preview-dark-1280.png)
+
+![By-example synthesis with preview warning](docs/images/acceptance/by-example-preview-dark-1280.png)
 
 ![Excel-like filter panel](docs/images/filter-panel.png)
 
@@ -24,6 +30,10 @@ These screenshots are generated from the real built webview/notebook renderer us
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
 - Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.
+- A searchable 27-operation catalog with native Pandas/Polars execution for row, column, text, categorical, numeric, datetime, grouping, by-example, and custom-code transforms.
+- Draft-first editing with typed data diffs, explicit apply/discard, latest-step editing, undo replay, and editable CodeMirror Python preview.
+- Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
+- Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
 - Lightweight notebook output renderer for `data_wrangler_runtime.notebook.show(...)`.
 
@@ -35,6 +45,8 @@ These screenshots are generated from the real built webview/notebook renderer us
 2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
 3. Choose **Data Explorer: Open Current File**.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
+5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Applied steps can be edited from the latest step or undone. The plan, an optional draft, and viewing query are restored when the same source is reopened in the workspace.
+6. Run **Data Explorer: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `dataExplorer.*` settings.
 
@@ -73,6 +85,7 @@ Polars dataframes stay Polars in the runtime. The Polars backend uses native ope
 - filters with Polars expressions
 - sorting with `DataFrame.sort`
 - summaries with Polars null counts, distinct counts, value counts, and numeric aggregates
+- the complete transformation catalog and generated Polars code
 
 The test suite asserts that Polars file sessions do not call `to_pandas()`.
 
@@ -122,12 +135,13 @@ npm run package
 
 ## Current Scope
 
-Data Explorer currently prioritizes a release-grade visualization and exploration base:
+Data Explorer currently prioritizes the release-grade viewing and editing core:
 
 - grid viewing
 - file-backed sessions
 - live notebook variable and notebook output entry points
 - filters, sorting, schema, summaries, and Quick Insights
 - native session-aware VS Code views and an original Activity Bar/gallery identity
+- draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It intentionally does not yet implement Data Wrangler-style cleaning step history, transform code generation, or by-example/FlashFill operations.
+It does not yet claim Data Wrangler parity. Notebook code insertion, MIME v2, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.

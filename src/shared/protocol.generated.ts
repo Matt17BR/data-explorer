@@ -13,6 +13,11 @@ export type DataExplorerRequest =
   | SummaryRequest
   | DatasetStatsRequest
   | ValuesRequest
+  | PreviewStepRequest
+  | ApplyDraftRequest
+  | DiscardDraftRequest
+  | UndoStepRequest
+  | ExportDataRequest
   | CloseSessionRequest
   | CancelRequest;
 export type DataBackend = "polars" | "pandas";
@@ -38,6 +43,34 @@ export type ColumnType =
   | "list"
   | "struct"
   | "unknown";
+export type OperationKind =
+  | "sortRows"
+  | "filterRows"
+  | "dropMissingRows"
+  | "dropDuplicates"
+  | "selectColumns"
+  | "dropColumns"
+  | "renameColumn"
+  | "cloneColumn"
+  | "castColumn"
+  | "formula"
+  | "textLength"
+  | "oneHotEncode"
+  | "multiLabelBinarize"
+  | "findReplace"
+  | "stripText"
+  | "splitText"
+  | "capitalizeText"
+  | "lowerText"
+  | "upperText"
+  | "minMaxScale"
+  | "roundNumber"
+  | "floorNumber"
+  | "ceilNumber"
+  | "formatDatetime"
+  | "groupBy"
+  | "byExample"
+  | "customCode";
 export type DataExplorerResponse =
   | InitializedResponse
   | SessionOpenedResponse
@@ -45,6 +78,9 @@ export type DataExplorerResponse =
   | SummaryResponse
   | DatasetStatsResponse
   | ValuesResponse
+  | StepPreviewResponse
+  | PlanUpdatedResponse
+  | DataExportedResponse
   | SessionClosedResponse
   | CancelledResponse
   | ErrorResponse;
@@ -188,6 +224,50 @@ export interface ValuesRequest {
   search?: string;
   limit: number;
 }
+export interface PreviewStepRequest {
+  kind: "previewStep";
+  sessionId: string;
+  revision: number;
+  step: TransformStep;
+  replaceStepId?: string;
+  offset: number;
+  limit: number;
+}
+export interface TransformStep {
+  id: string;
+  kind: OperationKind;
+  params: {
+    [k: string]: unknown;
+  };
+}
+export interface ApplyDraftRequest {
+  kind: "applyDraft";
+  sessionId: string;
+  revision: number;
+  offset: number;
+  limit: number;
+}
+export interface DiscardDraftRequest {
+  kind: "discardDraft";
+  sessionId: string;
+  revision: number;
+  offset: number;
+  limit: number;
+}
+export interface UndoStepRequest {
+  kind: "undoStep";
+  sessionId: string;
+  revision: number;
+  offset: number;
+  limit: number;
+}
+export interface ExportDataRequest {
+  kind: "exportData";
+  sessionId: string;
+  revision: number;
+  path: string;
+  format: "csv" | "parquet";
+}
 export interface CloseSessionRequest {
   kind: "closeSession";
   sessionId: string;
@@ -234,6 +314,10 @@ export interface SessionMetadata {
   filteredShape: DataShape;
   schema: ColumnSchema[];
   filterModel: FilterModel;
+  steps: TransformStep[];
+  latestStepInputSchema?: ColumnSchema[];
+  draftStep?: TransformStep;
+  draftReplacesStepId?: string;
   stats?: DatasetStats;
 }
 export interface DataShape {
@@ -327,6 +411,45 @@ export interface ValuesResponse {
   column: string;
   values: ValueCount[];
   hasMore: boolean;
+}
+export interface StepPreviewResponse {
+  kind: "stepPreview";
+  revision: number;
+  metadata: SessionMetadata;
+  page: GridPage;
+  diff: DataDiff;
+  code: string;
+  warnings?: string[];
+}
+export interface DataDiff {
+  addedRows: number;
+  removedRows: number;
+  addedColumns: string[];
+  removedColumns: string[];
+  changedCells: number;
+  cells: CellDiff[];
+  truncated: boolean;
+}
+export interface CellDiff {
+  rowNumber: number;
+  column: string;
+  before: CellValue | null;
+  after: CellValue | null;
+}
+export interface PlanUpdatedResponse {
+  kind: "planUpdated";
+  action: "apply" | "discard" | "undo";
+  revision: number;
+  metadata: SessionMetadata;
+  page: GridPage;
+  code: string;
+}
+export interface DataExportedResponse {
+  kind: "dataExported";
+  revision: number;
+  path: string;
+  format: "csv" | "parquet";
+  shape: DataShape;
 }
 export interface SessionClosedResponse {
   kind: "sessionClosed";

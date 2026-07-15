@@ -3,28 +3,40 @@ import * as vscode from "vscode";
 import type {
   DataExplorerRequest,
   DataExplorerResponse,
+  DataExportedResponse,
   ErrorResponse,
   OpenSessionRequest,
+  PageResponse,
   SessionMetadata,
   SessionOpenedResponse,
   SessionBoundRequest
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
 import type { BridgeRequestOptions, DataExplorerBridge } from "./dataBridge";
+import {
+  decodePersistedSession,
+  persistedStateFromMetadata,
+  persistenceKey,
+  SESSION_STORAGE_KEY,
+  type PersistedSessionState
+} from "./sessionPersistence";
 
 interface CoordinatedSession {
   publicId: string;
   runtimeId: string;
-  revision: number;
+  publicRevision: number;
+  runtimeRevision: number;
   openRequest: OpenSessionRequest;
   delegate: DataExplorerBridge;
   tail: Promise<void>;
   metadata: SessionMetadata;
+  code: string;
 }
 
 export interface ActiveSessionSnapshot {
   sessionId: string;
   metadata: SessionMetadata;
+  code: string;
 }
 
 export class SessionCoordinator implements vscode.Disposable {
@@ -32,6 +44,9 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
   private disposed = false;
+  private persistenceTail: Promise<void> = Promise.resolve();
+
+  constructor(private readonly workspaceState?: vscode.Memento) {}
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
@@ -47,7 +62,11 @@ export class SessionCoordinator implements vscode.Disposable {
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
     this.activeSessionEmitter.fire(
       session
-        ? { sessionId: session.publicId, metadata: publicMetadata(session.metadata, session.publicId) }
+        ? {
+            sessionId: session.publicId,
+            metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
+            code: session.code
+          }
         : undefined
     );
   }
@@ -55,8 +74,27 @@ export class SessionCoordinator implements vscode.Disposable {
   activeSession(): ActiveSessionSnapshot | undefined {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
     return session
-      ? { sessionId: session.publicId, metadata: publicMetadata(session.metadata, session.publicId) }
+      ? {
+          sessionId: session.publicId,
+          metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
+          code: session.code
+        }
       : undefined;
+  }
+
+  async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
+    const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+    if (!session) throw new Error("Open a dataframe in Data Explorer before exporting cleaned data.");
+    const response = await this.request(session.delegate, {
+      kind: "exportData",
+      sessionId: session.publicId,
+      revision: session.publicRevision,
+      path,
+      format
+    });
+    if (response.kind === "error") throw new Error(response.message);
+    if (response.kind !== "dataExported") throw new Error("The runtime returned an unexpected export response.");
+    return response;
   }
 
   dispose(): void {
@@ -65,7 +103,7 @@ export class SessionCoordinator implements vscode.Disposable {
       void session.delegate.request({
         kind: "closeSession",
         sessionId: session.runtimeId,
-        revision: session.revision
+        revision: session.runtimeRevision
       });
     }
     this.sessions.clear();
@@ -91,10 +129,10 @@ export class SessionCoordinator implements vscode.Disposable {
     if (!session) {
       return protocolError("unknown_session", `Unknown Data Explorer session: ${request.sessionId}`, true);
     }
-    if (request.revision !== session.revision) {
+    if (request.revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
-        `Ignored stale request revision ${request.revision}; current revision is ${session.revision}.`,
+        `Ignored stale request revision ${request.revision}; current revision is ${session.publicRevision}.`,
         true,
         session.publicId
       );
@@ -120,15 +158,60 @@ export class SessionCoordinator implements vscode.Disposable {
     const session: CoordinatedSession = {
       publicId,
       runtimeId: response.metadata.sessionId,
-      revision: response.metadata.revision,
+      publicRevision: response.metadata.revision,
+      runtimeRevision: response.metadata.revision,
       openRequest: request,
       delegate,
       tail: Promise.resolve(),
-      metadata: response.metadata
+      metadata: response.metadata,
+      code: ""
     };
+    let opened = response;
+    const persisted = this.loadPersistedSession(request);
+    if (persisted) {
+      try {
+        const page = await this.restoreRuntimeState(session, persisted, request.pageSize, options);
+        const summary = await delegate.request(
+          {
+            kind: "getSummary",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision,
+            filterModel: persisted.filterModel
+          },
+          options
+        );
+        if (summary.kind !== "summary") throw new Error("Could not restore persisted summaries.");
+        session.publicRevision = session.runtimeRevision;
+        opened = {
+          kind: "sessionOpened",
+          metadata: session.metadata,
+          page: page.page,
+          summaries: summary.summaries
+        };
+      } catch {
+        await delegate
+          .request({
+            kind: "closeSession",
+            sessionId: session.runtimeId,
+            revision: session.runtimeRevision
+          })
+          .catch(() => undefined);
+        const clean = await delegate.request(request, options);
+        if (clean.kind !== "sessionOpened") return clean;
+        session.runtimeId = clean.metadata.sessionId;
+        session.runtimeRevision = clean.metadata.revision;
+        session.publicRevision = clean.metadata.revision;
+        session.metadata = clean.metadata;
+        session.code = "";
+        opened = clean;
+        void vscode.window.showWarningMessage(
+          `Data Explorer could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
+        );
+      }
+    }
     this.sessions.set(publicId, session);
     this.setActive(publicId);
-    return publicOpenedResponse(response, publicId);
+    return publicOpenedResponse(opened, publicId, session.publicRevision);
   }
 
   private async executeSessionRequest(
@@ -136,31 +219,29 @@ export class SessionCoordinator implements vscode.Disposable {
     publicRequest: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<DataExplorerResponse> {
-    const runtimeRequest = {
-      ...publicRequest,
-      sessionId: session.runtimeId,
-      revision: session.revision
-    } as SessionBoundRequest;
+    let requestRuntimeRevision = session.runtimeRevision;
+    const runtimeRequest = (): SessionBoundRequest =>
+      ({
+        ...publicRequest,
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision
+      }) as SessionBoundRequest;
 
     let response: DataExplorerResponse;
     try {
-      response = await session.delegate.request(runtimeRequest, options);
+      response = await session.delegate.request(runtimeRequest(), options);
     } catch (error) {
       const recovered = await this.replay(session, options);
       if (!recovered) throw error;
-      response = await session.delegate.request(
-        { ...runtimeRequest, sessionId: session.runtimeId, revision: session.revision } as SessionBoundRequest,
-        options
-      );
+      requestRuntimeRevision = session.runtimeRevision;
+      response = await session.delegate.request(runtimeRequest(), options);
     }
 
     if (isUnknownRuntimeSession(response)) {
       const recovered = await this.replay(session, options);
       if (recovered) {
-        response = await session.delegate.request(
-          { ...runtimeRequest, sessionId: session.runtimeId, revision: session.revision } as SessionBoundRequest,
-          options
-        );
+        requestRuntimeRevision = session.runtimeRevision;
+        response = await session.delegate.request(runtimeRequest(), options);
       }
     }
 
@@ -169,29 +250,41 @@ export class SessionCoordinator implements vscode.Disposable {
       if (this.activeSessionId === session.publicId) this.setActive(undefined);
       return { ...response, sessionId: session.publicId };
     }
-    if (response.kind === "page") {
-      if (response.revision < session.revision) {
+    if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
+      if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored a stale grid response.", true, session.publicId);
       }
-      session.revision = response.revision;
+      session.publicRevision += response.revision - requestRuntimeRevision;
+      session.runtimeRevision = response.revision;
       session.metadata = response.metadata;
+      if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
+      await this.persistSession(session);
       this.setActive(session.publicId);
       return {
         ...response,
-        metadata: publicMetadata(response.metadata, session.publicId)
+        revision: session.publicRevision,
+        metadata: publicMetadata(response.metadata, session.publicId, session.publicRevision)
       };
     }
     if (response.kind === "summary" || response.kind === "columnValues") {
-      if (response.revision < session.revision) {
+      if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored a stale profiling response.", true, session.publicId);
       }
+      return { ...response, revision: session.publicRevision };
+    }
+    if (response.kind === "dataExported") {
+      if (response.revision < requestRuntimeRevision) {
+        return protocolError("stale_response", "Ignored a stale export response.", true, session.publicId);
+      }
+      return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "datasetStats") {
-      if (response.revision < session.revision) {
+      if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored stale dataset statistics.", true, session.publicId);
       }
       session.metadata = { ...session.metadata, stats: response.stats };
       this.setActive(session.publicId);
+      return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "error" && response.sessionId) {
       return { ...response, sessionId: session.publicId };
@@ -199,13 +292,109 @@ export class SessionCoordinator implements vscode.Disposable {
     return response;
   }
 
+  private loadPersistedSession(request: OpenSessionRequest): PersistedSessionState | undefined {
+    const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
+    return decodePersistedSession(stored?.[persistenceKey(request.source)]);
+  }
+
+  private async persistSession(session: CoordinatedSession): Promise<void> {
+    if (!this.workspaceState) return;
+    const key = persistenceKey(session.openRequest.source);
+    const state = persistedStateFromMetadata(session.metadata);
+    const task = this.persistenceTail
+      .catch(() => undefined)
+      .then(async () => {
+        const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+        await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
+      });
+    this.persistenceTail = task.catch(() => undefined);
+    await this.persistenceTail;
+  }
+
+  private async restoreRuntimeState(
+    session: CoordinatedSession,
+    state: PersistedSessionState,
+    pageSize: number,
+    options?: BridgeRequestOptions
+  ): Promise<PageResponse> {
+    for (const step of state.steps) {
+      const preview = await session.delegate.request(
+        {
+          kind: "previewStep",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          step,
+          offset: 0,
+          limit: 1
+        },
+        options
+      );
+      if (preview.kind !== "stepPreview") throw new Error("Could not replay a cleaning step.");
+      session.runtimeRevision = preview.revision;
+      session.metadata = preview.metadata;
+      session.code = preview.code;
+      const applied = await session.delegate.request(
+        {
+          kind: "applyDraft",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          offset: 0,
+          limit: 1
+        },
+        options
+      );
+      if (applied.kind !== "planUpdated") throw new Error("Could not apply a replayed cleaning step.");
+      session.runtimeRevision = applied.revision;
+      session.metadata = applied.metadata;
+      session.code = applied.code;
+    }
+
+    if (state.draftStep) {
+      const preview = await session.delegate.request(
+        {
+          kind: "previewStep",
+          sessionId: session.runtimeId,
+          revision: session.runtimeRevision,
+          step: state.draftStep,
+          replaceStepId: state.draftReplacesStepId,
+          offset: 0,
+          limit: 1
+        },
+        options
+      );
+      if (preview.kind !== "stepPreview") throw new Error("Could not restore the draft cleaning step.");
+      session.runtimeRevision = preview.revision;
+      session.metadata = preview.metadata;
+      session.code = preview.code;
+    }
+
+    const page = await session.delegate.request(
+      {
+        kind: "getPage",
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision,
+        offset: 0,
+        limit: pageSize,
+        filterModel: state.filterModel
+      },
+      options
+    );
+    if (page.kind !== "page") throw new Error("Could not restore the saved viewing query.");
+    session.runtimeRevision = page.revision;
+    session.metadata = page.metadata;
+    return page;
+  }
+
   private async replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
     try {
+      const previous = session.metadata;
       const response = await session.delegate.request(session.openRequest, options);
       if (response.kind !== "sessionOpened") return false;
       session.runtimeId = response.metadata.sessionId;
-      session.revision = response.metadata.revision;
+      session.runtimeRevision = response.metadata.revision;
       session.metadata = response.metadata;
+      session.code = "";
+      await this.restoreRuntimeState(session, persistedStateFromMetadata(previous), 1, options);
       this.setActive(session.publicId);
       return true;
     } catch {
@@ -214,12 +403,16 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 }
 
-function publicMetadata(metadata: SessionMetadata, publicId: string): SessionMetadata {
-  return { ...metadata, sessionId: publicId };
+function publicMetadata(metadata: SessionMetadata, publicId: string, publicRevision: number): SessionMetadata {
+  return { ...metadata, sessionId: publicId, revision: publicRevision };
 }
 
-function publicOpenedResponse(response: SessionOpenedResponse, publicId: string): SessionOpenedResponse {
-  return { ...response, metadata: publicMetadata(response.metadata, publicId) };
+function publicOpenedResponse(
+  response: SessionOpenedResponse,
+  publicId: string,
+  publicRevision: number
+): SessionOpenedResponse {
+  return { ...response, metadata: publicMetadata(response.metadata, publicId, publicRevision) };
 }
 
 function isUnknownRuntimeSession(response: DataExplorerResponse): response is ErrorResponse {

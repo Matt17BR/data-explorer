@@ -4,12 +4,14 @@ import type {
   DataBackend,
   DataExplorerRequest,
   DataExplorerResponse,
+  OperationKind,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
 import type { DataExplorerBridge } from "./dataBridge";
 
 export class DataExplorerPanel {
+  private static activePanel: DataExplorerPanel | undefined;
   private sessionId: string | undefined;
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
@@ -24,6 +26,7 @@ export class DataExplorerPanel {
     private readonly backend?: DataBackend,
     private readonly initialResponse?: SessionOpenedResponse
   ) {
+    DataExplorerPanel.activePanel = this;
     this.panel.webview.html = this.renderHtml();
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => this.handleMessage(message),
@@ -33,11 +36,24 @@ export class DataExplorerPanel {
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
-        if (webviewPanel.active && this.sessionId) this.bridge.setActiveSession?.(this.sessionId);
+        if (webviewPanel.active) {
+          DataExplorerPanel.activePanel = this;
+          if (this.sessionId) this.bridge.setActiveSession?.(this.sessionId);
+        }
       },
       undefined,
       this.disposables
     );
+  }
+
+  static sendEditorAction(message: EditorActionMessage): boolean {
+    const active = DataExplorerPanel.activePanel;
+    if (!active) return false;
+    if (message.action === "openOperation" || message.action === "editLatest") {
+      active.panel.reveal(active.panel.viewColumn, false);
+    }
+    void active.panel.webview.postMessage({ kind: "editorAction", ...message });
+    return true;
   }
 
   static create(
@@ -100,6 +116,7 @@ export class DataExplorerPanel {
   }
 
   dispose(): void {
+    if (DataExplorerPanel.activePanel === this) DataExplorerPanel.activePanel = undefined;
     if (this.sessionId && !this.initialResponse) {
       void this.bridge.request({
         kind: "closeSession",
@@ -147,6 +164,15 @@ export class DataExplorerPanel {
       sessionId: this.sessionId,
       revision: this.sessionRevision
     } as DataExplorerRequest;
+    if (request.kind === "previewStep" && request.step.kind === "customCode" && !vscode.workspace.isTrusted) {
+      await this.post({
+        kind: "error",
+        code: "workspace_untrusted",
+        message: "Trust this workspace before running custom Python code.",
+        recoverable: true
+      });
+      return;
+    }
     await this.forward(request);
   }
 
@@ -158,9 +184,9 @@ export class DataExplorerPanel {
         this.sessionRevision = response.metadata.revision;
         this.snapshot = response;
       }
-      if (response.kind === "page") {
+      if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         this.sessionId = response.metadata.sessionId;
-        this.sessionRevision = response.metadata.revision;
+        this.sessionRevision = response.revision;
         if (this.snapshot) {
           this.snapshot = { ...this.snapshot, metadata: response.metadata, page: response.page };
         }
@@ -229,6 +255,11 @@ export class DataExplorerPanel {
 </body>
 </html>`;
   }
+}
+
+export interface EditorActionMessage {
+  action: "openOperation" | "editLatest" | "applyDraft" | "discardDraft" | "undoStep";
+  operationKind?: OperationKind;
 }
 
 const randomNonce = (): string => {
