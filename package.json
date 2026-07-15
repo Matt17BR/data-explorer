@@ -576,7 +576,7 @@
     "pngjs": "^7.0.0",
     "prettier": "^3.6.2",
     "pyright": "^1.1.405",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.38.0",
     "vite": "^8.0.14",
     "vitest": "^4.1.7"
