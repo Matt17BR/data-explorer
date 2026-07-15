@@ -19,6 +19,8 @@ Notebook compatibility tests must exercise complete MIME v2 snapshots, saved MIM
 
 Export tests must cover both engines and both supported formats. They must prove committed-plan output, exclusion of view filters, pending-draft rejection, source-path rejection, atomic replacement, failed-write cleanup, and the Polars-to-Pandas prohibition. Code export acceptance must verify the edited CodeMirror buffer, not only the original generated string.
 
+Identity tests must prove stable row tokens through filtering, sorting, projections, and value changes; deterministic new generations for group/custom results; column lineage through renames, reorders, drops, latest-step edits, and duplicate labels; and identity exclusion from schema, summaries, duplicate counts, custom code, generated code, and exports.
+
 By-example tests must exercise every candidate family, deterministic tie ordering, ambiguity warnings, failure diagnostics, persisted-program revalidation, native execution, and generated-code equivalence in both engines. A synthesized step is not accepted without draft/diff confirmation and apply/discard coverage.
 
 ## Visual and accessibility coverage

@@ -149,6 +149,151 @@ def test_latest_structural_step_keeps_its_input_schema_for_editing(tmp_path, bac
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, monkeypatch):
+    path = tmp_path / "lineage.csv"
+    path.write_text("group,value\na,1\na,2\nb,3\n", encoding="utf-8")
+    if backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars lineage must stay native")),
+            raising=False,
+        )
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=10
+    )
+    session_id = opened["metadata"]["sessionId"]
+    source_ids = [column["id"] for column in opened["metadata"]["schema"]]
+    row_ids = [row["id"] for row in opened["page"]["rows"]]
+    assert source_ids == ["c:source:0", "c:source:1"]
+    assert len(set(row_ids)) == 3
+    assert all("data_explorer_internal" not in column["name"] for column in opened["metadata"]["schema"])
+
+    sorted_preview = manager.preview_step(
+        session_id,
+        0,
+        transform("sort", "sortRows", rules=[{"column": "value", "direction": "desc", "nulls": "last"}]),
+        0,
+        10,
+    )
+    assert sorted_preview["page"]["rows"][0]["id"] == row_ids[-1]
+    assert sorted_preview["diff"]["changedCells"] == 0
+    assert sorted_preview["diff"]["addedRows"] == 0
+    assert sorted_preview["diff"]["removedRows"] == 0
+    manager.discard_draft(session_id, 1, 0, 10)
+
+    filtered = manager.preview_step(
+        session_id,
+        2,
+        transform(
+            "filter",
+            "filterRows",
+            filterModel={
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "integer",
+                        "predicates": [{"operator": "gt", "value": 1}],
+                    }
+                ],
+                "sort": [],
+            },
+        ),
+        0,
+        10,
+    )
+    assert [row["id"] for row in filtered["page"]["rows"]] == row_ids[1:]
+    assert filtered["diff"]["removedRows"] == 1
+    assert filtered["diff"]["changedCells"] == 0
+    manager.discard_draft(session_id, 3, 0, 10)
+
+    renamed = manager.preview_step(
+        session_id,
+        4,
+        transform("rename", "renameColumn", column="value", newName="amount"),
+        0,
+        10,
+    )
+    assert [column["id"] for column in renamed["metadata"]["schema"]] == source_ids
+    assert renamed["diff"]["addedColumns"] == []
+    assert renamed["diff"]["removedColumns"] == []
+    assert renamed["diff"]["changedCells"] == 0
+    manager.discard_draft(session_id, 5, 0, 10)
+
+    reordered = manager.preview_step(
+        session_id,
+        6,
+        transform("select", "selectColumns", columns=["value", "group"]),
+        0,
+        10,
+    )
+    assert [column["id"] for column in reordered["metadata"]["schema"]] == list(reversed(source_ids))
+    assert reordered["diff"]["addedColumns"] == []
+    assert reordered["diff"]["removedColumns"] == []
+    manager.discard_draft(session_id, 7, 0, 10)
+
+    grouped = manager.preview_step(
+        session_id,
+        8,
+        transform(
+            "group",
+            "groupBy",
+            keys=["group"],
+            aggregations=[{"column": "value", "operation": "sum", "alias": "total"}],
+        ),
+        0,
+        10,
+    )
+    assert [column["id"] for column in grouped["metadata"]["schema"]] == [
+        source_ids[0],
+        "c:step:group:0",
+    ]
+    assert grouped["diff"]["addedColumns"] == ["total"]
+    assert grouped["diff"]["removedColumns"] == ["value"]
+    assert grouped["diff"]["addedRows"] == 2
+    assert grouped["diff"]["removedRows"] == 3
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
+    path = tmp_path / "identity-source.csv"
+    path.write_text("group,value\na,1\na,1\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=10
+    )
+    session_id = opened["metadata"]["sessionId"]
+    stats = manager.get_dataset_stats(session_id, 0, {"filters": [], "sort": []})["stats"]
+    assert stats["duplicateRows"] == 1
+    assert [item["column"] for item in stats["missingValuesByColumn"]] == ["group", "value"]
+
+    custom = manager.preview_step(
+        session_id,
+        0,
+        transform(
+            "custom",
+            "customCode",
+            code=(
+                'columns = df.collect_schema().names() if hasattr(df, "collect_schema") else list(df.columns)\n'
+                'assert all("data_explorer_internal" not in str(column) for column in columns)\n'
+                "result = df"
+            ),
+        ),
+        0,
+        10,
+    )
+    assert [column["name"] for column in custom["metadata"]["schema"]] == ["group", "value"]
+    manager.discard_draft(session_id, 1, 0, 10)
+
+    destination = tmp_path / f"{backend}-identity.csv"
+    manager.export_data(session_id, 2, str(destination), "csv")
+    assert destination.read_text(encoding="utf-8").splitlines()[0] == "group,value"
+    assert "data_explorer_internal" not in destination.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 def test_export_is_atomic_native_and_excludes_view_filters(tmp_path, backend, format_name, monkeypatch):
     source = "group,value\na,1\na,2\nb,3\n"

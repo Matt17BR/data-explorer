@@ -25,6 +25,8 @@ ColumnType = Literal[
     "unknown",
 ]
 
+INTERNAL_ROW_ID_PREFIX = "__data_explorer_internal_row_id_"
+
 
 class EngineError(RuntimeError):
     """Raised when a backend cannot satisfy a Data Explorer request."""
@@ -51,6 +53,11 @@ class DataFrameEngine(ABC):
 
     @abstractmethod
     def shape(self, frame: Any) -> dict[str, int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+        """Attach private row identities when a transformation did not preserve them."""
         raise NotImplementedError
 
     @abstractmethod

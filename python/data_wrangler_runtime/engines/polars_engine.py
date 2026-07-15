@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .base import (
+    INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
     EngineError,
     boolean_visualization,
@@ -67,6 +68,9 @@ class PolarsEngine(DataFrameEngine):
     def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
         import polars as pl
 
+        row_id = self._row_id_column(frame)
+        if row_id is not None:
+            frame = frame.drop(row_id)
         if isinstance(frame, pl.LazyFrame):
             if format_name == "csv":
                 frame.sink_csv(path)
@@ -90,18 +94,26 @@ class PolarsEngine(DataFrameEngine):
         if isinstance(frame, pl.LazyFrame):
             return {
                 "rows": int(frame.select(pl.len()).collect(engine="streaming").item()),
-                "columns": len(frame.collect_schema()),
+                "columns": len(self._visible_columns(frame)),
             }
         df = self.normalize(frame)
-        rows, columns = df.shape
-        return {"rows": int(rows), "columns": int(columns)}
+        rows, _ = df.shape
+        return {"rows": int(rows), "columns": len(self._visible_columns(df))}
+
+    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+        if self._row_id_column(frame) is not None:
+            return frame
+        return frame.with_row_index(f"{INTERNAL_ROW_ID_PREFIX}{token}")
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         import polars as pl
 
         if isinstance(frame, pl.LazyFrame):
             schema = frame.collect_schema()
-            null_counts = frame.select(pl.all().null_count()).collect(engine="streaming").to_dicts()[0]
+            visible = self._visible_columns(frame)
+            null_counts = (
+                frame.select([pl.col(name).null_count() for name in visible]).collect(engine="streaming").to_dicts()[0]
+            )
             return [
                 {
                     "id": f"c:{position}",
@@ -111,10 +123,12 @@ class PolarsEngine(DataFrameEngine):
                     "type": infer_semantic_type(str(dtype)),
                     "nullable": bool(null_counts.get(name, 0) > 0),
                 }
-                for position, (name, dtype) in enumerate(schema.items())
+                for position, name in enumerate(visible)
+                for dtype in [schema[name]]
             ]
         df = self.normalize(frame)
-        null_counts = df.null_count().to_dicts()[0] if df.height else {column: 0 for column in df.columns}
+        visible = self._visible_columns(df)
+        null_counts = df.select(visible).null_count().to_dicts()[0] if df.height else {column: 0 for column in visible}
         return [
             {
                 "id": f"c:{position}",
@@ -124,7 +138,8 @@ class PolarsEngine(DataFrameEngine):
                 "type": infer_semantic_type(str(dtype)),
                 "nullable": bool(null_counts.get(name, 0) > 0),
             }
-            for position, (name, dtype) in enumerate(df.schema.items())
+            for position, name in enumerate(visible)
+            for dtype in [df.schema[name]]
         ]
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
@@ -190,12 +205,13 @@ class PolarsEngine(DataFrameEngine):
             df = self.normalize(frame)
             sliced = df.slice(offset, limit)
             total_rows = int(df.height)
-        columns = list(df.columns)
+        columns = self._visible_columns(df)
+        row_id = self._row_id_column(df)
         rows = []
         for row_number, row in enumerate(sliced.iter_rows(named=True), start=offset):
             rows.append(
                 {
-                    "id": f"r:{row_number}",
+                    "id": f"r:{row_id}:{row.get(row_id)}" if row_id is not None else f"r:{row_number}",
                     "rowNumber": row_number,
                     "values": [normalize_cell(row.get(column)) for column in columns],
                 }
@@ -211,11 +227,11 @@ class PolarsEngine(DataFrameEngine):
         import polars as pl
 
         if isinstance(frame, pl.LazyFrame):
-            selected = list(columns) if columns is not None else frame.collect_schema().names()
+            selected = list(columns) if columns is not None else self._visible_columns(frame)
             df = frame.select(selected).collect(engine="streaming")
         else:
             df = self.normalize(frame)
-            selected = list(columns) if columns is not None else list(df.columns)
+            selected = list(columns) if columns is not None else self._visible_columns(df)
         null_counts = df.select([pl.col(column).null_count().alias(column) for column in selected]).to_dicts()[0]
         summaries = []
         for column in selected:
@@ -262,6 +278,9 @@ class PolarsEngine(DataFrameEngine):
         import polars as pl
 
         df = frame.collect(engine="streaming") if isinstance(frame, pl.LazyFrame) else self.normalize(frame)
+        row_id = self._row_id_column(df)
+        if row_id is not None:
+            df = df.drop(row_id)
         if df.width == 0:
             return {"missingCells": 0, "missingRows": 0, "duplicateRows": 0, "missingValuesByColumn": []}
 
@@ -288,7 +307,7 @@ class PolarsEngine(DataFrameEngine):
         return {
             "missingCells": missing_cells,
             "missingRows": missing_rows,
-            "duplicateRows": int(df.is_duplicated().sum()) if df.height else 0,
+            "duplicateRows": int(df.height - df.unique(maintain_order=False).height) if df.height else 0,
             "missingValuesByColumn": missing_by_column,
         }
 
@@ -373,16 +392,19 @@ class PolarsEngine(DataFrameEngine):
             return self.apply_filter_model(df, params["filterModel"])
         if kind == "dropMissingRows":
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
-            columns = params.get("columns") or list(schema.names())
+            columns = params.get("columns") or self._visible_columns(df)
             valid = [_polars_valid_value(pl.col(column), schema[column]) for column in columns]
             expression = pl.any_horizontal(valid) if params.get("how", "any") == "all" else pl.all_horizontal(valid)
             return df.filter(expression)
         if kind == "dropDuplicates":
             return df.unique(
-                subset=params.get("columns") or None, keep=params.get("keep", "first"), maintain_order=True
+                subset=params.get("columns") or self._visible_columns(df),
+                keep=params.get("keep", "first"),
+                maintain_order=True,
             )
         if kind == "selectColumns":
-            return df.select(params["columns"])
+            row_id = self._row_id_column(df)
+            return df.select([*([row_id] if row_id else []), *params["columns"]])
         if kind == "dropColumns":
             return df.drop(params["columns"])
         if kind == "renameColumn":
@@ -483,13 +505,26 @@ class PolarsEngine(DataFrameEngine):
         if kind == "byExample":
             return df.with_columns(_polars_by_example_expression(params["program"]).alias(params["newColumn"]))
         if kind == "customCode":
-            namespace = {"df": df, "pl": pl}
+            row_id = self._row_id_column(df)
+            namespace = {"df": df.drop(row_id) if row_id is not None else df, "pl": pl}
             exec(params["code"], namespace, namespace)
             result = namespace.get("result")
             if not self.detect(result):
                 raise EngineError("Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.")
             return result.to_frame() if isinstance(result, pl.Series) else result
         raise EngineError(f"Polars does not implement transformation: {kind}")
+
+    def _row_id_column(self, frame: Any) -> str | None:
+        import polars as pl
+
+        columns = frame.collect_schema().names() if isinstance(frame, pl.LazyFrame) else frame.columns
+        return next((name for name in columns if name.startswith(INTERNAL_ROW_ID_PREFIX)), None)
+
+    def _visible_columns(self, frame: Any) -> list[str]:
+        import polars as pl
+
+        columns = frame.collect_schema().names() if isinstance(frame, pl.LazyFrame) else frame.columns
+        return [name for name in columns if not name.startswith(INTERNAL_ROW_ID_PREFIX)]
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         lines = ["import polars as pl", "", "", "def clean_data(df):"]

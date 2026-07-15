@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .base import (
+    INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
     EngineError,
     boolean_visualization,
@@ -56,7 +57,7 @@ class PandasEngine(DataFrameEngine):
         return value
 
     def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
-        df = self.normalize(frame)
+        df = self._visible_frame(self.normalize(frame))
         if format_name == "csv":
             df.to_csv(path, index=False)
             return
@@ -67,7 +68,15 @@ class PandasEngine(DataFrameEngine):
 
     def shape(self, frame: Any) -> dict[str, int]:
         df = self.normalize(frame)
-        return {"rows": int(df.shape[0]), "columns": int(df.shape[1])}
+        return {"rows": int(df.shape[0]), "columns": len(self._visible_positions(df))}
+
+    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+        df = self.normalize(frame)
+        if self._row_id_column(df) is not None:
+            return df
+        result = df.copy()
+        result[f"{INTERNAL_ROW_ID_PREFIX}{token}"] = [f"r:{token}:{index}" for index in range(len(result))]
+        return result
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         df = self.normalize(frame)
@@ -78,31 +87,33 @@ class PandasEngine(DataFrameEngine):
                 "position": position,
                 "rawType": str(dtype),
                 "type": infer_semantic_type(str(dtype)),
-                "nullable": bool(df.iloc[:, position].isna().any()),
+                "nullable": bool(df.iloc[:, frame_position].isna().any()),
             }
-            for position, (column, dtype) in enumerate(df.dtypes.items())
+            for position, frame_position in enumerate(self._visible_positions(df))
+            for column, dtype in [(df.columns[frame_position], df.dtypes.iloc[frame_position])]
         ]
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         df = self.normalize(frame)
         column_masks = []
         for column_filter in model.get("filters", []):
-            column = column_filter.get("column")
-            if column not in df.columns:
+            position = self._resolve_visible_position(df, column_filter.get("column"))
+            if position is None:
                 continue
+            series = df.iloc[:, position]
             conditions = []
             value_filter = column_filter.get("valueFilter")
             if value_filter and (
                 value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
             ):
                 selected = [str(value) for value in value_filter.get("selectedValues", [])]
-                current = df[column].astype(str).isin(selected)
+                current = series.astype(str).isin(selected)
                 if value_filter.get("includeNulls") or value_filter.get("includeNaN"):
-                    current = current | df[column].isna()
+                    current = current | series.isna()
                 conditions.append(current)
 
             for predicate in column_filter.get("predicates", []):
-                conditions.append(self._predicate_mask(df[column], predicate))
+                conditions.append(self._predicate_mask(series, predicate))
 
             if conditions:
                 mask = conditions[0]
@@ -119,24 +130,31 @@ class PandasEngine(DataFrameEngine):
 
         sort_rules = model.get("sort", [])
         if sort_rules:
-            filtered = filtered.sort_values(
-                by=[rule["column"] for rule in sort_rules],
-                ascending=[rule.get("direction", "asc") == "asc" for rule in sort_rules],
-                na_position="first" if sort_rules[0].get("nulls") == "first" else "last",
-            )
+            resolved_rules = [
+                (self._resolve_visible_column(df, rule["column"]), rule)
+                for rule in sort_rules
+                if self._resolve_visible_position(df, rule["column"]) is not None
+            ]
+            if resolved_rules:
+                filtered = filtered.sort_values(
+                    by=[column for column, _ in resolved_rules],
+                    ascending=[rule.get("direction", "asc") == "asc" for _, rule in resolved_rules],
+                    na_position="first" if resolved_rules[0][1].get("nulls") == "first" else "last",
+                )
         return filtered
 
     def page(self, frame: Any, offset: int, limit: int) -> dict[str, Any]:
         df = self.normalize(frame)
         sliced = df.iloc[offset : offset + limit]
-        columns = list(df.columns)
+        positions = self._visible_positions(df)
+        row_id_position = self._row_id_position(df)
         rows = []
         for row_number, (_, row) in enumerate(sliced.iterrows(), start=offset):
             rows.append(
                 {
-                    "id": f"r:{row_number}",
+                    "id": str(row.iloc[row_id_position]) if row_id_position is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(row.iloc[position]) for position, _ in enumerate(columns)],
+                    "values": [normalize_cell(row.iloc[position]) for position in positions],
                 }
             )
         return {
@@ -148,10 +166,15 @@ class PandasEngine(DataFrameEngine):
 
     def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
         df = self.normalize(frame)
-        selected = list(columns) if columns is not None else list(df.columns)
+        positions = (
+            self._resolve_visible_positions(df, [str(column) for column in columns])
+            if columns is not None
+            else self._visible_positions(df)
+        )
         summaries = []
-        for column in selected:
-            series = df[column]
+        for position in positions:
+            column = df.columns[position]
+            series = df.iloc[:, position]
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
             top_values = [
@@ -192,10 +215,10 @@ class PandasEngine(DataFrameEngine):
         return summaries
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
-        df = self.normalize(frame)
+        df = self._visible_frame(self.normalize(frame))
         missing_by_column = []
-        for column in df.columns:
-            missing_by_column.append({"column": str(column), "count": int(df[column].isna().sum())})
+        for position, column in enumerate(df.columns):
+            missing_by_column.append({"column": str(column), "count": int(df.iloc[:, position].isna().sum())})
         return {
             "missingCells": int(df.isna().sum().sum()),
             "missingRows": int(df.isna().any(axis=1).sum()),
@@ -207,7 +230,10 @@ class PandasEngine(DataFrameEngine):
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
         df = self.normalize(frame)
-        series = df[column].dropna()
+        position = self._resolve_visible_position(df, column)
+        if position is None:
+            raise EngineError(f"Unknown Pandas column: {column}")
+        series = df.iloc[:, position].dropna()
         if search:
             series = series[series.astype(str).str.contains(search, case=False, na=False)]
         counts = series.value_counts().head(limit + 1)
@@ -258,12 +284,15 @@ class PandasEngine(DataFrameEngine):
         if kind == "filterRows":
             return self.apply_filter_model(df, params["filterModel"])
         if kind == "dropMissingRows":
-            return df.dropna(subset=params.get("columns") or None, how=params.get("how", "any"))
+            return df.dropna(subset=params.get("columns") or self._visible_columns(df), how=params.get("how", "any"))
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
-            return df.drop_duplicates(subset=params.get("columns") or None, keep=False if keep == "none" else keep)
+            return df.drop_duplicates(
+                subset=params.get("columns") or self._visible_columns(df), keep=False if keep == "none" else keep
+            )
         if kind == "selectColumns":
-            return df.loc[:, params["columns"]]
+            row_id = self._row_id_column(df)
+            return df.loc[:, [*([row_id] if row_id else []), *params["columns"]]]
         if kind == "dropColumns":
             return df.drop(columns=params["columns"])
         if kind == "renameColumn":
@@ -355,13 +384,62 @@ class PandasEngine(DataFrameEngine):
             df[params["newColumn"]] = _pandas_by_example_expression(df, params["program"])
             return df
         if kind == "customCode":
-            namespace = {"df": df, "pd": pd}
+            namespace = {"df": self._visible_frame(df.copy()), "pd": pd}
             exec(params["code"], namespace, namespace)
             result = namespace.get("result")
             if not self.detect(result):
                 raise EngineError("Custom Pandas code must assign a Pandas DataFrame or Series to result.")
             return self.normalize(result)
         raise EngineError(f"Pandas does not implement transformation: {kind}")
+
+    def _row_id_column(self, frame: Any) -> Any | None:
+        return next((column for column in frame.columns if str(column).startswith(INTERNAL_ROW_ID_PREFIX)), None)
+
+    def _row_id_position(self, frame: Any) -> int | None:
+        return next(
+            (
+                position
+                for position, column in enumerate(frame.columns)
+                if str(column).startswith(INTERNAL_ROW_ID_PREFIX)
+            ),
+            None,
+        )
+
+    def _visible_positions(self, frame: Any) -> list[int]:
+        return [
+            position
+            for position, column in enumerate(frame.columns)
+            if not str(column).startswith(INTERNAL_ROW_ID_PREFIX)
+        ]
+
+    def _visible_columns(self, frame: Any) -> list[Any]:
+        return [frame.columns[position] for position in self._visible_positions(frame)]
+
+    def _visible_frame(self, frame: Any) -> Any:
+        row_id = self._row_id_column(frame)
+        return frame.drop(columns=[row_id]) if row_id is not None else frame
+
+    def _resolve_visible_position(self, frame: Any, requested: Any) -> int | None:
+        requested_name = str(requested)
+        return next(
+            (position for position in self._visible_positions(frame) if str(frame.columns[position]) == requested_name),
+            None,
+        )
+
+    def _resolve_visible_positions(self, frame: Any, requested: list[str]) -> list[int]:
+        available: dict[str, list[int]] = {}
+        for position in self._visible_positions(frame):
+            available.setdefault(str(frame.columns[position]), []).append(position)
+        resolved = []
+        for name in requested:
+            positions = available.get(str(name), [])
+            if positions:
+                resolved.append(positions.pop(0))
+        return resolved
+
+    def _resolve_visible_column(self, frame: Any, requested: Any) -> Any:
+        position = self._resolve_visible_position(frame, requested)
+        return frame.columns[position] if position is not None else requested
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         lines = ["import numpy as np", "import pandas as pd", "", "", "def clean_data(df):", "    df = df.copy()"]

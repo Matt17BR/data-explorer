@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from data_wrangler_runtime.engines import PandasEngine
 from data_wrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,3 +76,22 @@ def test_pandas_csv_import_options(tmp_path):
 
     assert opened["metadata"]["schema"][0]["name"] == "city"
     assert opened["page"]["rows"][0]["values"][0]["display"] == "München"
+
+
+def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
+    engine = PandasEngine()
+    frame = pd.DataFrame([[1, None, 3], [1, 2, 4]], columns=["duplicate", "duplicate", 7])
+    frame = engine.ensure_row_ids(frame, "labels")
+
+    schema = engine.schema(frame)
+    assert [column["name"] for column in schema] == ["duplicate", "duplicate", "7"]
+    assert [column["id"] for column in schema] == ["c:0", "c:1", "c:2"]
+    assert [summary["column"] for summary in engine.summaries(frame)] == ["duplicate", "duplicate", "7"]
+    assert [cell["display"] for cell in engine.page(frame, 0, 1)["rows"][0]["values"]] == ["1", "NaN", "3"]
+    stats = engine.header_stats(frame)
+    assert stats["missingCells"] == 1
+    assert stats["missingValuesByColumn"] == [
+        {"column": "duplicate", "count": 0},
+        {"column": "duplicate", "count": 1},
+        {"column": "7", "count": 0},
+    ]

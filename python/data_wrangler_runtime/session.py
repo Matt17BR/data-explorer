@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .engines import DataFrameEngine, EngineError, PandasEngine, PolarsEngine
+from .lineage import derive_lineage, reuse_latest_output_ids, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 
 
@@ -26,9 +27,11 @@ class Session:
     filter_model: dict[str, Any]
     plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
+    committed_lineage: list[dict[str, str]]
     draft_step: dict[str, Any] | None
     draft_frame: Any | None
     draft_base: Any | None
+    draft_lineage: list[dict[str, str]] | None
     replace_step_id: str | None
     stats: dict[str, Any] | None
     source_shape: dict[str, int]
@@ -74,10 +77,12 @@ class SessionManager:
         if source.get("kind") != "file":
             frame = getattr(engine, "normalize", lambda value: value)(frame)
         session_id = str(uuid.uuid4())
+        frame = engine.ensure_row_ids(frame, f"{session_id}:source")
         filter_model = {"filters": [], "sort": []}
         filtered = engine.apply_filter_model(frame, filter_model)
         source_shape = engine.shape(frame)
         source_schema = engine.schema(frame)
+        initial_lineage = source_lineage(source_schema)
         session = Session(
             session_id=session_id,
             source=dict(source),
@@ -89,9 +94,11 @@ class SessionManager:
             filter_model=filter_model,
             plan=[],
             plan_input_schemas=[],
+            committed_lineage=initial_lineage,
             draft_step=None,
             draft_frame=None,
             draft_base=None,
+            draft_lineage=None,
             replace_step_id=None,
             stats=None,
             source_shape=source_shape,
@@ -206,18 +213,25 @@ class SessionManager:
                 raise EngineError(str(error)) from error
 
             diff_base = session.committed
+            diff_base_lineage = session.committed_lineage
             base = session.committed
+            base_lineage = session.committed_lineage
             candidate_plan = [*session.plan, normalized]
             if replace_step_id is not None:
                 if not session.plan or session.plan[-1]["id"] != replace_step_id:
                     raise EngineError("Only the latest applied step can be edited.")
                 candidate_plan = [*session.plan[:-1], normalized]
-                base = self._replay(session, session.plan[:-1])
+                base, base_lineage = self._replay(session, session.plan[:-1])
 
             draft = session.engine.apply_transform(base, normalized)
+            draft = session.engine.ensure_row_ids(draft, f"{session.session_id}:{normalized['id']}")
+            draft_lineage = derive_lineage(base_lineage, session.engine.schema(draft), normalized)
+            if replace_step_id is not None:
+                draft_lineage = reuse_latest_output_ids(draft_lineage, session.committed_lineage, base_lineage)
             session.draft_step = normalized
             session.draft_frame = draft
             session.draft_base = base
+            session.draft_lineage = draft_lineage
             session.replace_step_id = replace_step_id
             session.stats = None
             session.revision += 1
@@ -227,7 +241,16 @@ class SessionManager:
                 "revision": session.revision,
                 "metadata": self._metadata(session),
                 "page": session.engine.page(filtered, offset, limit),
-                "diff": self._diff(session, diff_base, draft, offset, limit),
+                "diff": self._diff(
+                    session,
+                    diff_base,
+                    draft,
+                    diff_base_lineage,
+                    draft_lineage,
+                    normalized,
+                    offset,
+                    limit,
+                ),
                 "code": session.engine.compile_plan(candidate_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
             }
@@ -237,15 +260,21 @@ class SessionManager:
         with session.lock:
             self._assert_revision(session, revision)
             self._assert_editable(session)
-            if session.draft_step is None or session.draft_frame is None:
+            if session.draft_step is None or session.draft_frame is None or session.draft_lineage is None:
                 raise EngineError("There is no draft step to apply.")
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
-                session.plan_input_schemas.append(session.engine.schema(session.draft_base))
+                session.plan_input_schemas.append(
+                    schema_with_lineage(session.engine.schema(session.draft_base), session.committed_lineage)
+                )
             else:
                 session.plan[-1] = session.draft_step
-                session.plan_input_schemas[-1] = session.engine.schema(session.draft_base)
+                _, input_lineage = self._replay(session, session.plan[:-1])
+                session.plan_input_schemas[-1] = schema_with_lineage(
+                    session.engine.schema(session.draft_base), input_lineage
+                )
             session.committed = session.draft_frame
+            session.committed_lineage = session.draft_lineage
             self._clear_draft(session)
             return self._finish_plan_change(session, "apply", offset, limit, reset_view=True)
 
@@ -269,7 +298,7 @@ class SessionManager:
                 raise EngineError("There is no applied step to undo.")
             session.plan.pop()
             session.plan_input_schemas.pop()
-            session.committed = self._replay(session, session.plan)
+            session.committed, session.committed_lineage = self._replay(session, session.plan)
             return self._finish_plan_change(session, "undo", offset, limit, reset_view=True)
 
     def export_data(
@@ -344,6 +373,9 @@ class SessionManager:
     def _metadata(self, session: Session) -> dict[str, Any]:
         display_frame = session.draft_frame if session.draft_frame is not None else session.committed
         filtered = self._filtered(session, session.filter_model)
+        display_lineage = session.draft_lineage if session.draft_frame is not None else session.committed_lineage
+        if display_lineage is None:
+            raise EngineError("The active dataframe is missing column lineage.")
         metadata = {
             "protocolVersion": 2,
             "sessionId": session.session_id,
@@ -354,7 +386,7 @@ class SessionManager:
             "capabilities": self._capabilities(session),
             "shape": session.engine.shape(display_frame),
             "filteredShape": session.engine.shape(filtered),
-            "schema": session.engine.schema(display_frame),
+            "schema": schema_with_lineage(session.engine.schema(display_frame), display_lineage),
             "filterModel": session.filter_model,
             "steps": session.plan,
         }
@@ -391,52 +423,76 @@ class SessionManager:
             "code": session.engine.compile_plan(session.plan),
         }
 
-    def _replay(self, session: Session, plan: list[dict[str, Any]]) -> Any:
+    def _replay(self, session: Session, plan: list[dict[str, Any]]) -> tuple[Any, list[dict[str, str]]]:
         frame = session.original
+        lineage = source_lineage(session.source_schema)
         for step in plan:
             frame = session.engine.apply_transform(frame, step)
-        return frame
+            frame = session.engine.ensure_row_ids(frame, f"{session.session_id}:{step['id']}")
+            lineage = derive_lineage(lineage, session.engine.schema(frame), step)
+        return frame, lineage
 
     def _clear_draft(self, session: Session) -> None:
         session.draft_step = None
         session.draft_frame = None
         session.draft_base = None
+        session.draft_lineage = None
         session.replace_step_id = None
 
-    def _diff(self, session: Session, before: Any, after: Any, offset: int, limit: int) -> dict[str, Any]:
+    def _diff(
+        self,
+        session: Session,
+        before: Any,
+        after: Any,
+        before_lineage: list[dict[str, str]],
+        after_lineage: list[dict[str, str]],
+        step: Mapping[str, Any],
+        offset: int,
+        limit: int,
+    ) -> dict[str, Any]:
         before_shape = session.engine.shape(before)
         after_shape = session.engine.shape(after)
-        before_schema = session.engine.schema(before)
-        after_schema = session.engine.schema(after)
-        before_names = [column["name"] for column in before_schema]
-        after_names = [column["name"] for column in after_schema]
-        common_names = [name for name in before_names if name in after_names]
+        before_schema = schema_with_lineage(session.engine.schema(before), before_lineage)
+        after_schema = schema_with_lineage(session.engine.schema(after), after_lineage)
+        before_ids = [column["id"] for column in before_schema]
+        after_ids = [column["id"] for column in after_schema]
+        common_ids = [identifier for identifier in before_ids if identifier in after_ids]
         before_page = session.engine.page(before, offset, limit)
         after_page = session.engine.page(after, offset, limit)
-        before_positions = {name: index for index, name in enumerate(before_names)}
-        after_positions = {name: index for index, name in enumerate(after_names)}
+        before_positions = {identifier: index for index, identifier in enumerate(before_ids)}
+        after_positions = {identifier: index for index, identifier in enumerate(after_ids)}
+        after_names = {column["id"]: column["name"] for column in after_schema}
+        before_rows = {row["id"]: row for row in before_page["rows"]}
         cells: list[dict[str, Any]] = []
         changed_cells = 0
-        for before_row, after_row in zip(before_page["rows"], after_page["rows"], strict=False):
-            for name in common_names:
-                old = before_row["values"][before_positions[name]]
-                new = after_row["values"][after_positions[name]]
+        for after_row in after_page["rows"]:
+            before_row = before_rows.get(after_row["id"])
+            if before_row is None:
+                continue
+            for identifier in common_ids:
+                old = before_row["values"][before_positions[identifier]]
+                new = after_row["values"][after_positions[identifier]]
                 if old != new:
                     changed_cells += 1
                     if len(cells) < 500:
                         cells.append(
                             {
                                 "rowNumber": after_row["rowNumber"],
-                                "column": name,
+                                "column": after_names[identifier],
                                 "before": old,
                                 "after": new,
                             }
                         )
+        replaces_rows = step["kind"] in {"groupBy", "customCode"} and not set(before_rows).intersection(
+            row["id"] for row in after_page["rows"]
+        )
         return {
-            "addedRows": max(0, after_shape["rows"] - before_shape["rows"]),
-            "removedRows": max(0, before_shape["rows"] - after_shape["rows"]),
-            "addedColumns": [name for name in after_names if name not in before_names],
-            "removedColumns": [name for name in before_names if name not in after_names],
+            "addedRows": after_shape["rows"] if replaces_rows else max(0, after_shape["rows"] - before_shape["rows"]),
+            "removedRows": before_shape["rows"]
+            if replaces_rows
+            else max(0, before_shape["rows"] - after_shape["rows"]),
+            "addedColumns": [column["name"] for column in after_schema if column["id"] not in before_ids],
+            "removedColumns": [column["name"] for column in before_schema if column["id"] not in after_ids],
             "changedCells": changed_cells,
             "cells": cells,
             "truncated": changed_cells > len(cells)
