@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from base64 import b64encode
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -279,6 +280,18 @@ def datetime_visualization(minimum: Any, maximum: Any) -> dict[str, Any]:
         "min": None if minimum is None else str(minimum),
         "max": None if maximum is None else str(maximum),
     }
+
+
+def ensure_output_columns_available(existing: Iterable[Any], generated: Iterable[Any], operation: str) -> None:
+    existing_names = {str(name) for name in existing}
+    generated_names = [str(name) for name in generated]
+    duplicate_names = {name for name, count in Counter(generated_names).items() if count > 1}
+    collisions = sorted(duplicate_names | (existing_names & set(generated_names)))
+    if collisions:
+        raise EngineError(
+            f"{operation} would create duplicate column names: {', '.join(collisions)}. "
+            "Choose a different prefix or separator."
+        )
 
 
 def _maybe_float(value: Any) -> float | None:

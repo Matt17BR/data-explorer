@@ -26,6 +26,7 @@ This repository builds the open-source Data Explorer extension and its bundled P
 8. `scratch.txt` and all other untracked user files are user-owned. Never edit, delete, stage, or package them.
 9. Do not describe the project as feature-parity complete until every in-scope row in `docs/feature-parity.md` is green.
 10. File readers expose a shared zero-based Excel sheet index. Failed eager or lazy opens must produce `EngineError` and must not retain a session; nested and scalar values must remain strict-JSON-safe.
+11. Every operation change needs matching Pandas/Polars runtime and executable generated-code tests. Generated categorical columns may not collide, and engine-specific null/Unicode/aggregate defaults must be normalized explicitly.
 
 ## Required checks
 

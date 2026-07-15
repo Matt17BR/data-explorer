@@ -13,6 +13,7 @@ from .base import (
     boolean_visualization,
     categorical_visualization,
     datetime_visualization,
+    ensure_output_columns_available,
     infer_semantic_type,
     normalize_cell,
     numeric_visualization,
@@ -200,7 +201,8 @@ class PolarsEngine(DataFrameEngine):
             df = df.sort(
                 [rule["column"] for rule in sort_rules],
                 descending=[rule.get("direction", "asc") == "desc" for rule in sort_rules],
-                nulls_last=sort_rules[0].get("nulls", "last") == "last",
+                nulls_last=[rule.get("nulls", "last") == "last" for rule in sort_rules],
+                maintain_order=True,
             )
         return df
 
@@ -463,8 +465,22 @@ class PolarsEngine(DataFrameEngine):
         if kind == "oneHotEncode":
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
             columns = params["columns"]
-            encoded = eager.select(columns).to_dummies(separator=params.get("prefixSeparator", "_"))
+            separator = params.get("prefixSeparator", "_")
+            generated = [
+                (column, value, f"{column}{separator}{value}")
+                for column in columns
+                for value in sorted(eager.get_column(column).drop_nulls().unique().to_list(), key=str)
+            ]
             base = eager.drop(columns) if params.get("dropOriginal", True) else eager
+            ensure_output_columns_available(base.columns, [name for _, _, name in generated], "One-hot encoding")
+            if not generated:
+                return base
+            encoded = eager.select(
+                [
+                    (pl.col(column) == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)
+                    for column, value, name in generated
+                ]
+            )
             return base.hstack(encoded)
         if kind == "multiLabelBinarize":
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
@@ -486,6 +502,13 @@ class PolarsEngine(DataFrameEngine):
                 for label in sorted(str(label) for label in labels if str(label))
             ]
             base = eager.drop(column) if params.get("dropOriginal", False) else eager
+            generated_names = [
+                f"{params.get('prefix', f'{column}_')}{label}"
+                for label in sorted(str(label) for label in labels if str(label))
+            ]
+            ensure_output_columns_available(base.columns, generated_names, "Multi-label binarization")
+            if not expressions:
+                return base
             return base.hstack(eager.select(expressions))
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = params["column"]
@@ -509,10 +532,13 @@ class PolarsEngine(DataFrameEngine):
         if kind == "minMaxScale":
             column = params["column"]
             expression = pl.col(column).cast(pl.Float64, strict=False)
+            valid = pl.when(expression.is_finite()).then(expression).otherwise(None)
             scaled = (
-                pl.when(expression.max() == expression.min())
+                pl.when(valid.is_null())
+                .then(None)
+                .when(valid.max() == valid.min())
                 .then(pl.lit(0.0))
-                .otherwise((expression - expression.min()) / (expression.max() - expression.min()))
+                .otherwise((valid - valid.min()) / (valid.max() - valid.min()))
             )
             return df.with_columns(scaled.alias(params.get("newColumn", column)))
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
@@ -540,7 +566,10 @@ class PolarsEngine(DataFrameEngine):
         if kind == "customCode":
             row_id = self._row_id_column(df)
             namespace = {"df": df.drop(row_id) if row_id is not None else df, "pl": pl}
-            exec(params["code"], namespace, namespace)
+            try:
+                exec(params["code"], namespace, namespace)
+            except Exception as error:
+                raise EngineError(f"Custom Polars code failed: {error}") from error
             result = namespace.get("result")
             if not self.detect(result):
                 raise EngineError("Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.")
@@ -560,7 +589,7 @@ class PolarsEngine(DataFrameEngine):
         return [name for name in columns if not name.startswith(INTERNAL_ROW_ID_PREFIX)]
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-        lines = ["import polars as pl", "", "", "def clean_data(df):"]
+        lines = ["from collections import Counter", "", "import polars as pl", "", "", "def clean_data(df):"]
         for index, step in enumerate(steps):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
@@ -575,7 +604,8 @@ class PolarsEngine(DataFrameEngine):
             return [
                 f"{prefix}df = df.sort({[rule['column'] for rule in rules]!r},",
                 f"{prefix}    descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
-                f"{prefix}    nulls_last={rules[0].get('nulls', 'last') == 'last'!r})",
+                f"{prefix}    nulls_last={[rule.get('nulls', 'last') == 'last' for rule in rules]!r},",
+                f"{prefix}    maintain_order=True)",
             ]
         if kind == "filterRows":
             return _compile_polars_filter(params["filterModel"], index)
@@ -642,39 +672,75 @@ class PolarsEngine(DataFrameEngine):
         if kind == "oneHotEncode":
             columns = params["columns"]
             eager = f"_eager_{index}"
+            generated = f"_generated_{index}"
             encoded = f"_encoded_{index}"
+            base = f"_base_{index}"
+            names = f"_generated_names_{index}"
+            collisions = f"_collisions_{index}"
             return [
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
                 (
-                    f"{prefix}{encoded} = {eager}.select({columns!r})"
-                    f".to_dummies(separator={params.get('prefixSeparator', '_')!r})"
+                    f"{prefix}{generated} = [(column, value, str(column) + "
+                    f"{params.get('prefixSeparator', '_')!r} + str(value)) for column in {columns!r} "
+                    f"for value in sorted({eager}.get_column(column).drop_nulls().unique().to_list(), key=str)]"
                 ),
+                f"{prefix}{base} = {eager}.drop({columns!r}) if {params.get('dropOriginal', True)!r} else {eager}",
+                f"{prefix}{names} = [name for _, _, name in {generated}]",
                 (
-                    f"{prefix}df = ({eager}.drop({columns!r}) if {params.get('dropOriginal', True)!r} "
-                    f"else {eager}).hstack({encoded})"
+                    f"{prefix}{collisions} = sorted((set({base}.columns) & set({names})) | "
+                    f"{{name for name, count in Counter({names}).items() if count > 1}})"
                 ),
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('One-hot encoding would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                f"{prefix}if {generated}:",
+                f"{prefix}    {encoded} = {eager}.select([",
+                f"{prefix}        (pl.col(column) == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)",
+                f"{prefix}        for column, value, name in {generated}",
+                f"{prefix}    ])",
+                f"{prefix}    df = {base}.hstack({encoded})",
+                f"{prefix}else:",
+                f"{prefix}    df = {base}",
             ]
         if kind == "multiLabelBinarize":
             column = params["column"]
             delimiter = params["delimiter"]
             eager = f"_eager_{index}"
             labels = f"_labels_{index}"
+            encoded = f"_encoded_{index}"
+            base = f"_base_{index}"
+            names = f"_generated_names_{index}"
+            collisions = f"_collisions_{index}"
             return [
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
                 f"{prefix}{labels} = {eager}.select(",
                 f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})",
                 f"{prefix}    .explode().drop_nulls().unique()",
                 f"{prefix}).get_column({column!r}).to_list()",
-                f"{prefix}_encoded_{index} = {eager}.select([",
-                f"{prefix}    pl.col({column!r}).fill_null('').cast(pl.String)",
-                f"{prefix}    .str.split({delimiter!r}).list.contains(label).cast(pl.Int8)",
-                f"{prefix}    .alias({params.get('prefix', f'{column}_')!r} + str(label))",
-                f"{prefix}    for label in sorted(str(label) for label in {labels} if str(label))",
-                f"{prefix}])",
+                f"{prefix}{labels} = sorted(str(label) for label in {labels} if str(label))",
+                f"{prefix}{base} = {eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} else {eager}",
+                f"{prefix}{names} = [{params.get('prefix', f'{column}_')!r} + label for label in {labels}]",
                 (
-                    f"{prefix}df = ({eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} "
-                    f"else {eager}).hstack(_encoded_{index})"
+                    f"{prefix}{collisions} = sorted((set({base}.columns) & set({names})) | "
+                    f"{{name for name, count in Counter({names}).items() if count > 1}})"
                 ),
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('Multi-label binarization would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                f"{prefix}if {labels}:",
+                f"{prefix}    {encoded} = {eager}.select([",
+                f"{prefix}        pl.col({column!r}).fill_null('').cast(pl.String)",
+                f"{prefix}        .str.split({delimiter!r}).list.contains(label).cast(pl.Int8)",
+                f"{prefix}        .alias({params.get('prefix', f'{column}_')!r} + label)",
+                f"{prefix}        for label in {labels}",
+                f"{prefix}    ])",
+                f"{prefix}    df = {base}.hstack({encoded})",
+                f"{prefix}else:",
+                f"{prefix}    df = {base}",
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = params["column"]
@@ -702,12 +768,15 @@ class PolarsEngine(DataFrameEngine):
             column = params["column"]
             target = params.get("newColumn", column)
             name = f"_value_{index}"
+            valid = f"_valid_{index}"
             return [
                 f"{prefix}{name} = pl.col({column!r}).cast(pl.Float64, strict=False)",
+                f"{prefix}{valid} = pl.when({name}.is_finite()).then({name}).otherwise(None)",
                 (
-                    f"{prefix}df = df.with_columns(pl.when({name}.max() == {name}.min())"
-                    f".then(pl.lit(0.0)).otherwise(({name} - {name}.min()) / "
-                    f"({name}.max() - {name}.min())).alias({target!r}))"
+                    f"{prefix}df = df.with_columns(pl.when({valid}.is_null()).then(None)"
+                    f".when({valid}.max() == {valid}.min()).then(pl.lit(0.0))"
+                    f".otherwise(({valid} - {valid}.min()) / "
+                    f"({valid}.max() - {valid}.min())).alias({target!r}))"
                 ),
             ]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
@@ -889,9 +958,11 @@ def _polars_aggregation(aggregation: Mapping[str, Any]) -> Any:
     expression = pl.col(aggregation["column"])
     operation = aggregation["operation"]
     if operation == "nUnique":
-        result = expression.n_unique()
+        result = expression.drop_nulls().n_unique()
     elif operation == "count":
         result = expression.count()
+    elif operation in {"first", "last"}:
+        result = getattr(expression.drop_nulls(), operation)()
     else:
         result = getattr(expression, operation)()
     return result.alias(aggregation["alias"])
@@ -899,8 +970,11 @@ def _polars_aggregation(aggregation: Mapping[str, Any]) -> Any:
 
 def _compile_polars_aggregation(aggregation: Mapping[str, Any]) -> str:
     operation = aggregation["operation"]
+    expression = f"pl.col({aggregation['column']!r})"
+    if operation in {"nUnique", "first", "last"}:
+        expression += ".drop_nulls()"
     method = "n_unique" if operation == "nUnique" else operation
-    return f"pl.col({aggregation['column']!r}).{method}().alias({aggregation['alias']!r})"
+    return f"{expression}.{method}().alias({aggregation['alias']!r})"
 
 
 def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
@@ -939,7 +1013,8 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
             [
                 f"    df = df.sort({[rule['column'] for rule in rules]!r},",
                 f"        descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
-                f"        nulls_last={rules[0].get('nulls', 'last') == 'last'!r})",
+                f"        nulls_last={[rule.get('nulls', 'last') == 'last' for rule in rules]!r},",
+                "        maintain_order=True)",
             ]
         )
     return lines

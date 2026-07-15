@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from math import ceil, floor, isfinite
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 
@@ -12,6 +12,7 @@ from .base import (
     boolean_visualization,
     categorical_visualization,
     datetime_visualization,
+    ensure_output_columns_available,
     infer_semantic_type,
     normalize_cell,
     numeric_visualization,
@@ -136,11 +137,13 @@ class PandasEngine(DataFrameEngine):
                 if self._resolve_visible_position(df, rule["column"]) is not None
             ]
             if resolved_rules:
-                filtered = filtered.sort_values(
-                    by=[column for column, _ in resolved_rules],
-                    ascending=[rule.get("direction", "asc") == "asc" for _, rule in resolved_rules],
-                    na_position="first" if resolved_rules[0][1].get("nulls") == "first" else "last",
-                )
+                for column, rule in reversed(resolved_rules):
+                    filtered = filtered.sort_values(
+                        by=column,
+                        ascending=rule.get("direction", "asc") == "asc",
+                        na_position=rule.get("nulls", "last"),
+                        kind="stable",
+                    )
         return filtered
 
     def page(self, frame: Any, offset: int, limit: int) -> dict[str, Any]:
@@ -274,6 +277,7 @@ class PandasEngine(DataFrameEngine):
         return series.notna()
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
+        import numpy as np
         import pandas as pd
 
         df = self.normalize(frame).copy()
@@ -322,13 +326,19 @@ class PandasEngine(DataFrameEngine):
         if kind == "oneHotEncode":
             columns = params["columns"]
             encoded = pd.get_dummies(df[columns], prefix_sep=params.get("prefixSeparator", "_"), dtype="int8")
+            encoded = encoded.loc[:, encoded.ne(0).any(axis=0)]
+            encoded = encoded.loc[:, sorted(encoded.columns, key=str)]
             base = df.drop(columns=columns) if params.get("dropOriginal", True) else df
+            ensure_output_columns_available(base.columns, encoded.columns, "One-hot encoding")
             return pd.concat([base, encoded], axis=1)
         if kind == "multiLabelBinarize":
             column = params["column"]
             encoded = df[column].fillna("").astype(str).str.get_dummies(sep=params["delimiter"])
+            encoded = encoded.loc[:, [str(name) != "" for name in encoded.columns]]
+            encoded = encoded.loc[:, sorted(encoded.columns, key=str)]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")
             base = df.drop(columns=[column]) if params.get("dropOriginal", False) else df
+            ensure_output_columns_available(base.columns, encoded.columns, "Multi-label binarization")
             return pd.concat([base, encoded], axis=1)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = params["column"]
@@ -341,19 +351,20 @@ class PandasEngine(DataFrameEngine):
             elif kind == "splitText":
                 result = series.str.split(params["delimiter"], regex=False).str.get(params["index"])
             elif kind == "capitalizeText":
-                result = series.str.capitalize()
+                result = series.map(str.capitalize, na_action="ignore")
             elif kind == "lowerText":
-                result = series.str.lower()
+                result = series.map(str.lower, na_action="ignore")
             else:
-                result = series.str.upper()
+                result = series.map(str.upper, na_action="ignore")
             df[target] = result
             return df
         if kind == "minMaxScale":
             column = params["column"]
             series: Any = pd.to_numeric(df[column], errors="coerce")
-            span = series.max() - series.min()
+            finite = series.where(np.isfinite(series))
+            span = finite.max() - finite.min()
             df[params.get("newColumn", column)] = (
-                (series - series.min()) / span if pd.notna(span) and span != 0 else series.where(series.isna(), 0.0)
+                (finite - finite.min()) / span if pd.notna(span) and span != 0 else finite.where(finite.isna(), 0.0)
             )
             return df
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
@@ -363,9 +374,9 @@ class PandasEngine(DataFrameEngine):
             if kind == "roundNumber":
                 df[target] = series.round(params.get("decimals", 0))
             elif kind == "floorNumber":
-                df[target] = series.map(lambda value: floor(value) if pd.notna(value) else value)
+                df[target] = np.floor(series)
             else:
-                df[target] = series.map(lambda value: ceil(value) if pd.notna(value) else value)
+                df[target] = np.ceil(series)
             return df
         if kind == "formatDatetime":
             target = params.get("newColumn", params["column"])
@@ -379,13 +390,16 @@ class PandasEngine(DataFrameEngine):
                 )
                 for aggregation in params["aggregations"]
             }
-            return df.groupby(params["keys"], dropna=False).agg(**named).reset_index()
+            return df.groupby(params["keys"], dropna=False, sort=False).agg(**named).reset_index()
         if kind == "byExample":
             df[params["newColumn"]] = _pandas_by_example_expression(df, params["program"])
             return df
         if kind == "customCode":
             namespace = {"df": self._visible_frame(df.copy()), "pd": pd}
-            exec(params["code"], namespace, namespace)
+            try:
+                exec(params["code"], namespace, namespace)
+            except Exception as error:
+                raise EngineError(f"Custom Pandas code failed: {error}") from error
             result = namespace.get("result")
             if not self.detect(result):
                 raise EngineError("Custom Pandas code must assign a Pandas DataFrame or Series to result.")
@@ -442,7 +456,16 @@ class PandasEngine(DataFrameEngine):
         return frame.columns[position] if position is not None else requested
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-        lines = ["import numpy as np", "import pandas as pd", "", "", "def clean_data(df):", "    df = df.copy()"]
+        lines = [
+            "from collections import Counter",
+            "",
+            "import numpy as np",
+            "import pandas as pd",
+            "",
+            "",
+            "def clean_data(df):",
+            "    df = df.copy()",
+        ]
         for index, step in enumerate(steps):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
@@ -454,11 +477,14 @@ class PandasEngine(DataFrameEngine):
         prefix = "    "
         if kind == "sortRows":
             rules = params["rules"]
-            return [
-                f"{prefix}df = df.sort_values(by={[rule['column'] for rule in rules]!r}, ",
-                f"{prefix}    ascending={[rule.get('direction', 'asc') == 'asc' for rule in rules]!r},",
-                f"{prefix}    na_position={rules[0].get('nulls', 'last')!r})",
-            ]
+            lines = []
+            for rule in reversed(rules):
+                lines.append(
+                    f"{prefix}df = df.sort_values(by={rule['column']!r}, "
+                    f"ascending={rule.get('direction', 'asc') == 'asc'!r}, "
+                    f"na_position={rule.get('nulls', 'last')!r}, kind='stable')"
+                )
+            return lines
         if kind == "filterRows":
             return _compile_pandas_filter(params["filterModel"], index)
         if kind == "dropMissingRows":
@@ -499,26 +525,52 @@ class PandasEngine(DataFrameEngine):
         if kind == "oneHotEncode":
             columns = params["columns"]
             name = f"_encoded_{index}"
+            base = f"_base_{index}"
+            generated = f"_generated_{index}"
+            collisions = f"_collisions_{index}"
             return [
                 (
                     f"{prefix}{name} = pd.get_dummies(df[{columns!r}], "
                     f"prefix_sep={params.get('prefixSeparator', '_')!r}, dtype='int8')"
                 ),
+                f"{prefix}{name} = {name}.loc[:, {name}.ne(0).any(axis=0)]",
+                f"{prefix}{name} = {name}.loc[:, sorted({name}.columns, key=str)]",
+                f"{prefix}{base} = df.drop(columns={columns!r}) if {params.get('dropOriginal', True)!r} else df",
+                f"{prefix}{generated} = [str(column) for column in {name}.columns]",
                 (
-                    f"{prefix}df = pd.concat([df.drop(columns={columns!r}) "
-                    f"if {params.get('dropOriginal', True)!r} else df, {name}], axis=1)"
+                    f"{prefix}{collisions} = sorted((set(map(str, {base}.columns)) & set({generated})) | "
+                    f"{{column for column, count in Counter({generated}).items() if count > 1}})"
                 ),
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('One-hot encoding would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
             ]
         if kind == "multiLabelBinarize":
             column = params["column"]
             name = f"_encoded_{index}"
+            base = f"_base_{index}"
+            generated = f"_generated_{index}"
+            collisions = f"_collisions_{index}"
             return [
                 f"{prefix}{name} = df[{column!r}].fillna('').astype(str).str.get_dummies(sep={params['delimiter']!r})",
+                f"{prefix}{name} = {name}.loc[:, [str(column) != '' for column in {name}.columns]]",
+                f"{prefix}{name} = {name}.loc[:, sorted({name}.columns, key=str)]",
                 f"{prefix}{name} = {name}.add_prefix({params.get('prefix', f'{column}_')!r}).astype('int8')",
+                f"{prefix}{base} = df.drop(columns={[column]!r}) if {params.get('dropOriginal', False)!r} else df",
+                f"{prefix}{generated} = [str(column) for column in {name}.columns]",
                 (
-                    f"{prefix}df = pd.concat([df.drop(columns={[column]!r}) "
-                    f"if {params.get('dropOriginal', False)!r} else df, {name}], axis=1)"
+                    f"{prefix}{collisions} = sorted((set(map(str, {base}.columns)) & set({generated})) | "
+                    f"{{column for column, count in Counter({generated}).items() if count > 1}})"
                 ),
+                f"{prefix}if {collisions}:",
+                (
+                    f"{prefix}    raise ValueError('Multi-label binarization would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = params["column"]
@@ -535,7 +587,7 @@ class PandasEngine(DataFrameEngine):
                 expression = f"{base}.split({params['delimiter']!r}, regex=False).str.get({params['index']!r})"
             else:
                 method = {"capitalizeText": "capitalize", "lowerText": "lower", "upperText": "upper"}[kind]
-                expression = f"{base}.{method}()"
+                expression = f"df[{column!r}].astype('string').map(str.{method}, na_action='ignore')"
             return [f"{prefix}df[{target!r}] = {expression}"]
         if kind == "minMaxScale":
             column = params["column"]
@@ -543,6 +595,7 @@ class PandasEngine(DataFrameEngine):
             name = f"_series_{index}"
             return [
                 f"{prefix}{name} = pd.to_numeric(df[{column!r}], errors='coerce')",
+                f"{prefix}{name} = {name}.where(np.isfinite({name}))",
                 f"{prefix}_span_{index} = {name}.max() - {name}.min()",
                 (
                     f"{prefix}df[{target!r}] = (({name} - {name}.min()) / _span_{index} "
@@ -577,7 +630,9 @@ class PandasEngine(DataFrameEngine):
                 )
                 for aggregation in params["aggregations"]
             }
-            return [f"{prefix}df = df.groupby({params['keys']!r}, dropna=False).agg(**{named!r}).reset_index()"]
+            return [
+                f"{prefix}df = df.groupby({params['keys']!r}, dropna=False, sort=False).agg(**{named!r}).reset_index()"
+            ]
         if kind == "byExample":
             expression = _compile_pandas_by_example(params["program"])
             return [f"{prefix}df[{params['newColumn']!r}] = {expression}"]
@@ -734,13 +789,12 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
         lines.append(f"    df = df[_filter_mask_{index}]")
     rules = model.get("sort", [])
     if rules:
-        lines.extend(
-            [
-                f"    df = df.sort_values(by={[rule['column'] for rule in rules]!r},",
-                f"        ascending={[rule.get('direction', 'asc') == 'asc' for rule in rules]!r},",
-                f"        na_position={rules[0].get('nulls', 'last')!r})",
-            ]
-        )
+        for rule in reversed(rules):
+            lines.append(
+                f"    df = df.sort_values(by={rule['column']!r}, "
+                f"ascending={rule.get('direction', 'asc') == 'asc'!r}, "
+                f"na_position={rule.get('nulls', 'last')!r}, kind='stable')"
+            )
     return lines
 
 

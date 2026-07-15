@@ -82,6 +82,22 @@ OPERATION_BY_KIND = {definition.kind: definition for definition in OPERATION_DEF
 FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide", "modulo", "power"}
 AGGREGATIONS = {"sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"}
 CAST_DTYPES = {"string", "integer", "float", "boolean", "date", "datetime"}
+FILTER_OPERATORS = {
+    "equals",
+    "notEquals",
+    "contains",
+    "startsWith",
+    "endsWith",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "between",
+    "isNull",
+    "isNotNull",
+    "isNaN",
+    "isNotNaN",
+}
 
 
 def operation_catalog() -> list[dict[str, Any]]:
@@ -133,20 +149,14 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     for key in ("columns", "keys"):
         if key in params and not _is_string_list(params[key], allow_empty=kind == "dropMissingRows"):
             raise OperationError(f"{kind}.{key} must be an array of column names.")
+    for key in ("dropOriginal", "regex"):
+        if key in params and not isinstance(params[key], bool):
+            raise OperationError(f"{kind}.{key} must be a boolean.")
 
     if kind == "sortRows":
-        rules = params["rules"]
-        if not isinstance(rules, list) or not rules:
-            raise OperationError("sortRows.rules must be a non-empty array.")
-        for rule in rules:
-            if not isinstance(rule, Mapping) or not isinstance(rule.get("column"), str):
-                raise OperationError("Each sort rule must name a column.")
-            if rule.get("direction") not in {"asc", "desc"} or rule.get("nulls", "last") not in {"first", "last"}:
-                raise OperationError("Sort directions and null ordering are invalid.")
+        _validate_sort_rules(params["rules"], "sortRows.rules", allow_empty=False)
     elif kind == "filterRows":
-        model = params["filterModel"]
-        if not isinstance(model, Mapping) or not isinstance(model.get("filters"), list):
-            raise OperationError("filterRows.filterModel must contain a filters array.")
+        _validate_filter_model(params["filterModel"])
     elif kind == "dropMissingRows" and params.get("how", "any") not in {"any", "all"}:
         raise OperationError("dropMissingRows.how must be any or all.")
     elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
@@ -164,10 +174,29 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         )
         if has_column == has_value:
             raise OperationError("formula requires exactly one of rightColumn or numeric value.")
-    elif kind == "splitText" and (not isinstance(params["index"], int) or params["index"] < 0):
-        raise OperationError("splitText.index must be a non-negative integer.")
-    elif kind == "roundNumber" and not isinstance(params.get("decimals", 0), int):
+    elif kind == "oneHotEncode" and not isinstance(params.get("prefixSeparator", "_"), str):
+        raise OperationError("oneHotEncode.prefixSeparator must be a string.")
+    elif kind == "multiLabelBinarize":
+        if not isinstance(params["delimiter"], str) or not params["delimiter"]:
+            raise OperationError("multiLabelBinarize.delimiter must be a non-empty string.")
+        if not isinstance(params.get("prefix", ""), str):
+            raise OperationError("multiLabelBinarize.prefix must be a string.")
+    elif kind == "findReplace":
+        if not isinstance(params["find"], str) or not isinstance(params["replacement"], str):
+            raise OperationError("findReplace.find and replacement must be strings.")
+    elif kind == "stripText" and params.get("characters") is not None and not isinstance(params["characters"], str):
+        raise OperationError("stripText.characters must be a string or null.")
+    elif kind == "splitText":
+        if not isinstance(params["delimiter"], str) or not params["delimiter"]:
+            raise OperationError("splitText.delimiter must be a non-empty string.")
+        if isinstance(params["index"], bool) or not isinstance(params["index"], int) or params["index"] < 0:
+            raise OperationError("splitText.index must be a non-negative integer.")
+    elif kind == "roundNumber" and (
+        isinstance(params.get("decimals", 0), bool) or not isinstance(params.get("decimals", 0), int)
+    ):
         raise OperationError("roundNumber.decimals must be an integer.")
+    elif kind == "formatDatetime" and (not isinstance(params["format"], str) or not params["format"]):
+        raise OperationError("formatDatetime.format must be a non-empty string.")
     elif kind == "groupBy":
         aggregations = params["aggregations"]
         if not isinstance(aggregations, list) or not aggregations:
@@ -179,8 +208,61 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
                 raise OperationError("Each aggregation must contain column and alias names.")
             if aggregation.get("operation") not in AGGREGATIONS:
                 raise OperationError(f"Unsupported aggregation: {aggregation.get('operation')!r}.")
+        aliases = [str(aggregation["alias"]) for aggregation in aggregations]
+        if len(aliases) != len(set(aliases)):
+            raise OperationError("groupBy aggregation aliases must be unique.")
+        if set(params["keys"]) & set(aliases):
+            raise OperationError("groupBy aggregation aliases cannot duplicate a group key.")
     elif kind == "customCode" and (not isinstance(params["code"], str) or not params["code"].strip()):
         raise OperationError("customCode.code must be non-empty Python code assigning a dataframe to result.")
+
+
+def _validate_sort_rules(value: Any, label: str, *, allow_empty: bool) -> None:
+    if not isinstance(value, list) or (not allow_empty and not value):
+        qualifier = "an array" if allow_empty else "a non-empty array"
+        raise OperationError(f"{label} must be {qualifier}.")
+    for rule in value:
+        if not isinstance(rule, Mapping) or not isinstance(rule.get("column"), str) or not rule.get("column"):
+            raise OperationError("Each sort rule must name a column.")
+        if rule.get("direction") not in {"asc", "desc"} or rule.get("nulls", "last") not in {"first", "last"}:
+            raise OperationError("Sort directions and null ordering are invalid.")
+
+
+def _validate_filter_model(value: Any) -> None:
+    if not isinstance(value, Mapping) or not isinstance(value.get("filters"), list):
+        raise OperationError("filterRows.filterModel must contain a filters array.")
+    if value.get("logic", "and") not in {"and", "or"}:
+        raise OperationError("filterRows.filterModel.logic must be either 'and' or 'or'.")
+    _validate_sort_rules(value.get("sort", []), "filterRows.filterModel.sort", allow_empty=True)
+
+    for column_filter in value["filters"]:
+        if (
+            not isinstance(column_filter, Mapping)
+            or not isinstance(column_filter.get("column"), str)
+            or not column_filter.get("column")
+        ):
+            raise OperationError("Each column filter must name a column.")
+        if column_filter.get("logic", "and") not in {"and", "or"}:
+            raise OperationError("Column filter logic must be either 'and' or 'or'.")
+        predicates = column_filter.get("predicates", [])
+        if not isinstance(predicates, list):
+            raise OperationError("Column filter predicates must be an array.")
+        for predicate in predicates:
+            operator = predicate.get("operator") if isinstance(predicate, Mapping) else None
+            if operator not in FILTER_OPERATORS:
+                raise OperationError(f"Unsupported filter operator: {operator!r}.")
+            if operator not in {"isNull", "isNotNull", "isNaN", "isNotNaN"} and "value" not in predicate:
+                raise OperationError(f"Filter operator {operator} requires a value.")
+            if operator == "between" and "secondValue" not in predicate:
+                raise OperationError("Filter operator between requires a secondValue.")
+
+        value_filter = column_filter.get("valueFilter")
+        if value_filter is not None:
+            if not isinstance(value_filter, Mapping) or not isinstance(value_filter.get("selectedValues", []), list):
+                raise OperationError("Column valueFilter must contain a selectedValues array.")
+            for key in ("includeNulls", "includeNaN"):
+                if key in value_filter and not isinstance(value_filter[key], bool):
+                    raise OperationError(f"Column valueFilter.{key} must be a boolean.")
 
 
 def _is_string_list(value: Any, *, allow_empty: bool = False) -> bool:

@@ -12,18 +12,18 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD  |
 | Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive and nested-type tests green         |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
-| Multi-column viewing sorts                          |    Yes |    Yes | Partial | Null-order and stability tests                  |
+| Multi-column viewing sorts                          |    Yes |    Yes | Partial | Per-column null order/stability green; editor   |
 | Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD     |
 | Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD  |
 | Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Partial | Runtime/UI green; persistence/shortcuts TBD     |
 | Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green        |
 | Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
-| Missing/duplicate row operations                    |    Yes |    Yes | Partial | Core null/duplicate tests green; edges TBD      |
-| One-hot and multi-label binarization                |    Yes |    Yes | Partial | Core category tests green; collisions TBD       |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Partial | Core cross-engine tests green; Unicode TBD      |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Partial | Core cross-engine tests green; typed edges TBD  |
-| Group and aggregate                                 |    Yes |    Yes | Partial | Core aggregation tests green; typed edges TBD   |
+| Missing/duplicate row operations                    |    Yes |    Yes | Partial | Null/NaN and keep-mode edges green; editor TBD  |
+| One-hot and multi-label binarization                |    Yes |    Yes | Partial | Null/blank/collision edges green; editor TBD    |
+| Find/replace/strip/split/case transforms            |    Yes |    Yes | Partial | Unicode/null cross-engine tests green           |
+| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Partial | Non-finite/constant edges green; editor TBD     |
+| Group and aggregate                                 |    Yes |    Yes | Partial | Ordered nullable aggregates green; editor TBD   |
 | Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD      |
 | String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green     |
 | Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD   |
@@ -162,6 +162,15 @@ Data-format and typed-edge hardening slice, 2026-07-15:
 - Missing and malformed file opens now produce structured engine diagnostics for eager and lazy readers without retaining a session. Polars Excel correctly translates the public zero-based sheet index to the reader's one-based ID.
 
 This completes automated format and source-type edge evidence but keeps entry-point and summary rows **Partial** until the packaged-editor fixture checklist and interactive import/error states are recorded in VS Code and Cursor.
+
+Operation-edge hardening slice, 2026-07-15:
+
+- Pandas and Polars runtime results and executable generated functions agree on stable multi-sort with independent null placement per column, `dropMissingRows` any/all semantics, `dropDuplicates` last/none modes, and finite-only min-max scaling. Round, floor, and ceiling preserve infinities without Pandas overflow.
+- One-hot encoding ignores null categories in both engines. Multi-label encoding ignores null/blank labels and emits no empty-name column. Both operations reject existing/generated output-name collisions before returning a dataframe; Polars remains native throughout.
+- Grouping preserves source encounter order. Polars nullable `nUnique`, `first`, and `last` now match Pandas, while duplicate aliases or aliases replacing a group key fail IR validation.
+- Unicode casing uses one deterministic mapping across engines (`ß`, dotted `İ`, accents), nulls are preserved, and engine exceptions from custom code become structured diagnostics. Expanded IR validation rejects malformed sort/filter, categorical, text, numeric, datetime, and boolean parameters before execution.
+
+This completes the listed automated operation-edge evidence but keeps operation rows **Partial** until identifier-based duplicate-column parameters and the packaged VS Code/Cursor operation checklist are green.
 
 ## Explicitly deferred from 1.0
 
