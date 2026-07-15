@@ -39,6 +39,7 @@ export function App() {
   const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [generatedCode, setGeneratedCode] = useState("");
+  const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     const listener = (event: MessageEvent<DataExplorerResponse | EditorActionMessage>) => {
@@ -102,6 +103,7 @@ export function App() {
         setSnapshotRows(undefined);
         setGeneratedCode(response.code);
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
+        setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         vscode.postMessage({
           kind: "runtimeRequest",
           request: { kind: "getSummary", filterModel: response.metadata.filterModel }
@@ -416,6 +418,15 @@ export function App() {
                 <span>
                   {diff.changedCells} changed cells{diff.truncated ? " in this block" : ""}
                 </span>
+              </div>
+            )}
+            {draftWarnings.length > 0 && (
+              <div className="draftWarnings" role="alert">
+                {draftWarnings.map((warning) => (
+                  <span key={warning}>
+                    <span className="codicon codicon-warning" aria-hidden="true" /> {warning}
+                  </span>
+                ))}
               </div>
             )}
           </header>

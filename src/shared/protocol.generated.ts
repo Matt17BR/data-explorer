@@ -69,6 +69,7 @@ export type OperationKind =
   | "ceilNumber"
   | "formatDatetime"
   | "groupBy"
+  | "byExample"
   | "customCode";
 export type DataExplorerResponse =
   | InitializedResponse

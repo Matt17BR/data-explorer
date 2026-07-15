@@ -229,7 +229,7 @@ class SessionManager:
                 "page": session.engine.page(filtered, offset, limit),
                 "diff": self._diff(session, diff_base, draft, offset, limit),
                 "code": session.engine.compile_plan(candidate_plan),
-                "warnings": [],
+                "warnings": list(normalized["params"].get("warnings", [])),
             }
 
     def apply_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:

@@ -16,11 +16,13 @@ Persistence tests must assert that only serializable replay state is stored, mal
 
 Export tests must cover both engines and both supported formats. They must prove committed-plan output, exclusion of view filters, pending-draft rejection, source-path rejection, atomic replacement, failed-write cleanup, and the Polars-to-Pandas prohibition. Code export acceptance must verify the edited CodeMirror buffer, not only the original generated string.
 
+By-example tests must exercise every candidate family, deterministic tie ordering, ambiguity warnings, failure diagnostics, persisted-program revalidation, native execution, and generated-code equivalence in both engines. A synthesized step is not accepted without draft/diff confirmation and apply/discard coverage.
+
 ## Visual and accessibility coverage
 
 `npm run build && npm run capture:screenshots` generates the browser harness from real Polars protocol responses and the production webview bundle. Checked-in baselines currently cover light, dark, and high contrast at 800, 1280, and 1920 pixels, plus 80%, 100%, 150%, and 200% zoom. The wide fixture contains 1,000 rows by 40 columns and supplies five independent 200-row blocks.
 
-The current browser acceptance records keyboard cell navigation, far-column focus restoration, bounded row/column DOM counts, responsive drawer layout, advanced predicate interaction, the complete operation catalog, draft/diff presentation, and editable CodeMirror code preview. Checked-in editing baselines are `operation-dialog-dark-1280.png`, `draft-preview-dark-1280.png`, and `code-preview-dark-1280.png`. High-contrast light, automated axe scanning and image diffs, long/Unicode content, and explicit empty/loading/error/recovery states remain release gates; do not mark those matrix rows Done until the harness implements them.
+The current browser acceptance records keyboard cell navigation, far-column focus restoration, bounded row/column DOM counts, responsive drawer layout, advanced predicate interaction, the complete operation catalog, draft/diff presentation, by-example input/warning states, and editable CodeMirror code preview. Checked-in editing baselines include `operation-dialog-dark-1280.png`, `draft-preview-dark-1280.png`, `by-example-dialog-dark-1280.png`, `by-example-preview-dark-1280.png`, and `code-preview-dark-1280.png`. High-contrast light, automated axe scanning and image diffs, long/Unicode content, and explicit empty/loading/error/recovery states remain release gates; do not mark those matrix rows Done until the harness implements them.
 
 ## VS Code and Cursor release checklist
 

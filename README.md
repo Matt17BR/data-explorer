@@ -1,6 +1,6 @@
 # Data Explorer
 
-Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, engine-native code, and explicit exports. Notebook insertion and by-example transforms remain 1.0 work in progress.
+Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, and explicit exports. Notebook insertion remains 1.0 work in progress.
 
 It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
 
@@ -13,6 +13,8 @@ These screenshots are generated from the real built webview/notebook renderer us
 ![Searchable cleaning operation catalog](docs/images/acceptance/operation-dialog-dark-1280.png)
 
 ![Draft data and generated-code preview](docs/images/acceptance/draft-preview-dark-1280.png)
+
+![By-example synthesis with preview warning](docs/images/acceptance/by-example-preview-dark-1280.png)
 
 ![Excel-like filter panel](docs/images/filter-panel.png)
 
@@ -28,8 +30,9 @@ These screenshots are generated from the real built webview/notebook renderer us
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
 - Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.
-- A searchable 26-operation catalog with native Pandas/Polars execution for row, column, text, categorical, numeric, datetime, grouping, and custom-code transforms.
+- A searchable 27-operation catalog with native Pandas/Polars execution for row, column, text, categorical, numeric, datetime, grouping, by-example, and custom-code transforms.
 - Draft-first editing with typed data diffs, explicit apply/discard, latest-step editing, undo replay, and editable CodeMirror Python preview.
+- Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
 - Lightweight notebook output renderer for `data_wrangler_runtime.notebook.show(...)`.
@@ -141,4 +144,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. By-example/FlashFill operations, notebook code insertion, MIME v2, exhaustive edge fixtures, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.
+It does not yet claim Data Wrangler parity. Notebook code insertion, MIME v2, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.

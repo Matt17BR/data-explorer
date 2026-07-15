@@ -41,7 +41,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(26);
+    expect(operationCatalog).toHaveLength(27);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -117,5 +117,36 @@ describe("OperationBuilder", () => {
 
     expect(screen.getByRole("option", { name: "city" })).toBeInTheDocument();
     expect((screen.getByRole("option", { name: "city" }) as HTMLOptionElement).selected).toBe(true);
+  });
+
+  it("builds by-example inputs and reports malformed JSON before preview", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="byExample"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: "not json" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Examples must be valid JSON");
+    expect(onPreview).not.toHaveBeenCalled();
+
+    const valid = [
+      { inputs: { city: "Milan" }, output: "MILAN" },
+      { inputs: { city: "Paris" }, output: "PARIS" }
+    ];
+    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(valid) } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        kind: "byExample",
+        params: { sourceColumns: ["city"], newColumn: "example_result", examples: valid }
+      })
+    );
   });
 });

@@ -243,3 +243,34 @@ def test_failed_export_preserves_existing_destination_and_removes_temporary_file
 
     assert destination.read_text(encoding="utf-8") == "keep me"
     assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_by_example_requires_warning_preview_before_apply(tmp_path, backend):
+    path = tmp_path / "examples.csv"
+    path.write_text("value\na\nb\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=10
+    )
+    preview = manager.preview_step(
+        opened["metadata"]["sessionId"],
+        0,
+        transform(
+            "example",
+            "byExample",
+            sourceColumns=["value"],
+            newColumn="upper",
+            examples=[
+                {"inputs": {"value": "a"}, "output": "A"},
+                {"inputs": {"value": "b"}, "output": "B"},
+            ],
+        ),
+        0,
+        10,
+    )
+    assert preview["warnings"][0].startswith("Ambiguous examples")
+    assert preview["metadata"]["draftStep"]["params"]["program"]["kind"] == "case"
+    assert [row["values"][1]["display"] for row in preview["page"]["rows"]] == ["A", "B"]
+    applied = manager.apply_draft(opened["metadata"]["sessionId"], 1, 0, 10)
+    assert applied["metadata"]["steps"][0]["params"]["program"]["kind"] == "case"

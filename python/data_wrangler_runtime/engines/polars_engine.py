@@ -480,6 +480,8 @@ class PolarsEngine(DataFrameEngine):
         if kind == "groupBy":
             expressions = [_polars_aggregation(aggregation) for aggregation in params["aggregations"]]
             return df.group_by(params["keys"], maintain_order=True).agg(expressions)
+        if kind == "byExample":
+            return df.with_columns(_polars_by_example_expression(params["program"]).alias(params["newColumn"]))
         if kind == "customCode":
             namespace = {"df": df, "pl": pl}
             exec(params["code"], namespace, namespace)
@@ -669,6 +671,9 @@ class PolarsEngine(DataFrameEngine):
         if kind == "groupBy":
             expressions = ", ".join(_compile_polars_aggregation(aggregation) for aggregation in params["aggregations"])
             return [f"{prefix}df = df.group_by({params['keys']!r}, maintain_order=True).agg([{expressions}])"]
+        if kind == "byExample":
+            expression = _compile_polars_by_example(params["program"])
+            return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
         if kind == "customCode":
             function_name = f"_custom_step_{index}"
             code_lines = str(params["code"]).splitlines()
@@ -679,6 +684,113 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}df = {function_name}(df)",
             ]
         raise EngineError(f"Polars cannot compile transformation: {kind}")
+
+
+def _polars_by_example_expression(program: Mapping[str, Any]) -> Any:
+    import polars as pl
+
+    kind = program["kind"]
+    if kind == "column":
+        return pl.col(program["column"])
+    if kind == "literal":
+        return pl.lit(program.get("value"))
+    if kind == "slice":
+        start = program["start"]
+        stop = program.get("stop")
+        length = None if stop is None else stop - start
+        return _polars_by_example_expression(program["input"]).cast(pl.String).str.slice(start, length)
+    if kind == "split":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.split(program["delimiter"])
+            .list.get(program["index"], null_on_oob=True)
+        )
+    if kind == "concat":
+        return pl.concat_str([_polars_by_example_expression(part) for part in program["parts"]], separator="")
+    if kind == "regexExtract":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.extract(program["pattern"], group_index=program["group"])
+        )
+    if kind == "regexReplace":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.replace_all(program["pattern"], program["replacement"])
+        )
+    if kind == "case":
+        value = _polars_by_example_expression(program["input"]).cast(pl.String)
+        if program["style"] == "lower":
+            return value.str.to_lowercase()
+        if program["style"] == "upper":
+            return value.str.to_uppercase()
+        return value.str.slice(0, 1).str.to_uppercase() + value.str.slice(1).str.to_lowercase()
+    if kind == "datetimeFormat":
+        return (
+            _polars_by_example_expression(program["input"])
+            .cast(pl.String)
+            .str.strptime(pl.Datetime, format=program["inputFormat"], strict=False)
+            .dt.strftime(program["outputFormat"])
+        )
+    if kind == "arithmetic":
+        return _polars_formula(
+            _polars_by_example_expression(program["left"]),
+            _polars_by_example_expression(program["right"]),
+            program["operator"],
+        )
+    raise EngineError(f"Unsupported Polars by-example expression: {kind}")
+
+
+def _compile_polars_by_example(program: Mapping[str, Any]) -> str:
+    kind = program["kind"]
+    if kind == "column":
+        return f"pl.col({program['column']!r})"
+    if kind == "literal":
+        return f"pl.lit({program.get('value')!r})"
+    if kind == "slice":
+        start = program["start"]
+        stop = program.get("stop")
+        length = None if stop is None else stop - start
+        return f"{_compile_polars_by_example(program['input'])}.cast(pl.String).str.slice({start!r}, {length!r})"
+    if kind == "split":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String).str.split({program['delimiter']!r})"
+            f".list.get({program['index']!r}, null_on_oob=True)"
+        )
+    if kind == "concat":
+        parts = ", ".join(_compile_polars_by_example(part) for part in program["parts"])
+        return f"pl.concat_str([{parts}], separator='')"
+    if kind == "regexExtract":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f".str.extract({program['pattern']!r}, group_index={program['group']!r})"
+        )
+    if kind == "regexReplace":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f".str.replace_all({program['pattern']!r}, {program['replacement']!r})"
+        )
+    if kind == "case":
+        value = f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+        if program["style"] == "lower":
+            return f"{value}.str.to_lowercase()"
+        if program["style"] == "upper":
+            return f"{value}.str.to_uppercase()"
+        return f"({value}.str.slice(0, 1).str.to_uppercase() + {value}.str.slice(1).str.to_lowercase())"
+    if kind == "datetimeFormat":
+        return (
+            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f".str.strptime(pl.Datetime, format={program['inputFormat']!r}, strict=False)"
+            f".dt.strftime({program['outputFormat']!r})"
+        )
+    if kind == "arithmetic":
+        symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[program["operator"]]
+        return (
+            f"({_compile_polars_by_example(program['left'])} {symbol} {_compile_polars_by_example(program['right'])})"
+        )
+    raise EngineError(f"Unsupported Polars by-example expression: {kind}")
 
 
 def _polars_valid_value(expression: Any, dtype: Any) -> Any:

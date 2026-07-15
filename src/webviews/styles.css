@@ -690,6 +690,27 @@ dd {
   padding: 2px 7px;
 }
 
+.draftWarnings {
+  display: grid;
+  gap: 5px;
+}
+
+.draftWarnings > span,
+.operationFormError {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  font-size: 11px;
+  margin: 0;
+  padding: 6px 8px;
+}
+
+.operationFormError {
+  background: var(--vscode-inputValidation-errorBackground);
+  border-color: var(--vscode-inputValidation-errorBorder);
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+}
+
 .draftCode {
   min-height: 0;
   overflow: auto;
@@ -894,6 +915,7 @@ dd {
 }
 
 .formField select[multiple] {
+  appearance: none;
   min-height: 90px;
 }
 

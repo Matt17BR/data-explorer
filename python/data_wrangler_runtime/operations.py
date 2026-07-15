@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .by_example import SynthesisError, normalize_by_example
+
 
 class OperationError(ValueError):
     """Raised when a transformation step is unknown or malformed."""
@@ -66,6 +68,13 @@ OPERATION_DEFINITIONS = (
         "formatDatetime", "Format datetime", "Numeric / datetime", ("column", "format"), ("newColumn",)
     ),
     OperationDefinition("groupBy", "Group and aggregate", "Aggregation", ("keys", "aggregations")),
+    OperationDefinition(
+        "byExample",
+        "Transform by example",
+        "By example",
+        ("sourceColumns", "newColumn", "examples"),
+        ("program", "warnings", "candidateCount"),
+    ),
     OperationDefinition("customCode", "Custom engine-native code", "Custom", ("code",)),
 )
 
@@ -109,6 +118,11 @@ def validate_step(value: Mapping[str, Any]) -> dict[str, Any]:
 
     normalized = dict(params)
     _validate_common(kind, normalized)
+    if kind == "byExample":
+        try:
+            normalized = normalize_by_example(normalized)
+        except SynthesisError as error:
+            raise OperationError(str(error)) from error
     return {"id": step_id, "kind": kind, "params": normalized}
 
 

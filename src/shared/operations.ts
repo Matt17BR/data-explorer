@@ -1,7 +1,13 @@
 import type { OperationKind } from "./protocol";
 
 export type OperationGroup =
-  "Rows / order" | "Columns / types" | "Categorical / text" | "Numeric / datetime" | "Aggregation" | "Custom";
+  | "Rows / order"
+  | "Columns / types"
+  | "Categorical / text"
+  | "Numeric / datetime"
+  | "Aggregation"
+  | "By example"
+  | "Custom";
 
 export interface OperationCatalogItem {
   kind: OperationKind;
@@ -17,6 +23,7 @@ export const operationGroups: readonly OperationGroup[] = [
   "Categorical / text",
   "Numeric / datetime",
   "Aggregation",
+  "By example",
   "Custom"
 ];
 
@@ -135,6 +142,13 @@ export const operationCatalog: readonly OperationCatalogItem[] = [
     "Group by keys and calculate named aggregations.",
     "Aggregation",
     "group-by-ref-type"
+  ),
+  item(
+    "byExample",
+    "Transform by example",
+    "Synthesize the simplest deterministic program matching every example.",
+    "By example",
+    "sparkle"
   ),
   item("customCode", "Custom code", "Run an engine-native step that assigns a dataframe to result.", "Custom", "code")
 ];

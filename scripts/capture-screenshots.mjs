@@ -84,6 +84,44 @@ draft["metadata"]["stats"] = manager.get_dataset_stats(
     {"logic": "and", "filters": [], "sort": []},
 )["stats"]
 
+example_path = root / "tmp" / "screenshots" / "by-example.csv"
+example_path.write_text("value\na\nb\n", encoding="utf-8")
+example_manager = SessionManager()
+example_opened = example_manager.open_session(
+    {"kind": "file", "label": "by-example.csv", "path": str(example_path)},
+    backend="polars",
+    page_size=10,
+)
+example_id = example_opened["metadata"]["sessionId"]
+example_draft = example_manager.preview_step(
+    example_id,
+    0,
+    {
+        "id": "uppercase-example",
+        "kind": "byExample",
+        "params": {
+            "sourceColumns": ["value"],
+            "newColumn": "upper",
+            "examples": [
+                {"inputs": {"value": "a"}, "output": "A"},
+                {"inputs": {"value": "b"}, "output": "B"},
+            ],
+        },
+    },
+    0,
+    10,
+)
+example_draft["summaries"] = example_manager.get_summary(
+    example_id,
+    example_draft["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
+example_draft["metadata"]["stats"] = example_manager.get_dataset_stats(
+    example_id,
+    example_draft["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["stats"]
+
 wide_path = root / "tmp" / "screenshots" / "wide.csv"
 pl.DataFrame({f"column_{column:02d}": [row + column for row in range(1000)] for column in range(40)}).write_csv(wide_path)
 wide = manager.open_session(
@@ -123,6 +161,7 @@ print(json.dumps({
     },
     "values": values,
     "draft": draft,
+    "exampleDraft": example_draft,
     "wide": wide,
     "widePages": wide_pages,
     "notebook": mime_payload,
@@ -143,6 +182,20 @@ writeWebviewHarness(
   { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "formula" } }
 );
 writeWebviewHarness("draft-preview.html", payloads.draft, {}, "acceptance/draft-preview-dark-1280.png");
+writeWebviewHarness(
+  "by-example-dialog.html",
+  payloads.opened,
+  {},
+  "acceptance/by-example-dialog-dark-1280.png",
+  {},
+  { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" } }
+);
+writeWebviewHarness(
+  "by-example-preview.html",
+  payloads.exampleDraft,
+  {},
+  "acceptance/by-example-preview-dark-1280.png"
+);
 writeCodePreviewHarness("code-preview.html", payloads.draft.code, "acceptance/code-preview-dark-1280.png");
 writeWebviewHarness(
   "filter-panel.html",
@@ -344,7 +397,6 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760) {
       "--disable-gpu",
       "--no-sandbox",
       "--allow-file-access-from-files",
-      "--hide-scrollbars",
       `--window-size=${width},${height}`,
       "--virtual-time-budget=2500",
       `--screenshot=${outputPath}`,

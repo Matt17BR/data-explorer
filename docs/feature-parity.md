@@ -25,7 +25,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Partial | Core cross-engine tests green; typed edges TBD  |
 | Group and aggregate                                 |    Yes |    Yes | Partial | Core aggregation tests green; typed edges TBD   |
 | Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD      |
-| String/datetime/new-column by example               |    Yes |    Yes | Planned | Candidate ranking and ambiguity fixtures        |
+| String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green     |
 | Copy/script/notebook code export                    |    Yes |    Yes | Partial | Clipboard/script green; notebook insertion TBD  |
 | CSV and Parquet data export                         |    Yes |    Yes | Partial | Cross-engine atomic/source tests green          |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
@@ -85,6 +85,15 @@ Export slice, 2026-07-15:
 - Protocol v2 carries revision-checked export requests and typed completion responses. VS Code commands copy the editable code buffer, save a Python script, and prompt for an explicit cleaned-data destination under Workspace Trust.
 
 This advances export rows to **Partial**. Notebook insertion, command-dialog integration tests, dependency diagnostics for Pandas-to-Parquet export, and packaged VS Code/Cursor interaction remain mandatory.
+
+By-example slice, 2026-07-15:
+
+- `npm test`: 17 TypeScript and 57 Python tests passed. Candidate fixtures cover slicing, splitting, concatenation with literals, regex extraction/replacement, lower/upper/capitalize, datetime parse/format, constants, and column arithmetic.
+- The synthesizer ranks by deterministic complexity and canonical program order, rejects inconsistent examples, revalidates persisted programs, and reports equally simple matches as draft warnings.
+- Pandas and Polars execute and compile the same selected AST natively. Cross-engine tests cover string synthesis, datetime formatting, arithmetic, session preview/apply, and a hard Polars-to-Pandas prohibition.
+- The operation builder validates example JSON before dispatch; protocol-normalized steps persist the selected program so reload does not reselect a different candidate.
+
+This advances by-example to **Partial**. More compound programs, null/type-edge inference, editable example-row capture from the real grid, keyboard acceptance, and packaged editor testing remain mandatory.
 
 ## Explicitly deferred from 1.0
 

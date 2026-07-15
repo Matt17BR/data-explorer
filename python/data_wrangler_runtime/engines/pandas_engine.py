@@ -351,6 +351,9 @@ class PandasEngine(DataFrameEngine):
                 for aggregation in params["aggregations"]
             }
             return df.groupby(params["keys"], dropna=False).agg(**named).reset_index()
+        if kind == "byExample":
+            df[params["newColumn"]] = _pandas_by_example_expression(df, params["program"])
+            return df
         if kind == "customCode":
             namespace = {"df": df, "pd": pd}
             exec(params["code"], namespace, namespace)
@@ -497,6 +500,9 @@ class PandasEngine(DataFrameEngine):
                 for aggregation in params["aggregations"]
             }
             return [f"{prefix}df = df.groupby({params['keys']!r}, dropna=False).agg(**{named!r}).reset_index()"]
+        if kind == "byExample":
+            expression = _compile_pandas_by_example(params["program"])
+            return [f"{prefix}df[{params['newColumn']!r}] = {expression}"]
         if kind == "customCode":
             function_name = f"_custom_step_{index}"
             code_lines = str(params["code"]).splitlines()
@@ -507,6 +513,102 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = {function_name}(df)",
             ]
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
+
+
+def _pandas_by_example_expression(df: Any, program: Mapping[str, Any]) -> Any:
+    import pandas as pd
+
+    kind = program["kind"]
+    if kind == "column":
+        return df[program["column"]]
+    if kind == "literal":
+        return program.get("value")
+    if kind == "slice":
+        value = _pandas_string_expression(df, program["input"])
+        return value.str.slice(program["start"], program.get("stop"))
+    if kind == "split":
+        value = _pandas_string_expression(df, program["input"])
+        return value.str.split(program["delimiter"], regex=False).str.get(program["index"])
+    if kind == "concat":
+        result: Any = pd.Series("", index=df.index, dtype="string")
+        for part in program["parts"]:
+            value = _pandas_by_example_expression(df, part)
+            result = result + (value.astype("string") if hasattr(value, "astype") else str(value))
+        return result
+    if kind == "regexExtract":
+        value = _pandas_string_expression(df, program["input"])
+        return value.str.extract(program["pattern"], expand=False)
+    if kind == "regexReplace":
+        value = _pandas_string_expression(df, program["input"])
+        return value.str.replace(program["pattern"], program["replacement"], regex=True)
+    if kind == "case":
+        value = _pandas_string_expression(df, program["input"])
+        return getattr(value.str, program["style"])()
+    if kind == "datetimeFormat":
+        value = _pandas_by_example_expression(df, program["input"])
+        return pd.to_datetime(value, format=program["inputFormat"], errors="coerce").dt.strftime(
+            program["outputFormat"]
+        )
+    if kind == "arithmetic":
+        return _pandas_formula(
+            _pandas_by_example_expression(df, program["left"]),
+            _pandas_by_example_expression(df, program["right"]),
+            program["operator"],
+        )
+    raise EngineError(f"Unsupported Pandas by-example expression: {kind}")
+
+
+def _pandas_string_expression(df: Any, program: Mapping[str, Any]) -> Any:
+    import pandas as pd
+
+    value = _pandas_by_example_expression(df, program)
+    return value.astype("string") if hasattr(value, "astype") else pd.Series(str(value), index=df.index, dtype="string")
+
+
+def _compile_pandas_by_example(program: Mapping[str, Any]) -> str:
+    kind = program["kind"]
+    if kind == "column":
+        return f"df[{program['column']!r}]"
+    if kind == "literal":
+        return repr(program.get("value"))
+    if kind == "slice":
+        value = _compile_pandas_string(program["input"])
+        return f"{value}.str.slice({program['start']!r}, {program.get('stop')!r})"
+    if kind == "split":
+        value = _compile_pandas_string(program["input"])
+        return f"{value}.str.split({program['delimiter']!r}, regex=False).str.get({program['index']!r})"
+    if kind == "concat":
+        parts = [_compile_pandas_string(part) for part in program["parts"]]
+        return " + ".join(f"({part})" for part in parts)
+    if kind == "regexExtract":
+        return f"{_compile_pandas_string(program['input'])}.str.extract({program['pattern']!r}, expand=False)"
+    if kind == "regexReplace":
+        return (
+            f"{_compile_pandas_string(program['input'])}.str.replace({program['pattern']!r}, "
+            f"{program['replacement']!r}, regex=True)"
+        )
+    if kind == "case":
+        return f"{_compile_pandas_string(program['input'])}.str.{program['style']}()"
+    if kind == "datetimeFormat":
+        return (
+            f"pd.to_datetime({_compile_pandas_by_example(program['input'])}, "
+            f"format={program['inputFormat']!r}, errors='coerce').dt.strftime({program['outputFormat']!r})"
+        )
+    if kind == "arithmetic":
+        symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[program["operator"]]
+        return (
+            f"({_compile_pandas_by_example(program['left'])} {symbol} {_compile_pandas_by_example(program['right'])})"
+        )
+    raise EngineError(f"Unsupported Pandas by-example expression: {kind}")
+
+
+def _compile_pandas_string(program: Mapping[str, Any]) -> str:
+    expression = _compile_pandas_by_example(program)
+    return (
+        f"pd.Series({expression!s}, index=df.index, dtype='string')"
+        if program["kind"] == "literal"
+        else f"{expression}.astype('string')"
+    )
 
 
 def _pandas_formula(left: Any, right: Any, operator: str) -> Any:

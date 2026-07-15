@@ -28,6 +28,7 @@ export function OperationBuilder({
   const [search, setSearch] = useState("");
   const [sortRows, setSortRows] = useState(1);
   const [aggregationRows, setAggregationRows] = useState(1);
+  const [formError, setFormError] = useState<string>();
   const filteredCatalog = useMemo(() => {
     const query = search.trim().toLowerCase();
     return query
@@ -42,16 +43,21 @@ export function OperationBuilder({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedKind) return;
-    const form = new FormData(event.currentTarget);
-    const params = buildParams(selectedKind, form, filterModel);
-    onPreview(
-      {
-        id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
-        kind: selectedKind,
-        params
-      },
-      activeInitial?.id
-    );
+    try {
+      const form = new FormData(event.currentTarget);
+      const params = buildParams(selectedKind, form, filterModel);
+      setFormError(undefined);
+      onPreview(
+        {
+          id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
+          kind: selectedKind,
+          params
+        },
+        activeInitial?.id
+      );
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   return (
@@ -130,6 +136,11 @@ export function OperationBuilder({
                   onAddSort={() => setSortRows((count) => count + 1)}
                   onAddAggregation={() => setAggregationRows((count) => count + 1)}
                 />
+                {formError && (
+                  <p className="operationFormError" role="alert">
+                    {formError}
+                  </p>
+                )}
                 <footer className="operationFormActions">
                   <button type="button" className="secondaryButton" onClick={onClose}>
                     Cancel
@@ -508,6 +519,37 @@ function OperationFields({
       </>
     );
   }
+  if (kind === "byExample") {
+    const examples = Array.isArray(params.examples)
+      ? JSON.stringify(params.examples, null, 2)
+      : JSON.stringify(
+          [
+            { inputs: { [columns[0] ?? "value"]: "example one" }, output: "EXAMPLE ONE" },
+            { inputs: { [columns[0] ?? "value"]: "example two" }, output: "EXAMPLE TWO" }
+          ],
+          null,
+          2
+        );
+    return (
+      <>
+        <ColumnsSelect
+          name="sourceColumns"
+          label="Source columns"
+          columns={columns}
+          defaultValue={initialColumns("sourceColumns").length ? initialColumns("sourceColumns") : columns.slice(0, 1)}
+        />
+        <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "example_result")} required />
+        <label className="formField codeField">
+          <span>Examples (JSON)</span>
+          <textarea name="examples" rows={12} required defaultValue={examples} spellCheck={false} />
+          <small>
+            Provide at least two items with <code>inputs</code> for every selected source column and an{" "}
+            <code>output</code>. Preview confirms the selected program and reports ambiguity.
+          </small>
+        </label>
+      </>
+    );
+  }
   if (kind === "customCode") {
     return (
       <label className="formField codeField">
@@ -618,6 +660,20 @@ function buildParams(kind: OperationKind, form: FormData, filterModel: FilterMod
     return {
       keys: form.getAll("keys").map(String),
       aggregations: columns.map((column, index) => ({ column, operation: operations[index], alias: aliases[index] }))
+    };
+  }
+  if (kind === "byExample") {
+    let examples: unknown;
+    try {
+      examples = JSON.parse(value("examples"));
+    } catch {
+      throw new Error("Examples must be valid JSON.");
+    }
+    if (!Array.isArray(examples)) throw new Error("Examples JSON must be an array.");
+    return {
+      sourceColumns: form.getAll("sourceColumns").map(String),
+      newColumn: value("newColumn"),
+      examples
     };
   }
   return { code: value("code") };

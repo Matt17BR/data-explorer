@@ -36,8 +36,8 @@ def step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 26
-    assert {item["kind"] for item in catalog} >= {"sortRows", "oneHotEncode", "groupBy", "customCode"}
+    assert len(catalog) == 27
+    assert {item["kind"] for item in catalog} >= {"sortRows", "oneHotEncode", "groupBy", "byExample", "customCode"}
     with pytest.raises(OperationError, match="Unsupported"):
         validate_step({"id": "bad", "kind": "unknown", "params": {}})
     with pytest.raises(OperationError, match="exactly one"):
@@ -207,6 +207,52 @@ def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     assert_semantically_equal(
         custom, execute_generated(engine, frame, [step("custom-generated", "customCode", code=code)])
     )
+
+
+def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
+    engine, frame = engine_and_frame
+    plan = [
+        step(
+            "example-label",
+            "byExample",
+            sourceColumns=["group", "other"],
+            newColumn="label",
+            examples=[
+                {"inputs": {"group": "a", "other": 2}, "output": "a-2"},
+                {"inputs": {"group": "b", "other": 4}, "output": "b-4"},
+            ],
+        ),
+        step(
+            "example-month",
+            "byExample",
+            sourceColumns=["date"],
+            newColumn="month",
+            examples=[
+                {"inputs": {"date": "2024-01-02"}, "output": "01/2024"},
+                {"inputs": {"date": "2024-02-03"}, "output": "02/2024"},
+            ],
+        ),
+        step(
+            "example-score",
+            "byExample",
+            sourceColumns=["value", "other"],
+            newColumn="score",
+            examples=[
+                {"inputs": {"value": 1.2, "other": 2}, "output": 3.2},
+                {"inputs": {"value": 2.8, "other": 3}, "output": 5.8},
+            ],
+        ),
+    ]
+    assert [operation["params"]["program"]["kind"] for operation in plan] == [
+        "concat",
+        "datetimeFormat",
+        "arithmetic",
+    ]
+    transformed = apply_plan(engine, frame, plan)
+    assert [row["label"] for row in records(transformed)] == ["a-2", "a-3", "b-4", "b-3"]
+    assert [row["month"] for row in records(transformed)] == ["01/2024", "02/2024", "03/2024", "02/2024"]
+    assert records(transformed)[0]["score"] == pytest.approx(3.2)
+    assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
 
 
 def apply_plan(engine, frame, plan):
