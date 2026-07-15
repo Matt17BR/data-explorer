@@ -80,7 +80,8 @@ def test_pandas_csv_import_options(tmp_path):
 
 def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
     engine = PandasEngine()
-    frame = pd.DataFrame([[1, None, 3], [1, 2, 4]], columns=["duplicate", "duplicate", 7])
+    labels = pd.Index(["duplicate", "duplicate", 7], dtype="object")
+    frame = pd.DataFrame([[1, None, 3], [1, 2, 4]], columns=labels)
     frame = engine.ensure_row_ids(frame, "labels")
 
     schema = engine.schema(frame)

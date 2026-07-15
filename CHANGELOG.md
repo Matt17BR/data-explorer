@@ -65,6 +65,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Real-kernel acceptance uses a single bounded execution deadline with short message polls, tolerating cold shared-runner imports without hiding a hung kernel.
 - Webview scrollbars and multi-select states now use VS Code theme tokens for consistent native contrast and deterministic rendering across editor and CI hosts.
 - Editor compatibility jobs retry transient VS Code distribution downloads with a bounded backoff.
+- Cross-platform checks use a Pandas Index for mixed column labels and platform-native path fixtures, keeping Python 3.10 type analysis and Windows tests deterministic.
 
 ### Release status
 

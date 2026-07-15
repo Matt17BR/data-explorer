@@ -1,3 +1,4 @@
+import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { resolvePythonExecutable } from "../extension/pythonPath";
 
@@ -9,11 +10,15 @@ describe("resolvePythonExecutable", () => {
   });
 
   it("resolves relative paths from the workspace before the extension", () => {
-    const existing = new Set(["/workspace/.venv/bin/python", "/extension/.venv/bin/python"]);
+    const workspace = path.resolve("workspace");
+    const extension = path.resolve("extension");
+    const configured = path.join(".venv", "bin", "python");
+    const workspacePython = path.join(workspace, configured);
+    const existing = new Set([workspacePython, path.join(extension, configured)]);
 
-    expect(
-      resolvePythonExecutable(".venv/bin/python", ["/workspace"], "/extension", (candidate) => existing.has(candidate))
-    ).toBe("/workspace/.venv/bin/python");
+    expect(resolvePythonExecutable(configured, [workspace], extension, (candidate) => existing.has(candidate))).toBe(
+      workspacePython
+    );
   });
 
   it("falls back to the configured path when no relative candidate exists", () => {
