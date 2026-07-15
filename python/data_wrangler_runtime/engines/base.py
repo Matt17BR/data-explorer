@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from math import isfinite, isinf, isnan
+from numbers import Integral, Real
 from typing import Any, Literal
 
 ColumnType = Literal[
@@ -100,13 +101,18 @@ class DataFrameEngine(ABC):
 
 
 def normalize_cell(value: Any) -> dict[str, Any]:
-    is_null = value is None
+    type_name = type(value).__name__
+    is_null = value is None or type_name in {"NAType", "NaTType"}
+    is_boolean = isinstance(value, bool) or type_name in {"bool", "bool_"}
+    is_integer = isinstance(value, Integral) and not is_boolean
+    is_real = isinstance(value, Real) and not is_boolean and not is_integer
+    numeric_value = float(str(value)) if is_real else None
     is_nan = False
     infinity_sign: int | None = None
-    if isinstance(value, float):
-        is_nan = isnan(value)
-        if isinf(value):
-            infinity_sign = -1 if value < 0 else 1
+    if numeric_value is not None:
+        is_nan = isnan(numeric_value)
+        if isinf(numeric_value):
+            infinity_sign = -1 if numeric_value < 0 else 1
 
     if is_null:
         kind = "null"
@@ -116,18 +122,19 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "nan"
         display = "NaN"
         raw = None
-    elif isinstance(value, float) and isinf(value):
+    elif numeric_value is not None and isinf(numeric_value):
         kind = "infinity"
-        display = "-Infinity" if value < 0 else "Infinity"
+        display = "-Infinity" if numeric_value < 0 else "Infinity"
         raw = None
-    elif isinstance(value, bool):
+    elif is_boolean:
         kind = "boolean"
-        display = str(value)
-        raw = value
-    elif isinstance(value, int):
+        raw = bool(value)
+        display = str(raw)
+    elif is_integer:
         kind = "integer"
-        display = str(value)
-        raw = value if -(2**53) + 1 <= value <= (2**53) - 1 else display
+        integer_value = int(str(value))
+        display = str(integer_value)
+        raw = integer_value if -(2**53) + 1 <= integer_value <= (2**53) - 1 else display
     elif isinstance(value, Decimal):
         kind = "decimal"
         display = str(value)
@@ -156,10 +163,10 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "struct"
         raw = _json_safe(value)
         display = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
-    elif isinstance(value, float):
+    elif numeric_value is not None:
         kind = "number"
-        display = str(value)
-        raw = value
+        display = str(numeric_value)
+        raw = numeric_value
     elif isinstance(value, str):
         kind = "string"
         display = value
@@ -183,6 +190,12 @@ def normalize_cell(value: Any) -> dict[str, Any]:
 
 def infer_semantic_type(raw_type: str) -> ColumnType:
     lowered = raw_type.lower()
+    # Container dtypes include their children (for example ``List(Int64)``), so
+    # classify the outer type before looking for numeric tokens.
+    if any(token in lowered for token in ("list", "array")):
+        return "list"
+    if any(token in lowered for token in ("struct", "dict")):
+        return "struct"
     if any(token in lowered for token in ("int", "uint")):
         return "integer"
     if any(token in lowered for token in ("float", "double", "decimal")):
@@ -199,10 +212,6 @@ def infer_semantic_type(raw_type: str) -> ColumnType:
         return "duration"
     if any(token in lowered for token in ("binary", "bytes")):
         return "binary"
-    if any(token in lowered for token in ("list", "array")):
-        return "list"
-    if any(token in lowered for token in ("struct", "dict")):
-        return "struct"
     if any(token in lowered for token in ("str", "utf8", "object", "category", "categorical")):
         return "string"
     return "unknown"
@@ -280,12 +289,28 @@ def _maybe_float(value: Any) -> float | None:
 
 
 def _json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
+    type_name = type(value).__name__
+    if value is None or type_name in {"NAType", "NaTType"}:
+        return None
+    if isinstance(value, str):
         return value
+    if isinstance(value, bool) or type_name in {"bool", "bool_"}:
+        return bool(value)
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        numeric_value = float(value)
+        if isnan(numeric_value):
+            return "NaN"
+        if isinf(numeric_value):
+            return "-Infinity" if numeric_value < 0 else "Infinity"
+        return numeric_value
     if isinstance(value, (date, datetime)):
         return value.isoformat()
+    if isinstance(value, timedelta):
+        return value.total_seconds()
     if isinstance(value, bytes):
         return b64encode(value).decode("ascii")
     if isinstance(value, Mapping):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from math import isfinite
 from pathlib import Path
@@ -53,7 +54,12 @@ class PolarsEngine(DataFrameEngine):
         if extension == ".jsonl":
             return pl.scan_ndjson(path)
         if extension in {".xlsx", ".xls"}:
-            return pl.read_excel(path, sheet_name=options.get("sheet"))
+            sheet = options.get("sheet")
+            if isinstance(sheet, int):
+                # The public import option is zero-based, while fastexcel's
+                # sheet_id follows spreadsheet conventions and is one-based.
+                return pl.read_excel(path, sheet_id=sheet + 1)
+            return pl.read_excel(path, sheet_name=sheet)
         raise EngineError(f"Unsupported file extension for Polars backend: {extension}")
 
     def normalize(self, value: Any) -> Any:
@@ -111,6 +117,8 @@ class PolarsEngine(DataFrameEngine):
         if isinstance(frame, pl.LazyFrame):
             schema = frame.collect_schema()
             visible = self._visible_columns(frame)
+            if not visible:
+                return []
             null_counts = (
                 frame.select([pl.col(name).null_count() for name in visible]).collect(engine="streaming").to_dicts()[0]
             )
@@ -128,6 +136,8 @@ class PolarsEngine(DataFrameEngine):
             ]
         df = self.normalize(frame)
         visible = self._visible_columns(df)
+        if not visible:
+            return []
         null_counts = df.select(visible).null_count().to_dicts()[0] if df.height else {column: 0 for column in visible}
         return [
             {
@@ -232,13 +242,15 @@ class PolarsEngine(DataFrameEngine):
         else:
             df = self.normalize(frame)
             selected = list(columns) if columns is not None else self._visible_columns(df)
+        if not selected:
+            return []
         null_counts = df.select([pl.col(column).null_count().alias(column) for column in selected]).to_dicts()[0]
         summaries = []
         for column in selected:
             series = df[column]
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
-            top_values = series.drop_nulls().value_counts(sort=True).head(10).iter_rows(named=True)
+            top_values, distinct_count = self._summary_counts(series, column, semantic_type)
             summary: dict[str, Any] = {
                 "column": column,
                 "type": semantic_type,
@@ -246,14 +258,10 @@ class PolarsEngine(DataFrameEngine):
                 "totalCount": int(df.height),
                 "nullCount": int(null_counts.get(column, 0)),
                 "nanCount": self._nan_count(series),
-                "distinctCount": int(series.n_unique()),
-                "topValues": [
-                    {"value": str(row[column]), "count": int(row["count"])}
-                    for row in top_values
-                    if row[column] is not None
-                ],
+                "distinctCount": distinct_count,
+                "topValues": top_values,
             }
-            if semantic_type in {"integer", "float"}:
+            if semantic_type in {"integer", "float", "decimal"}:
                 numeric_values = series.drop_nulls().to_list()
                 summary["numeric"] = {
                     "min": _maybe_float(series.min()),
@@ -273,6 +281,31 @@ class PolarsEngine(DataFrameEngine):
                 )
             summaries.append(summary)
         return summaries
+
+    def _summary_counts(self, series: Any, column: str, semantic_type: str) -> tuple[list[dict[str, Any]], int]:
+        if semantic_type in {"list", "struct"}:
+            displays = [normalize_cell(value)["display"] for value in series.drop_nulls().to_list()]
+            counts = Counter(displays)
+            return (
+                [{"value": value, "count": count} for value, count in counts.most_common(10)],
+                len(counts),
+            )
+
+        try:
+            rows = series.drop_nulls().value_counts(sort=True).head(10).iter_rows(named=True)
+            top_values = [
+                {"value": str(row[column]), "count": int(row["count"])} for row in rows if row[column] is not None
+            ]
+            return top_values, int(series.n_unique())
+        except Exception:
+            # Some extension dtypes do not implement hash-based aggregations.
+            # A bounded display-level fallback keeps profiling available.
+            displays = [normalize_cell(value)["display"] for value in series.drop_nulls().to_list()]
+            counts = Counter(displays)
+            return (
+                [{"value": value, "count": count} for value, count in counts.most_common(10)],
+                len(counts),
+            )
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
         import polars as pl

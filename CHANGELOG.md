@@ -32,6 +32,8 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Isolated installed-VSIX acceptance for VS Code and Cursor, including a live packaged Polars session and source reopening.
 - Playwright/axe WCAG scanning and pixel-diff visual acceptance across 23 production-bundle harnesses, including high-contrast light, Unicode, empty, loading, error, and recovery states.
 - Strict release-size Polars benchmarks with JSON evidence, session-cleanup assertions, rendered cached/uncached scroll gates, and scheduled CI regression checks.
+- Cross-engine file acceptance for quoted/headerless CSV, TSV, JSONL, Parquet, and named/indexed Excel sheets plus missing/malformed diagnostics.
+- Native nested-Polars and Pandas/NumPy nullable typed-cell fixtures covering large integers, decimals, time zones, containers, binary, durations, NaN/infinity, zero-column frames, and long Unicode values.
 
 ### Changed
 
@@ -42,10 +44,11 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - GitHub workflows use the current Node 24-based official action majors.
 - Custom-editor panels now enable their webview scripts and resources consistently, allowing file sessions to initialize through the contributed editor path.
 - Column actions and resizing now provide zoom-safe touch targets plus keyboard resizing; loading, recovery, and generated-code regions expose explicit accessible status/focus semantics.
+- Polars nested dtypes are classified by their outer container, Excel sheet indexes follow the public zero-based contract, and failed lazy-file opens no longer retain partial sessions.
 
 ### Known gaps
 
-- Remote/restarted-kernel acceptance, broader by-example inference, packaged reload recovery, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Remote-kernel acceptance, remaining operation edges, broader by-example inference, packaged reload recovery, and final isolated VS Code/Cursor interaction matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

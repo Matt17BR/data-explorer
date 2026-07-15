@@ -6,11 +6,11 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 | Surface                                             | Pandas | Polars | Status  | Required evidence                               |
 | --------------------------------------------------- | -----: | -----: | ------- | ----------------------------------------------- |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Import option, malformed-file, and editor tests |
+| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Format/option/error matrix green; editor TBD    |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                |
 | Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD      |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD  |
-| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive exact stats green; typed edges TBD  |
+| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive and nested-type tests green         |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
 | Multi-column viewing sorts                          |    Yes |    Yes | Partial | Null-order and stability tests                  |
 | Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD     |
@@ -153,6 +153,15 @@ Performance hardening slice, 2026-07-15:
 - Playwright measured the production 1,000×40 virtual grid independently at 31.6ms cached-scroll p95 and 92.8ms uncached-block p95. A smoke fixture runs in the normal Python suite, while a scheduled strict workflow uploads full-size JSON reports.
 
 This advances the virtual-grid and recovery rows but keeps them **Partial** until packaged-editor reload/multi-session disposal and the remaining editor checklist are recorded.
+
+Data-format and typed-edge hardening slice, 2026-07-15:
+
+- Parameterized Pandas/Polars acceptance opens quoted/delimited CSV, headerless CSV, TSV, JSONL, Parquet, and named or zero-based Excel sheets. Pandas also retains its Latin-1 fixture; Polars CSV, TSV, JSONL, and Parquet sources are asserted to remain lazy.
+- Nested Polars Parquet coverage now includes unsigned 64-bit integers, decimal, time-zone datetime, list, struct, binary, categorical, duration, null, NaN, infinity, and a 20,000-character Unicode value while making `to_pandas()` fail. Container dtypes are classified by their outer type, and nested profiling remains available.
+- NumPy/Pandas scalar tests prove large integers, nullable integers/booleans, `pd.NA`, `pd.NaT`, timezone timestamps, NaN, and infinity produce typed, strict-JSON-safe cells. Pandas frames with rows but zero visible columns and fully empty Polars frames remain schema-, summary-, and page-safe.
+- Missing and malformed file opens now produce structured engine diagnostics for eager and lazy readers without retaining a session. Polars Excel correctly translates the public zero-based sheet index to the reader's one-based ID.
+
+This completes automated format and source-type edge evidence but keeps entry-point and summary rows **Partial** until the packaged-editor fixture checklist and interactive import/error states are recorded in VS Code and Cursor.
 
 ## Explicitly deferred from 1.0
 

@@ -191,7 +191,7 @@ class PandasEngine(DataFrameEngine):
                 "distinctCount": int(series.nunique(dropna=True)),
                 "topValues": top_values,
             }
-            if semantic_type in {"integer", "float"}:
+            if semantic_type in {"integer", "float", "decimal"}:
                 numeric = series.dropna()
                 summary["numeric"] = {
                     "min": _maybe_float(numeric.min()),

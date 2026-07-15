@@ -73,15 +73,26 @@ class SessionManager:
         mode: str | None = None,
     ) -> dict[str, Any]:
         engine = self._engine_for_source(source, backend)
-        frame = self._load_source(source, engine)
-        if source.get("kind") != "file":
-            frame = getattr(engine, "normalize", lambda value: value)(frame)
         session_id = str(uuid.uuid4())
-        frame = engine.ensure_row_ids(frame, f"{session_id}:source")
-        filter_model = {"filters": [], "sort": []}
-        filtered = engine.apply_filter_model(frame, filter_model)
-        source_shape = engine.shape(frame)
-        source_schema = engine.schema(frame)
+        try:
+            frame = self._load_source(source, engine)
+            if source.get("kind") != "file":
+                frame = getattr(engine, "normalize", lambda value: value)(frame)
+            frame = engine.ensure_row_ids(frame, f"{session_id}:source")
+            filter_model = {"filters": [], "sort": []}
+            filtered = engine.apply_filter_model(frame, filter_model)
+            source_shape = engine.shape(frame)
+            source_schema = engine.schema(frame)
+            initial_page = engine.page(filtered, 0, page_size)
+            initial_summaries = engine.summaries(
+                filtered,
+                [column["name"] for column in source_schema[:8]],
+            )
+        except EngineError:
+            raise
+        except Exception as error:
+            label = source.get("label") or source.get("path") or source.get("variableName") or "source"
+            raise EngineError(f"Could not read {label}: {error}") from error
         initial_lineage = source_lineage(source_schema)
         session = Session(
             session_id=session_id,
@@ -112,11 +123,8 @@ class SessionManager:
         return {
             "kind": "sessionOpened",
             "metadata": self._metadata(session),
-            "page": engine.page(filtered, 0, page_size),
-            "summaries": engine.summaries(
-                filtered,
-                [column["name"] for column in source_schema[:8]],
-            ),
+            "page": initial_page,
+            "summaries": initial_summaries,
         }
 
     def get_page(
@@ -553,7 +561,13 @@ class SessionManager:
             if not path:
                 raise EngineError("File source is missing a path.")
             options = source.get("importOptions")
-            return engine.read_file(str(path), options if isinstance(options, Mapping) else None)
+            try:
+                return engine.read_file(str(path), options if isinstance(options, Mapping) else None)
+            except EngineError:
+                raise
+            except Exception as error:
+                label = source.get("label") or path
+                raise EngineError(f"Could not read {label}: {error}") from error
         if kind in {"notebookVariable", "notebookOutput"}:
             return self._resolve_notebook_variable(source)
         raise EngineError(f"Unsupported source kind: {kind}")

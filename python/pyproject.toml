@@ -22,6 +22,7 @@ dev = [
   "nbclient",
   "nbformat",
   "ipykernel",
+  "fastexcel",
   "tornado>=6.5.7",
   "ruff",
   "pip-audit"

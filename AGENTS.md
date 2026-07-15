@@ -25,6 +25,7 @@ This repository builds the open-source Data Explorer extension and its bundled P
 7. Webviews use VS Code theme tokens, a restrictive CSP, validated messages, accessible labels, and keyboard navigation.
 8. `scratch.txt` and all other untracked user files are user-owned. Never edit, delete, stage, or package them.
 9. Do not describe the project as feature-parity complete until every in-scope row in `docs/feature-parity.md` is green.
+10. File readers expose a shared zero-based Excel sheet index. Failed eager or lazy opens must produce `EngineError` and must not retain a session; nested and scalar values must remain strict-JSON-safe.
 
 ## Required checks
 

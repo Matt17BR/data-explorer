@@ -26,6 +26,7 @@ These screenshots are generated from the real built webview/notebook renderer us
 
 - Native Polars and Pandas runtime backends, including live notebook sessions backed by the active Jupyter kernel.
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
+- Typed rendering and profiling for nullable values, large integers, decimals, time zones, nested Polars lists/structs, binary, categorical, duration, NaN, and infinity values.
 - Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, and progressive Quick Insights.
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
@@ -88,7 +89,7 @@ Polars dataframes stay Polars in the runtime. The Polars backend uses native ope
 - summaries with Polars null counts, distinct counts, value counts, and numeric aggregates
 - the complete transformation catalog and generated Polars code
 
-The test suite asserts that Polars file sessions do not call `to_pandas()`.
+The test suite asserts that Polars file sessions do not call `to_pandas()`, including nested Parquet profiling and every transformation family. Polars Excel support uses `fastexcel`; setup diagnostics request it only when that format/backend combination is selected.
 
 ## Test Locally In Cursor Or Another VS Code-Compatible Editor
 
@@ -151,4 +152,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. Real-kernel restart/permission matrices, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.
+It does not yet claim Data Wrangler parity. Remote-kernel/permission matrices, remaining operation-edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.
