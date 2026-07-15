@@ -121,6 +121,14 @@ Identity and structural-diff slice, 2026-07-15:
 
 This advances structural diff and typed-edge evidence but keeps the rows **Partial** until identifier-based operation parameters, packaged editor interaction, and the remaining nested/type matrix are green.
 
+Jupyter recovery slice, 2026-07-15:
+
+- A real local IPykernel test bootstraps the bundled agent, registers automatic MIME v2 formatters, renders live Pandas and Polars dataframes, opens both engines through protocol v2, restarts the kernel, bootstraps again, and receives a valid response after restart.
+- The extension kernel lifecycle caches and bootstraps once, performs at most one reacquire/bootstrap retry after execution failure, and never retries acquisition/permission denial or cancellation. Configured timeouts actively cancel kernel execution before recovery.
+- All 25 TypeScript and 70 Python tests pass. The lifecycle suite covers success, restart, repeated failure, denial/cancellation, and timeout; the real-kernel test guarantees cleanup in `finally`, and the 53-entry production VSIX passes its allowlist.
+
+This advances notebook recovery and formatter evidence but keeps the notebook rows **Partial** until remote kernels and packaged VS Code/Cursor permission, restart, saved-output, and originating-notebook interaction are recorded.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.

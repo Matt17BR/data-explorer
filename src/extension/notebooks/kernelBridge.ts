@@ -9,6 +9,7 @@ import type {
 } from "../../shared/protocol";
 import { PROTOCOL_VERSION } from "../../shared/protocol";
 import type { BridgeRequestOptions, DataExplorerBridge } from "../dataBridge";
+import { RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 
 interface JupyterExtensionApi {
   kernels: {
@@ -21,13 +22,14 @@ interface JupyterKernel {
 }
 
 export class KernelBridge implements DataExplorerBridge {
-  private bootstrapped = false;
-  private kernel: JupyterKernel | undefined;
+  private readonly lifecycle: RestartableKernel<JupyterKernel>;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly notebookUri: vscode.Uri
-  ) {}
+  ) {
+    this.lifecycle = new RestartableKernel(() => this.acquireKernel());
+  }
 
   async request(request: DataExplorerRequest, options: BridgeRequestOptions = {}): Promise<DataExplorerResponse> {
     const requestId = randomUUID();
@@ -50,16 +52,11 @@ print(__de_kernel_agent.dispatch_json(__de_payload))
 print("__DATA_EXPLORER_END_${marker}__")
 `;
 
-    await this.ensureKernelAgent(options);
-    let output: string;
-    try {
-      output = await this.executePython(code, options);
-    } catch {
-      this.kernel = undefined;
-      this.bootstrapped = false;
-      await this.ensureKernelAgent(options);
-      output = await this.executePython(code, options);
-    }
+    const output = await this.lifecycle.run(
+      (kernel) => this.ensureKernelAgent(kernel, options),
+      (kernel) => this.executePython(kernel, code, options),
+      () => !options.cancellation?.isCancellationRequested
+    );
 
     const parsed: unknown = JSON.parse(parseMarkedJson(output, marker));
     if (!isRuntimeResponseEnvelope(parsed) || parsed.requestId !== requestId) {
@@ -68,10 +65,10 @@ print("__DATA_EXPLORER_END_${marker}__")
     return parsed.response;
   }
 
-  private async ensureKernelAgent(options: BridgeRequestOptions): Promise<void> {
-    if (this.bootstrapped) return;
+  private async ensureKernelAgent(kernel: JupyterKernel, options: BridgeRequestOptions): Promise<void> {
     const pythonRoot = path.join(this.context.extensionPath, "python");
     await this.executePython(
+      kernel,
       `
 import sys as __de_sys
 __de_python_root = ${JSON.stringify(pythonRoot)}
@@ -83,24 +80,25 @@ __de_notebook.register_formatters()
 `,
       options
     );
-    this.bootstrapped = true;
   }
 
-  private async executePython(code: string, options: BridgeRequestOptions): Promise<string> {
-    const kernel = await this.getKernel();
+  private async executePython(kernel: JupyterKernel, code: string, options: BridgeRequestOptions): Promise<string> {
     const tokenSource = new vscode.CancellationTokenSource();
     const cancellation = options.cancellation?.onCancellationRequested(() => tokenSource.cancel());
     if (options.cancellation?.isCancellationRequested) tokenSource.cancel();
+    const timeoutMs =
+      options.timeoutMs ?? vscode.workspace.getConfiguration("dataExplorer").get<number>("requestTimeoutMs", 30_000);
     try {
-      return await outputsToText(kernel.executeCode(code, tokenSource.token));
+      return await withKernelTimeout(outputsToText(kernel.executeCode(code, tokenSource.token)), timeoutMs, () =>
+        tokenSource.cancel()
+      );
     } finally {
       cancellation?.dispose();
       tokenSource.dispose();
     }
   }
 
-  private async getKernel(): Promise<JupyterKernel> {
-    if (this.kernel) return this.kernel;
+  private async acquireKernel(): Promise<JupyterKernel> {
     if (!vscode.workspace.isTrusted) {
       throw new Error("Trust this workspace before Data Explorer accesses a notebook kernel.");
     }
@@ -114,7 +112,6 @@ __de_notebook.register_formatters()
     if (!kernel) {
       throw new Error("Data Explorer could not access the selected Jupyter kernel for this notebook.");
     }
-    this.kernel = kernel;
     return kernel;
   }
 }

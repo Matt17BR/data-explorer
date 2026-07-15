@@ -28,6 +28,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Generated command, setting, operation, protocol, and MIME references with byte-for-byte CI drift detection.
 - Source reopening and Getting Started walkthrough commands.
 - Private row lineage and deterministic column identities for accurate structural diffs across sorting, renaming, reordering, grouping, latest-step edits, and duplicate Pandas labels.
+- Restart-aware Jupyter kernel lifecycle with bounded execution, active cancellation, one-shot recovery, and real Pandas/Polars formatter/transport acceptance.
 
 ### Changed
 
