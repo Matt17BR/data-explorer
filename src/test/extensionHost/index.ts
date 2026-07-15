@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension("matt17br.data-explorer");
@@ -20,6 +21,7 @@ export async function run(): Promise<void> {
     "dataExplorer.undoStep",
     "dataExplorer.copyCode",
     "dataExplorer.exportCode",
+    "dataExplorer.insertNotebookCode",
     "dataExplorer.exportData",
     "dataExplorer.openSettings",
     "dataExplorer.reportIssue"
@@ -54,6 +56,23 @@ export async function run(): Promise<void> {
   assert.equal(activeInput.viewType, "dataExplorer.viewer");
   assert.equal(path.basename(activeInput.uri.fsPath), "sample.csv");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+
+  const notebook = await vscode.workspace.openNotebookDocument(
+    "jupyter-notebook",
+    new vscode.NotebookData([new vscode.NotebookCellData(vscode.NotebookCellKind.Code, "value = 1", "python")])
+  );
+  const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
+    source: "df",
+    backend: "polars"
+  });
+  assert.equal(inserted, true);
+  assert.equal(notebook.cellCount, 2);
+  assert.equal(notebook.cellAt(1).document.getText(), "def clean_data(df):\n    return df\n");
+  assert.deepEqual(notebook.cellAt(1).metadata.dataExplorer, {
+    source: "df",
+    backend: "polars",
+    generated: true
+  });
 
   console.log("Data Explorer extension-host acceptance passed.");
 }

@@ -35,7 +35,8 @@ These screenshots are generated from the real built webview/notebook renderer us
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
-- Lightweight notebook output renderer for `data_wrangler_runtime.notebook.show(...)`.
+- MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters, while saved MIME v1 outputs remain renderable.
+- Notebook-origin sessions can insert the edited generated cleaning function back into the exact originating notebook.
 
 ## Example Usage
 
@@ -74,7 +75,7 @@ df = pl.read_csv("sales.csv")
 show(df, label="sales")
 ```
 
-This emits `application/vnd.data-explorer.viewer.v1+json`, which the bundled notebook renderer displays as a compact grid preview.
+This emits `application/vnd.data-explorer.viewer.v2+json`, which the bundled notebook renderer displays as a compact, typed grid preview. Saved `application/vnd.data-explorer.viewer.v1+json` output remains supported. Pass `variable_name="df"` when the **Open Data Explorer** button should reconnect the snapshot to a live kernel variable; otherwise it opens the immutable saved snapshot.
 
 ## Polars Support
 
@@ -144,4 +145,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. Notebook code insertion, MIME v2, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.
+It does not yet claim Data Wrangler parity. Real-kernel restart/permission matrices, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.

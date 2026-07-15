@@ -8,7 +8,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | --------------------------------------------------- | -----: | -----: | ------- | ----------------------------------------------- |
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Import option, malformed-file, and editor tests |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 and persisted-output tests           |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD      |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD  |
 | Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive exact stats green; typed edges TBD  |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
@@ -26,7 +26,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Group and aggregate                                 |    Yes |    Yes | Partial | Core aggregation tests green; typed edges TBD   |
 | Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD      |
 | String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green     |
-| Copy/script/notebook code export                    |    Yes |    Yes | Partial | Clipboard/script green; notebook insertion TBD  |
+| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD   |
 | CSV and Parquet data export                         |    Yes |    Yes | Partial | Cross-engine atomic/source tests green          |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
@@ -94,6 +94,15 @@ By-example slice, 2026-07-15:
 - The operation builder validates example JSON before dispatch; protocol-normalized steps persist the selected program so reload does not reselect a different candidate.
 
 This advances by-example to **Partial**. More compound programs, null/type-edge inference, editable example-row capture from the real grid, keyboard acceptance, and packaged editor testing remain mandatory.
+
+Notebook MIME and insertion slice, 2026-07-15:
+
+- `npm test`: 20 TypeScript and 62 Python tests passed. New Pandas/Polars helpers emit complete MIME v2 snapshots and remain native; explicit legacy v1 output is still available for fixtures.
+- Shared TypeScript normalization upgrades saved v1 metadata to a read-only current session shape and rejects malformed/unknown-version payloads. The renderer registers both MIME identifiers and presents invalid output as an accessible error.
+- Formatters are registered inside the active kernel only after trusted stable-API access. Live-variable sources retain their originating notebook URI.
+- The insertion command uses the currently edited CodeMirror buffer and a tagged Python cell. The real VS Code extension-host suite applies and verifies the notebook edit against an untitled Jupyter notebook.
+
+This advances notebook rows to **Partial**. Real local/remote kernel formatter display, permission denial, kernel restart, persisted v1 output in packaged VS Code/Cursor, and originating-notebook interaction remain mandatory.
 
 ## Explicitly deferred from 1.0
 

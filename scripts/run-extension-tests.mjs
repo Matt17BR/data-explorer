@@ -18,7 +18,7 @@ try {
   await runTests({
     vscodeExecutablePath,
     extensionDevelopmentPath: root,
-    extensionTestsPath: resolve(root, "dist-test", "index.js"),
+    extensionTestsPath: resolve(root, "dist-test", "test", "extensionHost", "index.js"),
     launchArgs: [
       root,
       "--user-data-dir",

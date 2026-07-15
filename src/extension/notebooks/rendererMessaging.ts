@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { SessionOpenedResponse } from "../../shared/protocol";
+import { normalizeNotebookOutputPayload, notebookPayloadAsOpened } from "../../shared/notebookOutput";
 import type { DataExplorerBridge } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { DataExplorerPanel } from "../webviewPanel";
@@ -7,11 +7,7 @@ import { KernelBridge } from "./kernelBridge";
 
 interface OpenInDataExplorerMessage {
   kind: "openInDataExplorer";
-  payload: {
-    metadata: SessionOpenedResponse["metadata"];
-    page: SessionOpenedResponse["page"];
-    summaries: SessionOpenedResponse["summaries"];
-  };
+  payload: unknown;
 }
 
 export function registerNotebookRendererMessaging(
@@ -28,9 +24,14 @@ export function registerNotebookRendererMessaging(
       if (!isOpenInDataExplorerMessage(message)) {
         return;
       }
+      const payload = normalizeNotebookOutputPayload(message.payload);
+      if (!payload) {
+        void vscode.window.showErrorMessage("This Data Explorer notebook output is malformed or unsupported.");
+        return;
+      }
 
       const notebook = vscode.window.activeNotebookEditor?.notebook.uri;
-      const variableName = message.payload.metadata.source.variableName;
+      const variableName = payload.metadata.source.variableName;
       if (notebook && variableName && isPythonIdentifier(variableName)) {
         DataExplorerPanel.create(
           context,
@@ -38,17 +39,15 @@ export function registerNotebookRendererMessaging(
           {
             kind: "notebookVariable",
             label: variableName,
-            variableName
+            variableName,
+            uri: notebook.toString()
           },
-          message.payload.metadata.backend
+          payload.metadata.backend
         );
         return;
       }
 
-      DataExplorerPanel.createFromPayload(context, bridge, {
-        kind: "sessionOpened",
-        ...message.payload
-      });
+      DataExplorerPanel.createFromPayload(context, bridge, notebookPayloadAsOpened(payload));
     })
   );
 }

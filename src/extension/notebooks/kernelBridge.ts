@@ -78,6 +78,8 @@ __de_python_root = ${JSON.stringify(pythonRoot)}
 if __de_python_root not in __de_sys.path:
     __de_sys.path.insert(0, __de_python_root)
 import data_wrangler_runtime.kernel_agent as __de_kernel_agent
+import data_wrangler_runtime.notebook as __de_notebook
+__de_notebook.register_formatters()
 `,
       options
     );

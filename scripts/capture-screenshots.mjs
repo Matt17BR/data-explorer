@@ -143,6 +143,9 @@ mime_payload = None
 for cell in notebook.cells:
     for output in cell.get("outputs", []):
         data = output.get("data", {})
+        if "application/vnd.data-explorer.viewer.v2+json" in data:
+            mime_payload = data["application/vnd.data-explorer.viewer.v2+json"]
+            break
         if "application/vnd.data-explorer.viewer.v1+json" in data:
             mime_payload = data["application/vnd.data-explorer.viewer.v1+json"]
             break
@@ -150,6 +153,12 @@ for cell in notebook.cells:
         break
 if mime_payload is None:
     raise RuntimeError("Notebook did not emit a Data Explorer MIME payload")
+legacy_mime_payload = dict(mime_payload)
+legacy_mime_payload.pop("mimeVersion", None)
+legacy_mime_payload["metadata"] = {
+    key: mime_payload["metadata"][key]
+    for key in ("sessionId", "backend", "source", "shape", "filteredShape", "schema", "filterModel", "stats")
+}
 
 print(json.dumps({
     "opened": opened,
@@ -165,6 +174,7 @@ print(json.dumps({
     "wide": wide,
     "widePages": wide_pages,
     "notebook": mime_payload,
+    "legacyNotebook": legacy_mime_payload,
 }))
 `
     ],
@@ -204,6 +214,11 @@ writeWebviewHarness(
   "filter-panel.png"
 );
 writeNotebookHarness("notebook-preview.html", payloads.notebook, "notebook-preview.png");
+writeNotebookHarness(
+  "notebook-v1-preview.html",
+  payloads.legacyNotebook,
+  "acceptance/notebook-v1-compat-dark-1280.png"
+);
 writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages);
 writeWebviewHarness("grid-dark-800.html", payloads.opened, {}, "acceptance/grid-dark-800.png", {}, { width: 800 });
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });

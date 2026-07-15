@@ -94,7 +94,8 @@ async function openLiveNotebookVariable(
   const source: SessionSource = {
     kind: "notebookVariable",
     label: variableName,
-    variableName
+    variableName,
+    uri: notebook.toString()
   };
   DataExplorerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook)), source);
 }

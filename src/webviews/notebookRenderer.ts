@@ -1,4 +1,4 @@
-import type { GridPage, SessionMetadata } from "../shared/protocol";
+import { normalizeNotebookOutputPayload, type NotebookOutputPayload } from "../shared/notebookOutput";
 
 interface RendererOutputItem {
   json(): unknown;
@@ -14,22 +14,24 @@ interface RendererApi {
   renderOutputItem(outputItem: RendererOutputItem, element: HTMLElement): void;
 }
 
-interface NotebookPayload {
-  metadata: SessionMetadata;
-  page: GridPage;
-}
-
 export function activate(context: RendererContext): RendererApi {
   return {
     renderOutputItem(outputItem, element) {
-      const payload = outputItem.json() as NotebookPayload;
+      const payload = normalizeNotebookOutputPayload(outputItem.json());
       element.innerHTML = "";
+      if (!payload) {
+        const error = document.createElement("p");
+        error.setAttribute("role", "alert");
+        error.textContent = "This Data Explorer output is malformed or uses an unsupported MIME version.";
+        element.appendChild(error);
+        return;
+      }
       element.appendChild(renderPayload(payload, context));
     }
   };
 }
 
-function renderPayload(payload: NotebookPayload, context: RendererContext): HTMLElement {
+function renderPayload(payload: NotebookOutputPayload, context: RendererContext): HTMLElement {
   const root = document.createElement("section");
   root.className = "data-explorer-notebook";
 
@@ -69,6 +71,7 @@ function renderPayload(payload: NotebookPayload, context: RendererContext): HTML
   root.appendChild(scroller);
 
   const table = document.createElement("table");
+  table.setAttribute("aria-label", `Data Explorer snapshot of ${payload.metadata.source.label}`);
   table.style.borderCollapse = "collapse";
   table.style.width = "max-content";
   table.style.minWidth = "100%";

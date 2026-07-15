@@ -14,6 +14,8 @@ Protocol fixtures and engine-operation cases must run through both TypeScript an
 
 Persistence tests must assert that only serializable replay state is stored, malformed operation kinds are rejected, import options participate in source identity, and runtime/public session identifiers never enter workspace state. Packaged release acceptance must still apply a plan, reload the editor, and verify the restored grid in both VS Code and Cursor.
 
+Notebook compatibility tests must exercise complete MIME v2 snapshots, saved MIME v1 normalization, malformed versions, Pandas/Polars formatter registration after kernel permission, source notebook URI retention, and insertion of the edited generated function. Browser baselines include current v2 output and `notebook-v1-compat-dark-1280.png`; release acceptance must repeat both in packaged VS Code and Cursor.
+
 Export tests must cover both engines and both supported formats. They must prove committed-plan output, exclusion of view filters, pending-draft rejection, source-path rejection, atomic replacement, failed-write cleanup, and the Polars-to-Pandas prohibition. Code export acceptance must verify the edited CodeMirror buffer, not only the original generated string.
 
 By-example tests must exercise every candidate family, deterministic tie ordering, ambiguity warnings, failure diagnostics, persisted-program revalidation, native execution, and generated-code equivalence in both engines. A synthesized step is not accepted without draft/diff confirmation and apply/discard coverage.

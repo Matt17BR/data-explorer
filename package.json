@@ -87,6 +87,7 @@
     "onCommand:dataExplorer.undoStep",
     "onCommand:dataExplorer.copyCode",
     "onCommand:dataExplorer.exportCode",
+    "onCommand:dataExplorer.insertNotebookCode",
     "onCommand:dataExplorer.exportData",
     "onCommand:dataExplorer.openSettings",
     "onCommand:dataExplorer.reportIssue",
@@ -165,6 +166,11 @@
         "command": "dataExplorer.exportCode",
         "title": "Data Explorer: Export Python Script",
         "icon": "$(save-as)"
+      },
+      {
+        "command": "dataExplorer.insertNotebookCode",
+        "title": "Data Explorer: Insert Function into Originating Notebook",
+        "icon": "$(notebook)"
       },
       {
         "command": "dataExplorer.exportData",
@@ -281,7 +287,8 @@
         "entrypoint": "./media/notebookRenderer.js",
         "requiresMessaging": "always",
         "mimeTypes": [
-          "application/vnd.data-explorer.viewer.v1+json"
+          "application/vnd.data-explorer.viewer.v1+json",
+          "application/vnd.data-explorer.viewer.v2+json"
         ]
       }
     ],
@@ -310,6 +317,11 @@
           "command": "dataExplorer.exportCode",
           "when": "view == dataExplorer.codePreview",
           "group": "navigation@11"
+        },
+        {
+          "command": "dataExplorer.insertNotebookCode",
+          "when": "view == dataExplorer.codePreview",
+          "group": "navigation@12"
         },
         {
           "command": "dataExplorer.openSettings",

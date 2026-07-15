@@ -24,6 +24,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Workspace-scoped persistence and validated replay for applied steps, an optional draft, and independent viewing state.
 - Editable-code clipboard/script export and atomic native Pandas/Polars cleaned-data export to CSV or Parquet.
 - Deterministic by-example synthesis with ranked expression programs, ambiguity warnings, native engine execution, and generated code.
+- Complete notebook MIME v2 snapshots, saved MIME v1 normalization, permission-aware kernel formatters, and originating-notebook code insertion.
 
 ### Changed
 
@@ -35,7 +36,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 
 ### Known gaps
 
-- Notebook insertion, notebook MIME v2, broader by-example inference, packaged reload recovery, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Remote/restarted-kernel acceptance, broader by-example inference, packaged reload recovery, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

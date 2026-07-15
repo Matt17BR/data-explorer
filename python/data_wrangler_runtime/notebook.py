@@ -1,38 +1,132 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
+from IPython.core.getipython import get_ipython
 from IPython.display import display
 
+from .engines import EngineError
 from .session import SessionManager
 
-MIME_TYPE = "application/vnd.data-explorer.viewer.v1+json"
+MIME_TYPE_V1 = "application/vnd.data-explorer.viewer.v1+json"
+MIME_TYPE_V2 = "application/vnd.data-explorer.viewer.v2+json"
+MIME_TYPE = MIME_TYPE_V2
 
 
-def show(value: Any, label: str = "dataframe", backend: str | None = None, page_size: int = 200) -> None:
-    """Display a dataframe payload that the VS Code renderer can open in Data Explorer."""
+def show(
+    value: Any,
+    label: str = "dataframe",
+    backend: str | None = None,
+    page_size: int = 200,
+    *,
+    variable_name: str | None = None,
+    mime_version: Literal[1, 2] = 2,
+) -> None:
+    """Display a deterministic dataframe snapshot using the Data Explorer renderer."""
+    payload = build_payload(value, label, backend, page_size, variable_name=variable_name, mime_version=mime_version)
+    display({MIME_TYPE_V2 if mime_version == 2 else MIME_TYPE_V1: payload}, raw=True)
+
+
+def build_payload(
+    value: Any,
+    label: str = "dataframe",
+    backend: str | None = None,
+    page_size: int = 200,
+    *,
+    variable_name: str | None = None,
+    mime_version: Literal[1, 2] = 2,
+) -> dict[str, Any]:
+    if not isinstance(label, str) or not label:
+        raise EngineError("Notebook output label must be a non-empty string.")
+    if not isinstance(page_size, int) or isinstance(page_size, bool) or page_size < 1:
+        raise EngineError("Notebook output page_size must be a positive integer.")
+    if variable_name is not None and not _is_python_identifier(variable_name):
+        raise EngineError("Notebook variable_name must be a valid Python identifier.")
+
     manager = SessionManager()
-    source = {"kind": "notebookOutput", "label": label, "variableName": label}
     engine = (
         manager._engine(backend)
         if backend
-        else next(candidate for candidate in manager.engines.values() if candidate.detect(value))
+        else next((candidate for candidate in manager.engines.values() if candidate.detect(value)), None)
     )
+    if engine is None:
+        raise EngineError("Data Explorer notebook output supports Pandas and Polars dataframe or series values.")
     frame = getattr(engine, "normalize", lambda item: item)(value)
-    session_id = label
-    filtered = engine.apply_filter_model(frame, {"filters": [], "sort": []})
-    payload = {
-        "metadata": {
-            "sessionId": session_id,
-            "backend": engine.name,
-            "source": source,
-            "shape": engine.shape(frame),
-            "filteredShape": engine.shape(filtered),
-            "schema": engine.schema(frame),
-            "filterModel": {"filters": [], "sort": []},
-            "stats": engine.header_stats(filtered),
+    filter_model = {"filters": [], "sort": []}
+    filtered = engine.apply_filter_model(frame, filter_model)
+    source: dict[str, Any] = {"kind": "notebookOutput", "label": label}
+    if variable_name:
+        source["variableName"] = variable_name
+    shape = engine.shape(frame)
+    metadata = {
+        "protocolVersion": 2,
+        "sessionId": f"notebook-output:{label}",
+        "revision": 0,
+        "backend": engine.name,
+        "mode": "viewing",
+        "source": source,
+        "capabilities": {
+            "editable": False,
+            "lazy": False,
+            "cancel": False,
+            "exportCsv": False,
+            "exportParquet": False,
+            "notebookInsert": False,
         },
+        "shape": shape,
+        "filteredShape": engine.shape(filtered),
+        "schema": engine.schema(frame),
+        "filterModel": filter_model,
+        "steps": [],
+        "stats": engine.header_stats(filtered),
+    }
+    payload = {
+        "metadata": metadata,
         "page": engine.page(filtered, 0, page_size),
         "summaries": engine.summaries(filtered),
     }
-    display({MIME_TYPE: payload}, raw=True)
+    if mime_version == 2:
+        return {"mimeVersion": 2, **payload}
+
+    legacy_metadata = {
+        key: metadata[key]
+        for key in ("sessionId", "backend", "source", "shape", "filteredShape", "schema", "filterModel", "stats")
+    }
+    return {**payload, "metadata": legacy_metadata}
+
+
+def register_formatters(shell: Any | None = None) -> bool:
+    """Register v2 inline formatters after the extension has permission to use the kernel."""
+    active_shell: Any = shell if shell is not None else get_ipython()
+    if active_shell is None:
+        return False
+    formatter = active_shell.display_formatter.mimebundle_formatter
+    registered = False
+    for dataframe_type in _available_dataframe_types():
+        formatter.for_type(
+            dataframe_type,
+            lambda value: {MIME_TYPE_V2: build_payload(value, label=type(value).__name__)},
+        )
+        registered = True
+    return registered
+
+
+def _available_dataframe_types() -> list[type[Any]]:
+    types: list[type[Any]] = []
+    try:
+        import pandas as pd
+
+        types.extend((pd.DataFrame, pd.Series))
+    except ImportError:
+        pass
+    try:
+        import polars as pl
+
+        types.extend((pl.DataFrame, pl.LazyFrame, pl.Series))
+    except ImportError:
+        pass
+    return types
+
+
+def _is_python_identifier(value: str) -> bool:
+    return value.isascii() and value.isidentifier()

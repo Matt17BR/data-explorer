@@ -2,9 +2,14 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "dist-test",
-    "rootDir": "src/test/extensionHost",
+    "rootDir": "src",
     "lib": ["ES2022"],
     "types": ["node", "vscode"]
   },
-  "include": ["src/test/extensionHost/**/*.ts"]
+  "include": [
+    "src/test/extensionHost/**/*.ts",
+    "src/extension/notebooks/notebookInsertion.ts",
+    "src/shared/protocol.ts",
+    "src/shared/protocol.generated.ts"
+  ]
 }

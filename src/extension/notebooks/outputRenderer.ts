@@ -1,14 +1,8 @@
-export const DATA_EXPLORER_MIME = "application/vnd.data-explorer.viewer.v1+json";
-
-export interface NotebookOutputPayload {
-  metadata: unknown;
-  page: unknown;
-  summaries: unknown;
-}
-
-export const isNotebookOutputPayload = (value: unknown): value is NotebookOutputPayload => {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  return "metadata" in value && "page" in value && "summaries" in value;
-};
+export {
+  DATA_EXPLORER_MIME,
+  DATA_EXPLORER_MIME_V1,
+  DATA_EXPLORER_MIME_V2,
+  normalizeNotebookOutputPayload,
+  notebookPayloadAsOpened
+} from "../../shared/notebookOutput";
+export type { NotebookOutputPayload } from "../../shared/notebookOutput";
