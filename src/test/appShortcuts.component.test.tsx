@@ -104,7 +104,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 });
 
 function dispatch(data: unknown): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data })));
+  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
 }
 
 function runtimeRequestKinds(): string[] {

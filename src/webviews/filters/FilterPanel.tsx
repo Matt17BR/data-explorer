@@ -5,7 +5,7 @@ import type { ColumnFilter, FilterModel, PredicateOperator, SortDirection } from
 interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
   model: FilterModel;
-  values: Record<string, ValuesResponse>;
+  values: ReadonlyMap<string, ValuesResponse>;
   activeColumn?: string;
   defaultAdvanced?: boolean;
   disabled?: boolean;
@@ -67,7 +67,7 @@ export function FilterPanel({
   const columnSchema = metadata?.schema.find((item) => item.id === columnId);
   const activeColumn = columnSchema?.name ?? "";
   const hasActiveColumn = Boolean(columnSchema && activeColumn);
-  const columnValueResponse = activeColumn ? values[activeColumn] : undefined;
+  const columnValueResponse = activeColumn ? values.get(activeColumn) : undefined;
 
   const activeFilter = model.filters.find((item) => item.column === activeColumn);
   const selectedValues = new Set(activeFilter?.valueFilter?.selectedValues.map(String) ?? []);

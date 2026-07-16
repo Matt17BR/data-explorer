@@ -33,10 +33,12 @@ export function App() {
   const [page, setPage] = useState<GridPage | undefined>();
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
-  const [columnValues, setColumnValues] = useState<Record<string, ValuesResponse>>({});
+  const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [snapshotRows, setSnapshotRows] = useState<DataRow[] | undefined>();
   const [foregroundError, setForegroundError] = useState<string | undefined>();
-  const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<Record<string, BackgroundDiagnostic>>({});
+  const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<ReadonlyMap<string, BackgroundDiagnostic>>(
+    () => new Map()
+  );
   const [failedPageRequest, setFailedPageRequest] = useState<PendingPageRequest | undefined>();
   const [loading, setLoading] = useState(true);
   const [mutationPending, setMutationPending] = useState(false);
@@ -63,8 +65,8 @@ export function App() {
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
   const stepInspectionTargetRef = useRef<PendingStepInspection | undefined>(undefined);
   const summariesRef = useRef<ColumnSummary[]>([]);
-  const columnValuesRef = useRef<Record<string, ValuesResponse>>({});
-  const backgroundDiagnosticsRef = useRef<Record<string, BackgroundDiagnostic>>({});
+  const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
+  const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const snapshotRowsRef = useRef<DataRow[] | undefined>(undefined);
   const sidePanelOpenRef = useRef(false);
@@ -130,7 +132,7 @@ export function App() {
     setSummaries(next);
   }, []);
 
-  const storeColumnValues = useCallback((next: Record<string, ValuesResponse>) => {
+  const storeColumnValues = useCallback((next: ReadonlyMap<string, ValuesResponse>) => {
     columnValuesRef.current = next;
     setColumnValues(next);
   }, []);
@@ -180,8 +182,8 @@ export function App() {
   const storeBackgroundDiagnostics = useCallback(
     (
       update:
-        | Record<string, BackgroundDiagnostic>
-        | ((current: Record<string, BackgroundDiagnostic>) => Record<string, BackgroundDiagnostic>)
+        | ReadonlyMap<string, BackgroundDiagnostic>
+        | ((current: ReadonlyMap<string, BackgroundDiagnostic>) => ReadonlyMap<string, BackgroundDiagnostic>)
     ) => {
       const next = typeof update === "function" ? update(backgroundDiagnosticsRef.current) : update;
       backgroundDiagnosticsRef.current = next;
@@ -194,9 +196,9 @@ export function App() {
     (pending: PendingBackgroundRequest) => {
       const key = backgroundDiagnosticKey(pending);
       storeBackgroundDiagnostics((current) => {
-        if (!(key in current)) return current;
-        const next = { ...current };
-        delete next[key];
+        if (!current.has(key)) return current;
+        const next = new Map(current);
+        next.delete(key);
         return next;
       });
     },
@@ -256,9 +258,9 @@ export function App() {
         vscode.postMessage({ kind: "cancelViewRequests", viewRequestIds: cancelledIds });
       }
       storeBackgroundDiagnostics((current) => {
-        const next: Record<string, BackgroundDiagnostic> = {};
-        for (const [key, diagnostic] of Object.entries(current)) {
-          if (!diagnosticKeys.has(key) && !shouldCancel(diagnostic.pending)) next[key] = diagnostic;
+        const next = new Map<string, BackgroundDiagnostic>();
+        for (const [key, diagnostic] of current) {
+          if (!diagnosticKeys.has(key) && !shouldCancel(diagnostic.pending)) next.set(key, diagnostic);
         }
         return next;
       });
@@ -269,7 +271,7 @@ export function App() {
   const clearProgressiveData = useCallback(
     (preserveColumnValues = false) => {
       storeSummaries([]);
-      if (!preserveColumnValues) storeColumnValues({});
+      if (!preserveColumnValues) storeColumnValues(new Map());
     },
     [storeColumnValues, storeSummaries]
   );
@@ -279,7 +281,7 @@ export function App() {
       cancelBackgroundRequests();
       clearDrawerSummaryScheduling();
       clearProgressiveData(preserveColumnValues);
-      storeBackgroundDiagnostics({});
+      storeBackgroundDiagnostics(new Map());
     },
     [cancelBackgroundRequests, clearDrawerSummaryScheduling, clearProgressiveData, storeBackgroundDiagnostics]
   );
@@ -503,7 +505,7 @@ export function App() {
       metadata: currentMetadata,
       page: currentPage,
       summaries: [...summariesRef.current],
-      columnValues: { ...columnValuesRef.current },
+      columnValues: new Map(columnValuesRef.current),
       backgroundDiagnostics: cloneBackgroundDiagnostics(backgroundDiagnosticsRef.current)
     };
   }, []);
@@ -625,6 +627,7 @@ export function App() {
         | StepInspectionClearedMessage
       >
     ) => {
+      if (event.origin !== window.location.origin) return;
       const response = event.data;
       if (response.kind === "stepInspectionCleared") {
         if (stepInspectionTargetRef.current || pendingStepInspectionRef.current || stepInspectionRef.current) {
@@ -725,10 +728,11 @@ export function App() {
           pendingBackgroundRequests.current.delete(response.viewRequestId);
           releaseBackgroundRequest(response.viewRequestId, pending);
           if (canProfileConfirmedView(pending.viewContextId)) {
-            storeBackgroundDiagnostics((current) => ({
-              ...current,
-              [backgroundDiagnosticKey(pending)]: { message: response.message, pending }
-            }));
+            storeBackgroundDiagnostics((current) => {
+              const next = new Map(current);
+              next.set(backgroundDiagnosticKey(pending), { message: response.message, pending });
+              return next;
+            });
             const retryScheduled = scheduleBackgroundRetry(pending);
             if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.column, true);
           } else if (pending.kind === "summary") {
@@ -931,7 +935,7 @@ export function App() {
           return;
         }
         latestValuesByColumn.current.delete(response.column);
-        storeColumnValues({ ...columnValuesRef.current, [response.column]: response });
+        storeColumnValues(new Map(columnValuesRef.current).set(response.column, response));
         clearBackgroundDiagnostic(pending);
         return;
       }
@@ -1092,7 +1096,7 @@ export function App() {
         search,
         viewRequestId
       );
-      storeColumnValues({ ...columnValuesRef.current, [column]: values });
+      storeColumnValues(new Map(columnValuesRef.current).set(column, values));
       return;
     }
     if (!currentMetadata || !confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
@@ -1261,7 +1265,7 @@ export function App() {
     });
   };
 
-  const backgroundDiagnosticMessages = Object.values(backgroundDiagnostics).map((diagnostic) => diagnostic.message);
+  const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
 
   if (foregroundError && !metadata) {
     return (
@@ -1672,8 +1676,8 @@ interface ConfirmedViewState {
   metadata: SessionMetadata;
   page: GridPage;
   summaries: ColumnSummary[];
-  columnValues: Record<string, ValuesResponse>;
-  backgroundDiagnostics: Record<string, BackgroundDiagnostic>;
+  columnValues: ReadonlyMap<string, ValuesResponse>;
+  backgroundDiagnostics: ReadonlyMap<string, BackgroundDiagnostic>;
 }
 
 interface PendingStepInspection {
@@ -1724,10 +1728,10 @@ function backgroundDiagnosticKey(pending: PendingBackgroundRequest): string {
 }
 
 function cloneBackgroundDiagnostics(
-  diagnostics: Record<string, BackgroundDiagnostic>
-): Record<string, BackgroundDiagnostic> {
-  return Object.fromEntries(
-    Object.entries(diagnostics).map(([key, diagnostic]) => [
+  diagnostics: ReadonlyMap<string, BackgroundDiagnostic>
+): ReadonlyMap<string, BackgroundDiagnostic> {
+  return new Map(
+    [...diagnostics].map(([key, diagnostic]) => [
       key,
       {
         ...diagnostic,

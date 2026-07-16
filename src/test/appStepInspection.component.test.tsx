@@ -187,7 +187,7 @@ type HostMessage =
   | { kind: "stepInspectionResult"; stepId: string; offset: number; response: OpenWranglerResponse };
 
 function dispatch(data: HostMessage): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data })));
+  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
 }
 
 function runtimeRequests(kind: string): Record<string, unknown>[] {

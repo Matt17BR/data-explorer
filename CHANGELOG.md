@@ -29,6 +29,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added canonical stdio protocol round-trip and instrumented active-profile overlap gates with a release-blocking 500ms cache-miss ceiling, and limited cancellation acknowledgements to work that was genuinely still queued so running results remain authoritative.
 - Made the bundled Python runtime version a package-wide source of truth and added a documentation gate that rejects extension/runtime prerelease drift.
 - Made every runtime mutation and matching webview transition transactional, including rollback of revisions, plans, drafts, cached blocks, confirmed view state, values, profiling ownership, and focus after late failures or cancellations.
+- Hardened webview host-message intake with explicit same-origin rejection and kept column-derived diagnostic keys in `Map` storage instead of dynamic object properties.
 - Made terminal runtime cleanup accept the caller's last confirmed revision after an ambiguous mutation, recursively isolated Pandas object cells before live/generated custom code, and aligned live/generated null-versus-NaN filters with saved notebook snapshots.
 - Made orderly runtime shutdown drain every session after cleanup faults and return their deterministic aggregate to initiating, joining, and later callers.
 - Added a release-blocking warm-dependency/cold-source stdio first-grid gate with per-file Linux cache-eviction evidence, and required the runtime version module in packaged-VSIX verification.

@@ -52,6 +52,21 @@ const citySummary: ColumnSummary = {
 describe("App progressive profiling and view correlation", () => {
   beforeEach(() => postMessage.mockClear());
 
+  it("ignores messages from another origin", () => {
+    render(<App />);
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { kind: "sessionOpened", metadata, page, summaries: [] },
+          origin: "https://untrusted.invalid"
+        })
+      )
+    );
+
+    expect(screen.getByText("Loading dataframe...")).toBeInTheDocument();
+    expect(screen.queryByText("Berlin")).toBeNull();
+  });
+
   it("opens without exact stats and profiles each visible column independently", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -860,7 +875,7 @@ function openCityFilter(): void {
 function dispatch(
   data: OpenWranglerResponse | EditorActionMessage | ViewStateMessage | StepInspectionClearedMessage
 ): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data })));
+  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
 }
 
 interface EditorActionMessage {

@@ -22,7 +22,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 4. Python execution, dependency installation, custom code, and exports require a trusted workspace.
 5. Every runtime request is versioned, validated, correlated, cancellable where possible, and safe to ignore when stale.
 6. Disposing a panel closes its runtime session. A runtime crash rejects pending work and offers replay/recovery.
-7. Webviews use VS Code theme tokens, a restrictive CSP, validated messages, accessible labels, and keyboard navigation.
+7. Webviews use VS Code theme tokens, a restrictive CSP, same-origin validated messages, accessible labels, and keyboard navigation. User-derived keys belong in `Map`/`Set`, never dynamic object properties.
 8. `scratch.txt` and all other untracked user files are user-owned. Never edit, delete, stage, or package them.
 9. Do not describe the project as feature-parity complete until every in-scope row in `docs/feature-parity.md` is green.
 10. File readers expose a shared zero-based Excel sheet index. Failed eager or lazy opens must produce `EngineError` and must not retain a session; nested and scalar values must remain strict-JSON-safe.

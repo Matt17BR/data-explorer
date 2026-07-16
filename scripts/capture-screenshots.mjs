@@ -405,9 +405,9 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
       postMessage(message) {
         window.openWranglerMessages.push(message);
         if (message.kind === "ready") {
-          ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);'}
-          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}
-          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)} })), 120);` : ""}
+          ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload, origin: window.location.origin })), 20);'}
+          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)}, origin: window.location.origin })), 90);` : ""}
+          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)}, origin: window.location.origin })), 120);` : ""}
           ${
             openColumnFilter
               ? `setTimeout(() => {
@@ -426,7 +426,8 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           const value = columnValues[message.request.column];
           if (value) {
             setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-              data: { ...value, viewRequestId: message.request.viewRequestId }
+              data: { ...value, viewRequestId: message.request.viewRequestId },
+              origin: window.location.origin
             })), 20);
           }
         }
@@ -434,7 +435,8 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           const metadata = { ...sessionPayload.metadata, filterModel: message.request.filterModel };
           const page = pages[String(message.request.offset)] ?? sessionPayload.page;
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "page", revision: metadata.revision, viewRequestId: message.request.viewRequestId, metadata, page }
+            data: { kind: "page", revision: metadata.revision, viewRequestId: message.request.viewRequestId, metadata, page },
+            origin: window.location.origin
           })), 20);
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "inspectStep") {
@@ -446,18 +448,21 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
                 stepId: message.request.stepId,
                 offset: message.request.offset,
                 response
-              }
+              },
+              origin: window.location.origin
             })), 20);
           }
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getSummary") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columns?.includes(summary.column)) }
+            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columns?.includes(summary.column)) },
+            origin: window.location.origin
           })), 20);
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getDatasetStats") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "datasetStats", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, stats: sessionPayload.metadata.stats }
+            data: { kind: "datasetStats", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, stats: sessionPayload.metadata.stats },
+            origin: window.location.origin
           })), 20);
         }
       },
@@ -548,7 +553,8 @@ function writeCodePreviewHarness(fileName, code, outputName) {
       postMessage(message) {
         if (message.kind === "ready") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "codePreview", code: ${JSON.stringify(code)} }
+            data: { kind: "codePreview", code: ${JSON.stringify(code)} },
+            origin: window.location.origin
           })), 20);
         }
       }

@@ -81,6 +81,7 @@ const editor = new EditorView({
 });
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
+  if (event.origin !== window.location.origin) return;
   const message = event.data;
   if (
     typeof message !== "object" ||

@@ -50,6 +50,7 @@ try {
     await page.close();
   }
   await verifyNotebookExpansion(browser);
+  await verifyCodePreviewOrigin(browser);
   await verifyCleaningKeyboardShortcuts(browser);
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
@@ -77,6 +78,27 @@ async function verifyNotebookExpansion(browser) {
   }
   await page.close();
   console.log("Notebook MIME v2 full-view expansion verified.");
+}
+
+async function verifyCodePreviewOrigin(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 420 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "code-preview.html")).href, { waitUntil: "load" });
+  await page.waitForFunction(() => document.querySelector(".cm-content")?.textContent?.includes("def clean_data"));
+  const before = await page.locator(".cm-content").textContent();
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { kind: "codePreview", code: "# untrusted replacement" },
+        origin: "https://untrusted.invalid"
+      })
+    );
+  });
+  const after = await page.locator(".cm-content").textContent();
+  await page.close();
+  if (after !== before) {
+    throw new Error("Code preview accepted a message from another origin.");
+  }
+  console.log("Code-preview host origin validation verified.");
 }
 
 if (failures.length > 0) {
@@ -394,7 +416,8 @@ async function showAppliedStep(page) {
     const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code }
+        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code },
+        origin: window.location.origin
       })
     );
   });

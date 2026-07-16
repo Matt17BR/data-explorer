@@ -40,19 +40,22 @@ const metadata: SessionMetadata = {
   ]
 };
 
-const values: Record<string, ValuesResponse> = {
-  city: {
-    kind: "columnValues",
-    revision: 0,
-    viewRequestId: "values-city",
-    column: "city",
-    values: [
-      { value: "Berlin", count: 2 },
-      { value: "Milan", count: 1 }
-    ],
-    hasMore: true
-  }
-};
+const values = new Map<string, ValuesResponse>([
+  [
+    "city",
+    {
+      kind: "columnValues",
+      revision: 0,
+      viewRequestId: "values-city",
+      column: "city",
+      values: [
+        { value: "Berlin", count: 2 },
+        { value: "Milan", count: 1 }
+      ],
+      hasMore: true
+    }
+  ]
+]);
 
 describe("FilterPanel", () => {
   it("renders its loading state without metadata", () => {
@@ -60,7 +63,7 @@ describe("FilterPanel", () => {
       <FilterPanel
         metadata={undefined}
         model={{ filters: [], sort: [] }}
-        values={{}}
+        values={new Map()}
         onApply={() => undefined}
         onRequestValues={() => undefined}
       />
@@ -170,7 +173,7 @@ describe("FilterPanel", () => {
       <FilterPanel
         metadata={{ ...metadata, schema: [], shape: { rows: 0, columns: 0 }, filteredShape: { rows: 0, columns: 0 } }}
         model={{ filters: [], sort: [] }}
-        values={{}}
+        values={new Map()}
         defaultAdvanced={true}
         onApply={onApply}
         onRequestValues={onRequestValues}
@@ -245,7 +248,7 @@ describe("FilterPanel", () => {
       <FilterPanel
         metadata={metadata}
         model={{ filters: [], sort: [] }}
-        values={{}}
+        values={new Map()}
         activeColumn="city"
         onApply={onApply}
         onRequestValues={onRequestValues}
@@ -271,7 +274,7 @@ describe("FilterPanel", () => {
       <FilterPanel
         metadata={renamedMetadata}
         model={{ filters: [], sort: [] }}
-        values={{}}
+        values={new Map()}
         activeColumn="city"
         onApply={onApply}
         onRequestValues={onRequestValues}
