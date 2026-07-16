@@ -405,7 +405,11 @@ def test_close_uses_the_last_confirmed_revision_after_an_ambiguous_mutation(tmp_
     preview = manager.preview_step(
         session_id,
         0,
-        {"id": "drop-value", "kind": "dropColumns", "params": {"columns": ["value"]}},
+        {
+            "id": "cast-value",
+            "kind": "castColumn",
+            "params": {"column": {"id": "c:source:0", "name": "value"}, "dtype": "float"},
+        },
         0,
         10,
     )
@@ -573,7 +577,11 @@ def test_read_only_engine_gates_editing_and_exports(tmp_path) -> None:
         manager.preview_step(
             session_id,
             0,
-            {"id": "clone", "kind": "cloneColumn", "params": {"column": "value", "newName": "copy"}},
+            {
+                "id": "clone",
+                "kind": "cloneColumn",
+                "params": {"column": {"id": "c:source:0", "name": "value"}, "newName": "copy"},
+            },
             0,
             10,
         )

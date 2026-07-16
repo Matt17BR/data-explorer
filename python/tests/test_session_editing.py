@@ -4,11 +4,56 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError
+from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import SessionManager
 
 
 def transform(step_id: str, kind: str, **params):
     return {"id": step_id, "kind": kind, "params": params}
+
+
+def source_ref(position: int, name: str) -> dict[str, str]:
+    return {"id": f"c:source:{position}", "name": name}
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_sources_cannot_enter_the_private_row_identity_namespace(tmp_path, backend):
+    path = tmp_path / f"reserved-{backend}.csv"
+    path.write_text(f"{INTERNAL_ROW_ID_PREFIX}user,value\nprivate,1\n", encoding="utf-8")
+    manager = SessionManager()
+
+    with pytest.raises(EngineError, match="private row-identity prefix are reserved"):
+        manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)},
+            backend=backend,
+            page_size=10,
+        )
+
+    assert manager.sessions == {}
+
+
+def test_custom_code_cannot_forge_a_private_row_identity_column(tmp_path):
+    path = tmp_path / "reserved-custom.csv"
+    path.write_text("name,value\na,1\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", page_size=10
+    )
+
+    with pytest.raises(EngineError, match="private row-identity prefix are reserved"):
+        manager.preview_step(
+            opened["metadata"]["sessionId"],
+            0,
+            transform(
+                "custom",
+                "customCode",
+                code=f"result = df.assign({INTERNAL_ROW_ID_PREFIX}forged=1)",
+            ),
+            0,
+            10,
+        )
+
+    assert manager.sessions[opened["metadata"]["sessionId"]].revision == 0
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
@@ -36,7 +81,14 @@ def test_draft_preview_apply_edit_and_undo_replays_the_immutable_source(tmp_path
     preview = manager.preview_step(
         session_id,
         0,
-        transform("score", "formula", leftColumn="value", operator="multiply", value=2, newColumn="score"),
+        transform(
+            "score",
+            "formula",
+            leftColumn=source_ref(1, "value"),
+            operator="multiply",
+            value=2,
+            newColumn="score",
+        ),
         0,
         10,
     )
@@ -56,7 +108,14 @@ def test_draft_preview_apply_edit_and_undo_replays_the_immutable_source(tmp_path
     edited_preview = manager.preview_step(
         session_id,
         2,
-        transform("score-v2", "formula", leftColumn="value", operator="multiply", value=3, newColumn="score"),
+        transform(
+            "score",
+            "formula",
+            leftColumn=source_ref(1, "value"),
+            operator="multiply",
+            value=3,
+            newColumn="score",
+        ),
         0,
         10,
         replace_step_id="score",
@@ -66,7 +125,7 @@ def test_draft_preview_apply_edit_and_undo_replays_the_immutable_source(tmp_path
     assert edited_preview["page"]["rows"][2]["values"][2]["display"] in {"9", "9.0"}
 
     edited = manager.apply_draft(session_id, 3, 0, 10)
-    assert [item["id"] for item in edited["metadata"]["steps"]] == ["score-v2"]
+    assert [item["id"] for item in edited["metadata"]["steps"]] == ["score"]
     assert edited["metadata"]["shape"] == {"rows": 3, "columns": 3}
 
     undone = manager.undo_step(session_id, 4, 0, 10)
@@ -89,7 +148,7 @@ def test_discard_restores_committed_plan_and_stale_revisions_are_rejected(tmp_pa
     preview = manager.preview_step(
         session_id,
         0,
-        transform("drop", "dropColumns", columns=["name"]),
+        transform("drop", "dropColumns", columns=[source_ref(0, "name")]),
         0,
         10,
     )
@@ -115,7 +174,7 @@ def test_viewing_sessions_cannot_preview_transformations(tmp_path):
         manager.preview_step(
             opened["metadata"]["sessionId"],
             0,
-            transform("drop", "dropColumns", columns=["value"]),
+            transform("drop", "dropColumns", columns=[source_ref(0, "value")]),
             0,
             10,
         )
@@ -131,7 +190,13 @@ def test_latest_structural_step_keeps_its_input_schema_for_editing(tmp_path, bac
     )
     session_id = opened["metadata"]["sessionId"]
 
-    manager.preview_step(session_id, 0, transform("drop", "dropColumns", columns=["name"]), 0, 10)
+    manager.preview_step(
+        session_id,
+        0,
+        transform("drop", "dropColumns", columns=[source_ref(0, "name")]),
+        0,
+        10,
+    )
     applied = manager.apply_draft(session_id, 1, 0, 10)
 
     assert [column["name"] for column in applied["metadata"]["schema"]] == ["value"]
@@ -140,7 +205,7 @@ def test_latest_structural_step_keeps_its_input_schema_for_editing(tmp_path, bac
     edited = manager.preview_step(
         session_id,
         2,
-        transform("drop-v2", "dropColumns", columns=["value"]),
+        transform("drop", "dropColumns", columns=[source_ref(1, "value")]),
         0,
         10,
         replace_step_id="drop",
@@ -212,7 +277,7 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
     renamed = manager.preview_step(
         session_id,
         4,
-        transform("rename", "renameColumn", column="value", newName="amount"),
+        transform("rename", "renameColumn", column=source_ref(1, "value"), newName="amount"),
         0,
         10,
     )
@@ -225,7 +290,11 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
     reordered = manager.preview_step(
         session_id,
         6,
-        transform("select", "selectColumns", columns=["value", "group"]),
+        transform(
+            "select",
+            "selectColumns",
+            columns=[source_ref(1, "value"), source_ref(0, "group")],
+        ),
         0,
         10,
     )
@@ -317,7 +386,14 @@ def test_export_is_atomic_native_and_excludes_view_filters(tmp_path, backend, fo
     manager.preview_step(
         session_id,
         0,
-        transform("score", "formula", leftColumn="value", operator="multiply", value=2, newColumn="score"),
+        transform(
+            "score",
+            "formula",
+            leftColumn=source_ref(1, "value"),
+            operator="multiply",
+            value=2,
+            newColumn="score",
+        ),
         0,
         10,
     )
@@ -358,7 +434,13 @@ def test_export_rejects_pending_drafts_and_source_overwrite(tmp_path):
         {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
     )
     session_id = opened["metadata"]["sessionId"]
-    manager.preview_step(session_id, 0, transform("clone", "cloneColumn", column="value", newName="copy"), 0, 10)
+    manager.preview_step(
+        session_id,
+        0,
+        transform("clone", "cloneColumn", column=source_ref(0, "value"), newName="copy"),
+        0,
+        10,
+    )
 
     with pytest.raises(EngineError, match="Apply or discard"):
         manager.export_data(session_id, 1, str(tmp_path / "cleaned.csv"), "csv")

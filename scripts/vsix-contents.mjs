@@ -18,8 +18,10 @@ export const allowedVsixEntryPatterns = [
 export const requiredVsixEntries = [
   "extension/package.json",
   "extension/dist/extension/activate.js",
+  "extension/dist/extension/webviewPanel.js",
   "extension/media/webview.js",
   "extension/media/webview.css",
+  "extension/media/codicon.ttf",
   "extension/media/protocolValidation.js",
   "extension/media/icon.png",
   "extension/python/openwrangler_runtime/server.py",

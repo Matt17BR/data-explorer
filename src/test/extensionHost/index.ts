@@ -9,6 +9,7 @@ import { getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type {
+  ColumnReference,
   OpenWranglerRequest,
   OpenWranglerResponse,
   FilterModel,
@@ -59,6 +60,12 @@ interface FakeJupyterApi {
 
 const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
+
+function columnReference(metadata: SessionMetadata, name: string): ColumnReference {
+  const column = metadata.schema.find((candidate) => candidate.name === name);
+  assert.ok(column, `Expected ${name} in the opened session schema.`);
+  return { id: column.id, name: column.name };
+}
 
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
@@ -115,6 +122,7 @@ export async function run(): Promise<void> {
     configuration?: { properties?: Record<string, unknown> };
     notebookRenderer?: Array<{ mimeTypes?: string[] }>;
     keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
+    menus?: Record<string, Array<{ command?: string; when?: string; group?: string }>>;
   };
   assert.ok(
     contributions.viewsContainers?.activitybar?.some(
@@ -164,6 +172,16 @@ export async function run(): Promise<void> {
         when: "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
       }
     ]
+  );
+  assert.ok(
+    contributions.menus?.["view/item/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.editLatestStep" &&
+        item.when ===
+          "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan" &&
+        item.group === "inline@10"
+    ),
+    "Edit Latest Step must be unavailable from the Cleaning Steps menu while a draft blocks plan changes."
   );
   assert.deepEqual(contributions.notebookRenderer?.[0]?.mimeTypes, ["application/vnd.openwrangler.viewer.v2+json"]);
   assert.ok(
@@ -680,7 +698,12 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       step: {
         id: "notebook-score",
         kind: "formula",
-        params: { leftColumn: "value", operator: "multiply", value: 2, newColumn: "score" }
+        params: {
+          leftColumn: columnReference(active.metadata, "value"),
+          operator: "multiply",
+          value: 2,
+          newColumn: "score"
+        }
       },
       offset: 0,
       limit: 10
@@ -815,7 +838,12 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       step: {
         id: target.stepId,
         kind: "formula",
-        params: { leftColumn: "sales", operator: "multiply", value: target.multiplier, newColumn: "score" }
+        params: {
+          leftColumn: columnReference(opened.metadata, "sales"),
+          operator: "multiply",
+          value: target.multiplier,
+          newColumn: "score"
+        }
       },
       offset: 0,
       limit: 20
@@ -1450,7 +1478,12 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         {
           id: `${backend}-formula`,
           kind: "formula",
-          params: { leftColumn: "sales", operator: "multiply", value: 2, newColumn: "score" }
+          params: {
+            leftColumn: columnReference(opened.metadata, "sales"),
+            operator: "multiply",
+            value: 2,
+            newColumn: "score"
+          }
         },
         {
           id: `${backend}-text`,

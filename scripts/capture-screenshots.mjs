@@ -81,6 +81,7 @@ filter_model = {
     "sort": [{"column": "sales", "direction": "desc", "nulls": "last"}],
 }
 session_id = opened["metadata"]["sessionId"]
+sales_column = next(column for column in opened["metadata"]["schema"] if column["name"] == "sales")
 opened["metadata"]["stats"] = manager.get_dataset_stats(session_id, 0, {"logic": "and", "filters": [], "sort": []})["stats"]
 filtered_page = manager.get_page(session_id, 0, 0, 4, filter_model)
 filtered_page["metadata"]["stats"] = manager.get_dataset_stats(session_id, 0, filter_model)["stats"]
@@ -93,7 +94,7 @@ draft = manager.preview_step(
         "id": "adjusted-sales",
         "kind": "formula",
         "params": {
-            "leftColumn": "sales",
+            "leftColumn": {"id": sales_column["id"], "name": sales_column["name"]},
             "operator": "multiply",
             "value": 1.1,
             "newColumn": "adjusted_sales",
@@ -252,12 +253,27 @@ print(json.dumps({
   )
 );
 
+const duplicateColumnPayload = JSON.parse(JSON.stringify(payloads.opened));
+duplicateColumnPayload.metadata.schema = duplicateColumnPayload.metadata.schema.map((column, position) => ({
+  ...column,
+  id: `c:source:${position}`,
+  name: ["value", "value", "7", ""][position]
+}));
+
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
 writeWebviewHarness(
   "operation-dialog.html",
   payloads.opened,
   {},
   "acceptance/operation-dialog-dark-1280.png",
+  {},
+  { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "formula" } }
+);
+writeWebviewHarness(
+  "operation-dialog-duplicate-columns.html",
+  duplicateColumnPayload,
+  {},
+  "acceptance/operation-dialog-duplicate-columns-dark-1280.png",
   {},
   { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "formula" } }
 );

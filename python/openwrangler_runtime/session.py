@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, default_engine_registry
-from .lineage import derive_lineage, reuse_latest_output_ids, schema_with_lineage, source_lineage
+from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 from .version import __version__
 
@@ -55,11 +56,13 @@ class Session:
     filter_model: dict[str, Any]
     filtered_shape: dict[str, int]
     plan: list[dict[str, Any]]
+    bound_plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
     committed_lineage: list[dict[str, str]]
     committed_shape: dict[str, int]
     committed_schema: list[dict[str, Any]]
     draft_step: dict[str, Any] | None
+    draft_bound_step: dict[str, Any] | None
     draft_frame: Any | None
     draft_base_lineage: list[dict[str, str]] | None
     draft_base_schema: list[dict[str, Any]] | None
@@ -128,11 +131,13 @@ class _SessionMutationSnapshot:
     filter_model: dict[str, Any]
     filtered_shape: dict[str, int]
     plan: list[dict[str, Any]]
+    bound_plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
     committed_lineage: list[dict[str, str]]
     committed_shape: dict[str, int]
     committed_schema: list[dict[str, Any]]
     draft_step: dict[str, Any] | None
+    draft_bound_step: dict[str, Any] | None
     draft_frame: Any | None
     draft_base_lineage: list[dict[str, str]] | None
     draft_base_schema: list[dict[str, Any]] | None
@@ -153,11 +158,13 @@ class _SessionMutationSnapshot:
             filter_model=deepcopy(session.filter_model),
             filtered_shape=deepcopy(session.filtered_shape),
             plan=deepcopy(session.plan),
+            bound_plan=deepcopy(session.bound_plan),
             plan_input_schemas=deepcopy(session.plan_input_schemas),
             committed_lineage=deepcopy(session.committed_lineage),
             committed_shape=deepcopy(session.committed_shape),
             committed_schema=deepcopy(session.committed_schema),
             draft_step=deepcopy(session.draft_step),
+            draft_bound_step=deepcopy(session.draft_bound_step),
             draft_frame=session.draft_frame,
             draft_base_lineage=deepcopy(session.draft_base_lineage),
             draft_base_schema=deepcopy(session.draft_base_schema),
@@ -179,11 +186,13 @@ class _SessionMutationSnapshot:
         session.filter_model = self.filter_model
         session.filtered_shape = self.filtered_shape
         session.plan = self.plan
+        session.bound_plan = self.bound_plan
         session.plan_input_schemas = self.plan_input_schemas
         session.committed_lineage = self.committed_lineage
         session.committed_shape = self.committed_shape
         session.committed_schema = self.committed_schema
         session.draft_step = self.draft_step
+        session.draft_bound_step = self.draft_bound_step
         session.draft_frame = self.draft_frame
         session.draft_base_lineage = self.draft_base_lineage
         session.draft_base_schema = self.draft_base_schema
@@ -258,6 +267,8 @@ class SessionManager:
             frame = self._load_source(load_source, engine)
             if source.get("kind") != "file":
                 frame = getattr(engine, "normalize", lambda value: value)(frame)
+            engine.validate_internal_row_id_namespace(frame)
+            engine.validate_column_addressability(frame)
             frame = engine.ensure_row_ids(frame, f"{session_id}:source")
             filter_model = {"logic": "and", "filters": [], "sort": []}
             source_shape = engine.shape(frame)
@@ -275,11 +286,13 @@ class SessionManager:
                 filter_model=filter_model,
                 filtered_shape=source_shape,
                 plan=[],
+                bound_plan=[],
                 plan_input_schemas=[],
                 committed_lineage=initial_lineage,
                 committed_shape=source_shape,
                 committed_schema=source_schema,
                 draft_step=None,
+                draft_bound_step=None,
                 draft_frame=None,
                 draft_base_lineage=None,
                 draft_base_schema=None,
@@ -413,10 +426,13 @@ class SessionManager:
         with self._atomic_session_access(session), self._validated_source_read(session):
             self._assert_revision(session, revision)
             self._assert_editable(session)
+            if session.draft_step is not None:
+                raise EngineError("Apply or discard the current draft before previewing another step.")
             try:
                 normalized = validate_step(step)
             except OperationError as error:
                 raise EngineError(str(error)) from error
+            self._assert_bound_history(session)
 
             retained_steps = session.plan if replace_step_id is None else session.plan[:-1]
             if any(applied["id"] == normalized["id"] for applied in retained_steps):
@@ -429,21 +445,26 @@ class SessionManager:
             base = session.committed
             base_lineage = session.committed_lineage
             base_schema = session.committed_schema
-            candidate_plan = [*session.plan, normalized]
+            retained_bound_steps = session.bound_plan if replace_step_id is None else session.bound_plan[:-1]
             if replace_step_id is not None:
                 if not session.plan or session.plan[-1]["id"] != replace_step_id:
                     raise EngineError("Only the latest applied step can be edited.")
-                candidate_plan = [*session.plan[:-1], normalized]
-                base, base_lineage, _, base_schema = self._replay(session, session.plan[:-1])
+                if normalized["id"] != replace_step_id:
+                    raise EngineError("An edited step must retain the applied step ID it replaces.")
+                base, base_lineage, _, base_schema = self._replay(session, session.bound_plan[:-1])
 
-            draft = session.engine.apply_transform(base, normalized)
-            draft = session.engine.ensure_row_ids(draft, f"{session.session_id}:{normalized['id']}")
+            try:
+                bound_step = bind_step(normalized, base_schema, base_lineage)
+            except ColumnBindingError as error:
+                raise EngineError(str(error)) from error
+            candidate_bound_plan = [*retained_bound_steps, bound_step]
+
+            draft = self._apply_transform_with_row_ids(session, base, bound_step)
             draft_shape = session.engine.shape(draft)
             draft_schema = session.engine.schema(draft)
-            draft_lineage = derive_lineage(base_lineage, draft_schema, normalized)
-            if replace_step_id is not None:
-                draft_lineage = reuse_latest_output_ids(draft_lineage, session.committed_lineage, base_lineage)
+            draft_lineage = derive_lineage(base_lineage, draft_schema, bound_step)
             session.draft_step = normalized
+            session.draft_bound_step = bound_step
             session.draft_frame = draft
             session.draft_base_lineage = base_lineage
             session.draft_base_schema = base_schema
@@ -472,7 +493,7 @@ class SessionManager:
                     offset,
                     limit,
                 ),
-                "code": session.engine.compile_plan(candidate_plan),
+                "code": session.engine.compile_plan(candidate_bound_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
             }
 
@@ -493,14 +514,12 @@ class SessionManager:
                 raise EngineError(f"Unknown applied step: {step_id}")
             if len(matches) != 1:
                 raise EngineError(f"Applied step ID is not unique: {step_id}")
-            if len(session.plan_input_schemas) != len(session.plan):
-                raise EngineError("The applied cleaning-step history is inconsistent.")
+            self._assert_bound_history(session)
 
             step_index = matches[0]
-            step = session.plan[step_index]
-            before, _, before_shape, before_raw_schema = self._replay(session, session.plan[:step_index])
-            after = session.engine.apply_transform(before, step)
-            after = session.engine.ensure_row_ids(after, f"{session.session_id}:{step['id']}")
+            bound_step = session.bound_plan[step_index]
+            before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
+            after = self._apply_transform_with_row_ids(session, before, bound_step)
             after_shape = session.engine.shape(after)
             after_raw_schema = session.engine.schema(after)
 
@@ -541,13 +560,13 @@ class SessionManager:
                     after_shape,
                     before_raw_schema,
                     after_raw_schema,
-                    step,
+                    bound_step,
                     offset,
                     limit,
                     before_page=input_page,
                     after_page=output_page,
                 ),
-                "code": session.engine.compile_plan(session.plan[: step_index + 1]),
+                "code": session.engine.compile_plan(session.bound_plan[: step_index + 1]),
             }
 
     def apply_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
@@ -555,8 +574,10 @@ class SessionManager:
         with self._atomic_session_read(session):
             self._assert_revision(session, revision)
             self._assert_editable(session)
+            self._assert_bound_history(session)
             if (
                 session.draft_step is None
+                or session.draft_bound_step is None
                 or session.draft_frame is None
                 or session.draft_base_lineage is None
                 or session.draft_base_schema is None
@@ -567,11 +588,13 @@ class SessionManager:
                 raise EngineError("There is no draft step to apply.")
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
+                session.bound_plan.append(session.draft_bound_step)
                 session.plan_input_schemas.append(
                     schema_with_lineage(session.draft_base_schema, session.draft_base_lineage)
                 )
             else:
                 session.plan[-1] = session.draft_step
+                session.bound_plan[-1] = session.draft_bound_step
                 session.plan_input_schemas[-1] = schema_with_lineage(
                     session.draft_base_schema, session.draft_base_lineage
                 )
@@ -596,18 +619,20 @@ class SessionManager:
         with self._atomic_session_read(session):
             self._assert_revision(session, revision)
             self._assert_editable(session)
+            self._assert_bound_history(session)
             if session.draft_step is not None:
                 raise EngineError("Discard the draft step before undoing an applied step.")
             if not session.plan:
                 raise EngineError("There is no applied step to undo.")
             session.plan.pop()
+            session.bound_plan.pop()
             session.plan_input_schemas.pop()
             (
                 session.committed,
                 session.committed_lineage,
                 session.committed_shape,
                 session.committed_schema,
-            ) = self._replay(session, session.plan)
+            ) = self._replay(session, session.bound_plan)
             return self._finish_plan_change(session, "undo", offset, limit, reset_view=True)
 
     def export_data(
@@ -855,27 +880,37 @@ class SessionManager:
             "revision": session.revision,
             "metadata": self._metadata(session),
             "page": self._page(session, offset, limit),
-            "code": session.engine.compile_plan(session.plan),
+            "code": session.engine.compile_plan(session.bound_plan),
         }
 
     def _replay(
         self,
         session: Session,
-        plan: list[dict[str, Any]],
+        bound_plan: list[dict[str, Any]],
     ) -> tuple[Any, list[dict[str, str]], dict[str, int], list[dict[str, Any]]]:
         frame = session.original
         lineage = source_lineage(session.source_schema)
         schema = session.source_schema
-        for step in plan:
-            frame = session.engine.apply_transform(frame, step)
-            frame = session.engine.ensure_row_ids(frame, f"{session.session_id}:{step['id']}")
+        for step in bound_plan:
+            frame = self._apply_transform_with_row_ids(session, frame, step)
             schema = session.engine.schema(frame)
             lineage = derive_lineage(lineage, schema, step)
-        shape = session.source_shape if not plan else session.engine.shape(frame)
+        shape = session.source_shape if not bound_plan else session.engine.shape(frame)
         return frame, lineage, shape, schema
+
+    @staticmethod
+    def _apply_transform_with_row_ids(session: Session, frame: Any, step: Mapping[str, Any]) -> Any:
+        kind = str(step["kind"])
+        allowed_internal = None if kind in {"groupBy", "customCode"} else session.engine.internal_row_id_column(frame)
+        transformed = session.engine.apply_transform(frame, step)
+        session.engine.validate_internal_row_id_namespace(transformed, allowed_internal)
+        session.engine.validate_column_addressability(transformed)
+        session.engine.validate_transformation_result(transformed)
+        return session.engine.ensure_row_ids(transformed, f"{session.session_id}:{step['id']}")
 
     def _clear_draft(self, session: Session) -> None:
         session.draft_step = None
+        session.draft_bound_step = None
         session.draft_frame = None
         session.draft_base_lineage = None
         session.draft_base_schema = None
@@ -961,6 +996,11 @@ class SessionManager:
             raise EngineError("This session is in viewing mode. Change it to editing before adding steps.")
         if not session.engine.capabilities.supports_editing:
             raise EngineError(f"The {session.backend} backend does not support editing.")
+
+    @staticmethod
+    def _assert_bound_history(session: Session) -> None:
+        if len(session.bound_plan) != len(session.plan) or len(session.plan_input_schemas) != len(session.plan):
+            raise EngineError("The applied cleaning-step history is inconsistent.")
 
     def _session(self, session_id: str) -> Session:
         with self._sessions_lock:

@@ -14,6 +14,7 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    bound_column_name,
     categorical_visualization,
     datetime_visualization,
     ensure_output_columns_available,
@@ -124,6 +125,20 @@ class DuckDBEngine(DataFrameEngine):
     def shape(self, frame: Any) -> dict[str, int]:
         row_count = int(self._terminal_scalar(frame, "SELECT count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
+
+    def validate_column_addressability(self, frame: Any) -> None:
+        """DuckDB SQL identifiers cannot distinguish names by case alone."""
+
+        by_casefold: dict[str, str] = {}
+        for column in self._visible_columns(self.normalize(frame)):
+            folded = column.casefold()
+            previous = by_casefold.get(folded)
+            if previous is not None:
+                raise EngineError(
+                    "DuckDB cannot safely address columns whose names differ only by case: "
+                    f"{previous!r} and {column!r}. Rename one column or use Pandas/Polars."
+                )
+            by_casefold[folded] = column
 
     def ensure_row_ids(self, frame: Any, token: str) -> Any:
         frame = self.normalize(frame)
@@ -377,17 +392,21 @@ class DuckDBEngine(DataFrameEngine):
             return self._drop_duplicates(frame, params.get("columns"), params.get("keep", "first"))
         if kind == "selectColumns":
             row_id = self._row_id_column(frame)
-            selected = [*([row_id] if row_id else []), *params["columns"]]
+            columns = [bound_column_name(value, kind) for value in params["columns"]]
+            selected = [*([row_id] if row_id else []), *columns]
             return self._relation(frame, f"SELECT {_identifier_list(selected)} FROM ow")
         if kind == "dropColumns":
-            return self._relation(frame, f"SELECT * EXCLUDE ({_identifier_list(params['columns'])}) FROM ow")
+            columns = [bound_column_name(value, kind) for value in params["columns"]]
+            return self._relation(frame, f"SELECT * EXCLUDE ({_identifier_list(columns)}) FROM ow")
         if kind == "renameColumn":
+            column = bound_column_name(params["column"], kind)
             return self._relation(
                 frame,
-                f"SELECT * RENAME ({_quote_ident(params['column'])} AS {_quote_ident(params['newName'])}) FROM ow",
+                f"SELECT * RENAME ({_quote_ident(column)} AS {_quote_ident(params['newName'])}) FROM ow",
             )
         if kind == "cloneColumn":
-            return self._assign(frame, params["newName"], _quote_ident(params["column"]))
+            column = bound_column_name(params["column"], kind)
+            return self._assign(frame, params["newName"], _quote_ident(column))
         if kind == "castColumn":
             target_type = {
                 "string": "VARCHAR",
@@ -397,17 +416,23 @@ class DuckDBEngine(DataFrameEngine):
                 "date": "DATE",
                 "datetime": "TIMESTAMP",
             }[params["dtype"]]
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             return self._assign(frame, column, f"try_cast({_quote_ident(column)} AS {target_type})")
         if kind == "formula":
-            right = _quote_ident(params["rightColumn"]) if params.get("rightColumn") else _sql_literal(params["value"])
-            expression = _formula_expression(_quote_ident(params["leftColumn"]), right, params["operator"])
+            right = (
+                _quote_ident(bound_column_name(params["rightColumn"], kind))
+                if params.get("rightColumn")
+                else _sql_literal(params["value"])
+            )
+            left = bound_column_name(params["leftColumn"], kind)
+            expression = _formula_expression(_quote_ident(left), right, params["operator"])
             return self._assign(frame, params["newColumn"], expression)
         if kind == "textLength":
+            column = bound_column_name(params["column"], kind)
             return self._assign(
                 frame,
                 params["newColumn"],
-                f"length(CAST({_quote_ident(params['column'])} AS VARCHAR))",
+                f"length(CAST({_quote_ident(column)} AS VARCHAR))",
             )
         if kind == "oneHotEncode":
             return self._one_hot(frame, params)
@@ -496,19 +521,20 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "dropDuplicates":
             return [f"{prefix}df = _ow_drop_duplicates(df, {params.get('columns')!r}, {params.get('keep', 'first')!r})"]
         if kind == "selectColumns":
-            return [f"{prefix}df = _ow_select(df, {params['columns']!r})"]
+            columns = [bound_column_name(value, kind) for value in params["columns"]]
+            return [f"{prefix}df = _ow_select(df, {columns!r})"]
         if kind == "dropColumns":
-            return [
-                f"{prefix}df = _ow_query(df, 'SELECT * EXCLUDE (' + "
-                f"_ow_identifiers({params['columns']!r}) + ') FROM ow')"
-            ]
+            columns = [bound_column_name(value, kind) for value in params["columns"]]
+            return [f"{prefix}df = _ow_query(df, 'SELECT * EXCLUDE (' + _ow_identifiers({columns!r}) + ') FROM ow')"]
         if kind == "renameColumn":
+            column = bound_column_name(params["column"], kind)
             return [
-                f"{prefix}df = _ow_query(df, 'SELECT * RENAME (' + _ow_ident({params['column']!r}) "
+                f"{prefix}df = _ow_query(df, 'SELECT * RENAME (' + _ow_ident({column!r}) "
                 f"+ ' AS ' + _ow_ident({params['newName']!r}) + ') FROM ow')"
             ]
         if kind == "cloneColumn":
-            return [f"{prefix}df = _ow_assign(df, {params['newName']!r}, _ow_ident({params['column']!r}))"]
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = _ow_assign(df, {params['newName']!r}, _ow_ident({column!r}))"]
         if kind == "castColumn":
             target = {
                 "string": "VARCHAR",
@@ -518,24 +544,24 @@ class DuckDBEngine(DataFrameEngine):
                 "date": "DATE",
                 "datetime": "TIMESTAMP",
             }[params["dtype"]]
-            return [
-                f"{prefix}df = _ow_assign(df, {params['column']!r}, "
-                f"'try_cast(' + _ow_ident({params['column']!r}) + ' AS {target})')"
-            ]
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = _ow_assign(df, {column!r}, 'try_cast(' + _ow_ident({column!r}) + ' AS {target})')"]
         if kind == "formula":
             right = (
-                f"_ow_ident({params['rightColumn']!r})"
+                f"_ow_ident({bound_column_name(params['rightColumn'], kind)!r})"
                 if params.get("rightColumn")
                 else f"_ow_literal({params['value']!r})"
             )
+            left = bound_column_name(params["leftColumn"], kind)
             return [
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, "
-                f"_ow_formula(_ow_ident({params['leftColumn']!r}), {right}, {params['operator']!r}))"
+                f"_ow_formula(_ow_ident({left!r}), {right}, {params['operator']!r}))"
             ]
         if kind == "textLength":
+            column = bound_column_name(params["column"], kind)
             return [
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, "
-                f"'length(CAST(' + _ow_ident({params['column']!r}) + ' AS VARCHAR))')"
+                f"'length(CAST(' + _ow_ident({column!r}) + ' AS VARCHAR))')"
             ]
         if kind == "oneHotEncode":
             return [f"{prefix}df = _ow_one_hot(df, {dict(params)!r})"]

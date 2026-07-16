@@ -36,11 +36,13 @@ def observable_state(session: Session) -> dict[str, Any]:
         "filterModel": deepcopy(session.filter_model),
         "filteredShape": deepcopy(session.filtered_shape),
         "plan": deepcopy(session.plan),
+        "boundPlan": deepcopy(session.bound_plan),
         "planInputSchemas": deepcopy(session.plan_input_schemas),
         "committedLineage": deepcopy(session.committed_lineage),
         "committedShape": deepcopy(session.committed_shape),
         "committedSchema": deepcopy(session.committed_schema),
         "draftStep": deepcopy(session.draft_step),
+        "draftBoundStep": deepcopy(session.draft_bound_step),
         "draftFrame": id(session.draft_frame) if session.draft_frame is not None else None,
         "draftLineage": deepcopy(session.draft_lineage),
         "draftShape": deepcopy(session.draft_shape),
@@ -81,7 +83,14 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
         manager,
         session_id,
         revision,
-        step("add-double", "formula", leftColumn="value", operator="multiply", value=2, newColumn="doubled"),
+        step(
+            "add-double",
+            "formula",
+            leftColumn={"id": "c:source:1", "name": "value"},
+            operator="multiply",
+            value=2,
+            newColumn="doubled",
+        ),
     )
     revision = apply_step(
         manager,
@@ -93,12 +102,22 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
         manager,
         session_id,
         revision,
-        step("rename-double", "renameColumn", column="doubled", newName="renamed_metric"),
+        step(
+            "rename-double",
+            "renameColumn",
+            column={"id": "c:step:add-double:0", "name": "doubled"},
+            newName="renamed_metric",
+        ),
     )
     draft = manager.preview_step(
         session_id,
         revision,
-        step("pending-length", "textLength", column="name", newColumn="name_length"),
+        step(
+            "pending-length",
+            "textLength",
+            column={"id": "c:source:0", "name": "name"},
+            newColumn="name_length",
+        ),
         0,
         2,
     )
@@ -138,7 +157,7 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
     assert inspection["diff"]["cells"][0]["rowNumber"] == 1
     assert [column["name"] for column in inspection["inputSchema"]] == ["name", "value", "doubled"]
     assert [column["name"] for column in inspection["outputSchema"]] == ["name", "value", "doubled"]
-    assert inspection["code"] == session.engine.compile_plan(session.plan[:2])
+    assert inspection["code"] == session.engine.compile_plan(session.bound_plan[:2])
     assert "renamed_metric" not in inspection["code"]
     assert "name_length" not in inspection["code"]
     assert applied_during_inspection == ["add-double", "round-value"]
@@ -189,7 +208,14 @@ def test_step_ids_are_unique_and_inspection_errors_leave_state_unchanged(tmp_pat
         manager,
         session_id,
         0,
-        step("stable-id", "formula", leftColumn="value", operator="multiply", value=2, newColumn="doubled"),
+        step(
+            "stable-id",
+            "formula",
+            leftColumn={"id": "c:source:0", "name": "value"},
+            operator="multiply",
+            value=2,
+            newColumn="doubled",
+        ),
     )
     session = manager.sessions[session_id]
     before = observable_state(session)

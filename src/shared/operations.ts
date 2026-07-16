@@ -1,4 +1,4 @@
-import type { OperationKind } from "./protocol";
+import type { OperationKind, SessionMetadata } from "./protocol";
 
 export type OperationGroup =
   | "Rows / order"
@@ -157,6 +157,16 @@ export function operationByKind(kind: OperationKind): OperationCatalogItem {
   const operation = operationCatalog.find((candidate) => candidate.kind === kind);
   if (!operation) throw new Error(`Unknown operation: ${kind}`);
   return operation;
+}
+
+export function canStartOperation(metadata: Pick<SessionMetadata, "mode" | "draftStep"> | undefined): boolean {
+  return metadata?.mode === "editing" && metadata.draftStep === undefined;
+}
+
+export function canEditLatestStep(
+  metadata: Pick<SessionMetadata, "mode" | "draftStep" | "steps"> | undefined
+): boolean {
+  return canStartOperation(metadata) && Boolean(metadata?.steps.length);
 }
 
 function item(

@@ -130,6 +130,10 @@ export type SelectColumnsTransformStep = TransformStepTemplate & {
   params: ColumnsParams;
   [k: string]: unknown;
 };
+/**
+ * @minItems 1
+ */
+export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type DropColumnsTransformStep = TransformStepTemplate & {
   kind: "dropColumns";
   params: ColumnsParams;
@@ -156,10 +160,10 @@ export type FormulaTransformStep = TransformStepTemplate & {
   [k: string]: unknown;
 };
 export type FormulaParams = {
-  leftColumn: string;
+  leftColumn: ColumnReference;
   operator: "add" | "subtract" | "multiply" | "divide" | "modulo" | "power";
   newColumn: string;
-  rightColumn?: string;
+  rightColumn?: ColumnReference;
   value?: number;
 } & FormulaParams1;
 export type FormulaParams1 = {
@@ -501,18 +505,22 @@ export interface DropDuplicatesParams {
   keep?: "first" | "last" | "none";
 }
 export interface ColumnsParams {
-  columns: NonEmptyStringArray;
+  columns: NonEmptyColumnReferenceArray;
+}
+export interface ColumnReference {
+  id: string;
+  name: string;
 }
 export interface RenameColumnParams {
-  column: string;
+  column: ColumnReference;
   newName: string;
 }
 export interface CastColumnParams {
-  column: string;
+  column: ColumnReference;
   dtype: "string" | "integer" | "float" | "boolean" | "date" | "datetime";
 }
 export interface ColumnOutputParams {
-  column: string;
+  column: ColumnReference;
   newColumn: string;
 }
 export interface OneHotEncodeParams {

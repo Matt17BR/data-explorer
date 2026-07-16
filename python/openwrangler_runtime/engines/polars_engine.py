@@ -11,6 +11,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     boolean_visualization,
+    bound_column_name,
     categorical_visualization,
     datetime_visualization,
     ensure_output_columns_available,
@@ -692,13 +693,14 @@ class PolarsEngine(DataFrameEngine):
             )
         if kind == "selectColumns":
             row_id = self._row_id_column(df)
-            return df.select([*([row_id] if row_id else []), *params["columns"]])
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return df.select([*([row_id] if row_id else []), *columns])
         if kind == "dropColumns":
-            return df.drop(params["columns"])
+            return df.drop([bound_column_name(column, kind) for column in params["columns"]])
         if kind == "renameColumn":
-            return df.rename({params["column"]: params["newName"]})
+            return df.rename({bound_column_name(params["column"], kind): params["newName"]})
         if kind == "cloneColumn":
-            return df.with_columns(pl.col(params["column"]).alias(params["newName"]))
+            return df.with_columns(pl.col(bound_column_name(params["column"], kind)).alias(params["newName"]))
         if kind == "castColumn":
             dtype = {
                 "string": pl.String,
@@ -708,13 +710,20 @@ class PolarsEngine(DataFrameEngine):
                 "date": pl.Date,
                 "datetime": pl.Datetime,
             }[params["dtype"]]
-            return df.with_columns(pl.col(params["column"]).cast(dtype, strict=False))
+            return df.with_columns(pl.col(bound_column_name(params["column"], kind)).cast(dtype, strict=False))
         if kind == "formula":
-            right = pl.col(params["rightColumn"]) if params.get("rightColumn") else pl.lit(params["value"])
-            expression = _polars_formula(pl.col(params["leftColumn"]), right, params["operator"])
+            right = (
+                pl.col(bound_column_name(params["rightColumn"], kind))
+                if params.get("rightColumn")
+                else pl.lit(params["value"])
+            )
+            expression = _polars_formula(
+                pl.col(bound_column_name(params["leftColumn"], kind)), right, params["operator"]
+            )
             return df.with_columns(expression.alias(params["newColumn"]))
         if kind == "textLength":
-            return df.with_columns(pl.col(params["column"]).cast(pl.String).str.len_chars().alias(params["newColumn"]))
+            column = bound_column_name(params["column"], kind)
+            return df.with_columns(pl.col(column).cast(pl.String).str.len_chars().alias(params["newColumn"]))
         if kind == "oneHotEncode":
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
             columns = params["columns"]
@@ -885,14 +894,19 @@ class PolarsEngine(DataFrameEngine):
                 )
             ]
         if kind == "selectColumns":
-            return [f"{prefix}df = df.select({params['columns']!r})"]
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return [f"{prefix}df = df.select({columns!r})"]
         if kind == "dropColumns":
-            return [f"{prefix}df = df.drop({params['columns']!r})"]
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return [f"{prefix}df = df.drop({columns!r})"]
         if kind == "renameColumn":
-            return [f"{prefix}df = df.rename({{{params['column']!r}: {params['newName']!r}}})"]
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = df.rename({{{column!r}: {params['newName']!r}}})"]
         if kind == "cloneColumn":
-            return [f"{prefix}df = df.with_columns(pl.col({params['column']!r}).alias({params['newName']!r}))"]
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = df.with_columns(pl.col({column!r}).alias({params['newName']!r}))"]
         if kind == "castColumn":
+            column = bound_column_name(params["column"], kind)
             dtype = {
                 "string": "pl.String",
                 "integer": "pl.Int64",
@@ -901,24 +915,28 @@ class PolarsEngine(DataFrameEngine):
                 "date": "pl.Date",
                 "datetime": "pl.Datetime",
             }[params["dtype"]]
-            return [f"{prefix}df = df.with_columns(pl.col({params['column']!r}).cast({dtype}, strict=False))"]
+            return [f"{prefix}df = df.with_columns(pl.col({column!r}).cast({dtype}, strict=False))"]
         if kind == "formula":
+            left_column = bound_column_name(params["leftColumn"], kind)
             right = (
-                f"pl.col({params['rightColumn']!r})" if params.get("rightColumn") else f"pl.lit({params['value']!r})"
+                f"pl.col({bound_column_name(params['rightColumn'], kind)!r})"
+                if params.get("rightColumn")
+                else f"pl.lit({params['value']!r})"
             )
             symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%", "power": "**"}[
                 params["operator"]
             ]
             return [
                 (
-                    f"{prefix}df = df.with_columns((pl.col({params['leftColumn']!r}) {symbol} {right})"
+                    f"{prefix}df = df.with_columns((pl.col({left_column!r}) {symbol} {right})"
                     f".alias({params['newColumn']!r}))"
                 )
             ]
         if kind == "textLength":
+            column = bound_column_name(params["column"], kind)
             return [
                 (
-                    f"{prefix}df = df.with_columns(pl.col({params['column']!r}).cast(pl.String)"
+                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
                     f".str.len_chars().alias({params['newColumn']!r}))"
                 )
             ]

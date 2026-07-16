@@ -393,8 +393,8 @@ function isStepInspectionResponse(value: unknown): boolean {
     isNonNegativeInteger(candidate.stepIndex) &&
     isGridPage(candidate.inputPage) &&
     isGridPage(candidate.outputPage) &&
-    isArrayOf(candidate.inputSchema, isColumnSchema) &&
-    isArrayOf(candidate.outputSchema, isColumnSchema) &&
+    isColumnSchemaArray(candidate.inputSchema) &&
+    isColumnSchemaArray(candidate.outputSchema) &&
     isDataDiff(candidate.diff) &&
     isString(candidate.code)
   );
@@ -488,10 +488,10 @@ function isSessionMetadata(value: unknown): boolean {
     isSourceCapabilities(candidate.capabilities) &&
     isDataShape(candidate.shape) &&
     isDataShape(candidate.filteredShape) &&
-    isArrayOf(candidate.schema, isColumnSchema) &&
+    isColumnSchemaArray(candidate.schema) &&
     isFilterModel(candidate.filterModel) &&
     isArrayOf(candidate.steps, isTransformStep) &&
-    optional(candidate, "latestStepInputSchema", (schema) => isArrayOf(schema, isColumnSchema)) &&
+    optional(candidate, "latestStepInputSchema", isColumnSchemaArray) &&
     optional(candidate, "draftStep", isTransformStep) &&
     optional(candidate, "draftReplacesStepId", isString) &&
     optional(candidate, "stats", isDatasetStats)
@@ -545,13 +545,30 @@ function isColumnSchema(value: unknown): boolean {
   const candidate = exactRecord(value, ["id", "name", "position", "rawType", "type", "nullable"]);
   return (
     candidate !== undefined &&
-    isString(candidate.id) &&
+    isNonEmptyString(candidate.id) &&
     isString(candidate.name) &&
     isNonNegativeInteger(candidate.position) &&
     isString(candidate.rawType) &&
     isEnumMember(candidate.type, COLUMN_TYPES) &&
     isBoolean(candidate.nullable)
   );
+}
+
+function isColumnSchemaArray(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  const identities = new Set<string>();
+  return value.every((column, position) => {
+    if (!isColumnSchema(column)) return false;
+    const candidate = column as { id: string; position: number };
+    if (candidate.position !== position || identities.has(candidate.id)) return false;
+    identities.add(candidate.id);
+    return true;
+  });
+}
+
+function isColumnReference(value: unknown): boolean {
+  const candidate = exactRecord(value, ["id", "name"]);
+  return candidate !== undefined && isNonEmptyString(candidate.id) && isString(candidate.name);
 }
 
 export function isFilterModel(value: unknown): value is FilterModel {
@@ -655,22 +672,22 @@ export function isTransformStep(value: unknown): value is TransformStep {
     case "selectColumns":
     case "dropColumns": {
       const decoded = exactRecord(params, ["columns"]);
-      return decoded !== undefined && isStringArray(decoded.columns, false);
+      return decoded !== undefined && isNonEmptyArrayOf(decoded.columns, isColumnReference);
     }
     case "renameColumn":
     case "cloneColumn": {
       const decoded = exactRecord(params, ["column", "newName"]);
-      return decoded !== undefined && isNonEmptyString(decoded.column) && isNonEmptyString(decoded.newName);
+      return decoded !== undefined && isColumnReference(decoded.column) && isNonEmptyString(decoded.newName);
     }
     case "castColumn": {
       const decoded = exactRecord(params, ["column", "dtype"]);
-      return decoded !== undefined && isNonEmptyString(decoded.column) && isEnumMember(decoded.dtype, CAST_DTYPES);
+      return decoded !== undefined && isColumnReference(decoded.column) && isEnumMember(decoded.dtype, CAST_DTYPES);
     }
     case "formula": {
       const decoded = exactRecord(params, ["leftColumn", "operator", "newColumn"], ["rightColumn", "value"]);
       if (
         decoded === undefined ||
-        !isNonEmptyString(decoded.leftColumn) ||
+        !isColumnReference(decoded.leftColumn) ||
         !isEnumMember(decoded.operator, FORMULA_OPERATORS) ||
         !isNonEmptyString(decoded.newColumn)
       ) {
@@ -680,13 +697,13 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const hasValue = Object.prototype.hasOwnProperty.call(decoded, "value");
       return (
         hasColumn !== hasValue &&
-        (!hasColumn || isNonEmptyString(decoded.rightColumn)) &&
+        (!hasColumn || isColumnReference(decoded.rightColumn)) &&
         (!hasValue || isFiniteNumber(decoded.value))
       );
     }
     case "textLength": {
       const decoded = exactRecord(params, ["column", "newColumn"]);
-      return decoded !== undefined && isNonEmptyString(decoded.column) && isNonEmptyString(decoded.newColumn);
+      return decoded !== undefined && isColumnReference(decoded.column) && isNonEmptyString(decoded.newColumn);
     }
     case "oneHotEncode": {
       const decoded = exactRecord(params, ["columns"], ["prefixSeparator", "dropOriginal"]);

@@ -22,7 +22,7 @@ const openRequest = {
 const step: TransformStep = {
   id: "integrity-step",
   kind: "dropColumns",
-  params: { columns: ["sales"] }
+  params: { columns: [{ id: "sales-column", name: "sales" }] }
 };
 
 describe("SessionCoordinator response integrity", () => {

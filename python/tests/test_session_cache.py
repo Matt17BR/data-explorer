@@ -101,7 +101,7 @@ def formula_step(step_id: str) -> dict[str, Any]:
         "id": step_id,
         "kind": "formula",
         "params": {
-            "leftColumn": "value",
+            "leftColumn": {"id": "c:source:1", "name": "value"},
             "operator": "multiply",
             "value": 2,
             "newColumn": "doubled",

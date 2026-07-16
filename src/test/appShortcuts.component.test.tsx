@@ -13,7 +13,7 @@ import { App } from "../webviews/App";
 const step: TransformStep = {
   id: "formula-step",
   kind: "formula",
-  params: { leftColumn: "sales", operator: "multiply", value: 2, newColumn: "score" }
+  params: { leftColumn: { id: "c:1", name: "sales" }, operator: "multiply", value: 2, newColumn: "score" }
 };
 
 const metadata: SessionMetadata = {

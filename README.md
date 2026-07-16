@@ -38,9 +38,11 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
 - Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.
+- Bundled, bundle-relative VS Code Codicons render consistently in VS Code, Cursor, and isolated browser acceptance instead of depending on an editor or system font fallback.
 - A searchable 27-operation catalog with native Polars, DuckDB, and Pandas execution for row, column, text, categorical, numeric, datetime, grouping, by-example, and custom-code transforms.
+- Select, drop, rename, clone, cast, formula, and text-length steps target a stable column identity instead of relying on the displayed label; Pandas executes those paths positionally so equal labels are not silently conflated, and edited output identities replay deterministically through later steps and undo. Private row IDs stay unreachable under case changes and Pandas MultiIndex labels, DuckDB rejects case-only ambiguity, and every transformation must retain one visible column so runtime results, generated code, and exports preserve the same row-count semantics. The broader duplicate/non-string operation matrix remains a 1.0 acceptance gate.
 - Validated engine-native edge semantics for per-column null sorting, missing/duplicate modes, Unicode casing, finite numeric scaling, nullable groups, and collision-safe categorical output.
-- Draft-first editing with typed data diffs, explicit apply/discard, latest-step editing, undo replay, and editable CodeMirror Python preview.
+- Draft-first editing with typed data diffs, explicit apply/discard, latest-step editing, undo replay, and editable CodeMirror Python preview. Add and edit commands are unavailable while a draft exists; invoking Add Cleaning Step without a preselected operation opens the searchable catalog.
 - Keyboard cleaning workflow: `Ctrl/Cmd+Enter` applies a draft, `Escape` discards it, `Ctrl/Cmd+Shift+E` edits the latest step, and `Ctrl/Cmd+Alt+Z` undoes it.
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
@@ -56,7 +58,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
 3. Choose **Open Wrangler: Open Current File**.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
-5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, optional draft, viewing query, column widths/selection, and visible position are restored for the same source and backend in the workspace.
+5. Choose **Add step**, run **Open Wrangler: Add Cleaning Step** without arguments from the Command Palette to open the unselected catalog, or choose a preselected operation in the Activity Bar. Configure it, inspect the draft grid/diff/code, then explicitly apply or discard it before starting another operation. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, optional draft, viewing query, column widths/selection, and visible position are restored for the same source and backend in the workspace.
 6. Run **Open Wrangler: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `openWrangler.*` settings.
@@ -119,7 +121,7 @@ cursor --install-extension openwrangler-0.3.0.vsix --force
 
 Reload the editor after installing the VSIX. Then:
 
-- Open `fixtures/sample.csv`, right-click the editor tab or Explorer item, and run **Open Wrangler: Open Current File**.
+- Open `fixtures/sample.csv`, right-click its Explorer item, and run **Open Wrangler: Open Current File**. Editor-tab and editor-title launch actions are tracked for the next slice in [issue #35](https://github.com/Matt17BR/openwrangler/issues/35).
 - Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. The dataframe is a real Polars dataframe.
 - From the notebook, use **Open in Open Wrangler** when Jupyter offers it for `df`, or run **Open Wrangler: Open Notebook Variable** and enter `df`. The full Open Wrangler webview should page, filter, sort, and summarize the live kernel dataframe.
 
@@ -168,4 +170,4 @@ Open Wrangler currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-The checked-in Data Wrangler 1.24.2 clean-room behavior matrix is the release gate. Several rows still require the installed-editor, Restricted Mode, released-Jupyter, stable-column-identity, projected-transport, performance, or cross-platform evidence named there, so this build remains an explicitly incomplete preview. Intentionally deferred scope is listed separately in `docs/feature-parity.md`.
+The checked-in Data Wrangler 1.24.2 clean-room behavior matrix is the release gate. Several rows still require broader duplicate/non-string operation coverage, installed-editor, Restricted Mode, released-Jupyter, projected-transport, performance, or cross-platform evidence named there, so this build remains an explicitly incomplete preview. Intentionally deferred scope is listed separately in `docs/feature-parity.md`.

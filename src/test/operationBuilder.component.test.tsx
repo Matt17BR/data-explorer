@@ -59,14 +59,14 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "sales" } });
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:1" } });
     fireEvent.change(screen.getByLabelText("New name"), { target: { value: "revenue" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
     expect(onPreview).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "renameColumn",
-        params: { column: "sales", newName: "revenue" }
+        params: { column: { id: "c:1", name: "sales" }, newName: "revenue" }
       }),
       undefined
     );
@@ -135,17 +135,277 @@ describe("OperationBuilder", () => {
           ...metadata,
           schema: [metadata.schema[1]],
           latestStepInputSchema: metadata.schema,
-          steps: [{ id: "drop-city", kind: "dropColumns", params: { columns: ["city"] } }]
+          steps: [{ id: "drop-city", kind: "dropColumns", params: { columns: [{ id: "c:0", name: "city" }] } }]
         }}
         filterModel={{ filters: [], sort: [] }}
-        initialStep={{ id: "drop-city", kind: "dropColumns", params: { columns: ["city"] } }}
+        initialStep={{
+          id: "drop-city",
+          kind: "dropColumns",
+          params: { columns: [{ id: "c:0", name: "city" }] }
+        }}
         onClose={() => undefined}
         onPreview={() => undefined}
       />
     );
 
-    expect(screen.getByRole("option", { name: "city" })).toBeInTheDocument();
-    expect((screen.getByRole("option", { name: "city" }) as HTMLOptionElement).selected).toBe(true);
+    expect(screen.getByRole("option", { name: "city — column 1" })).toBeInTheDocument();
+    expect((screen.getByRole("option", { name: "city — column 1" }) as HTMLOptionElement).selected).toBe(true);
+  });
+
+  it("distinguishes duplicate labels by position and edits a structural reference by ID", () => {
+    const onPreview = vi.fn();
+    const duplicateColumns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
+      { ...metadata.schema[0], id: "c:2", name: "", position: 2 },
+      { ...metadata.schema[0], id: "c:3", name: "(empty name)", position: 3 },
+      { ...metadata.schema[0], id: "c:4", name: "value — column 1", position: 4 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: duplicateColumns,
+          latestStepInputSchema: duplicateColumns,
+          steps: [
+            {
+              id: "rename-second",
+              kind: "renameColumn",
+              params: { column: { id: "c:1", name: "value" }, newName: "second_value" }
+            }
+          ]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={{
+          id: "rename-second",
+          kind: "renameColumn",
+          params: { column: { id: "c:1", name: "value" }, newName: "second_value" }
+        }}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const first = screen.getByRole("option", { name: "value — column 1" }) as HTMLOptionElement;
+    const second = screen.getByRole("option", { name: "value — column 2" }) as HTMLOptionElement;
+    expect(first).toHaveValue("c:0");
+    expect(second).toHaveValue("c:1");
+    expect(first.selected).toBe(false);
+    expect(second.selected).toBe(true);
+    expect(screen.getByRole("option", { name: "(empty name) — column 3" })).toHaveValue("c:2");
+    expect(screen.getByRole("option", { name: "(empty name) — column 4" })).toHaveValue("c:3");
+    expect(screen.getByRole("option", { name: "value — column 1 — column 5" })).toHaveValue("c:4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "rename-second",
+        kind: "renameColumn",
+        params: { column: { id: "c:1", name: "value" }, newName: "second_value" }
+      }),
+      "rename-second"
+    );
+  });
+
+  it.each([
+    [
+      "cloneColumn",
+      "Column",
+      "c:1",
+      "New name",
+      "sales_copy",
+      { column: { id: "c:1", name: "sales" }, newName: "sales_copy" }
+    ],
+    [
+      "castColumn",
+      "Column",
+      "c:1",
+      "Target type",
+      "integer",
+      { column: { id: "c:1", name: "sales" }, dtype: "integer" }
+    ],
+    [
+      "textLength",
+      "Text column",
+      "c:0",
+      "New column",
+      "city_length",
+      { column: { id: "c:0", name: "city" }, newColumn: "city_length" }
+    ]
+  ] as const)("emits stable references for %s", (kind, columnLabel, columnId, parameterLabel, parameter, expected) => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind={kind}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(columnLabel), { target: { value: columnId } });
+    fireEvent.change(screen.getByLabelText(parameterLabel), { target: { value: parameter } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0]).toEqual(expect.objectContaining({ kind, params: expected }));
+  });
+
+  it("emits stable references for both formula operands", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="formula"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Left column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Right operand"), { target: { value: "column" } });
+    fireEvent.change(screen.getByLabelText("Right column"), { target: { value: "c:0" } });
+    fireEvent.change(screen.getByLabelText("New column"), { target: { value: "ratio" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        kind: "formula",
+        params: {
+          leftColumn: { id: "c:1", name: "sales" },
+          operator: "add",
+          newColumn: "ratio",
+          rightColumn: { id: "c:0", name: "city" }
+        }
+      })
+    );
+  });
+
+  it.each([
+    ["selectColumns", "Columns to keep"],
+    ["dropColumns", "Columns to drop"]
+  ] as const)("emits reference lists for %s", (kind, label) => {
+    const structuralPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind={kind}
+        onClose={() => undefined}
+        onPreview={structuralPreview}
+      />
+    );
+
+    const structuralSelect = screen.getByRole("listbox") as HTMLSelectElement;
+    expect(structuralSelect).toHaveAccessibleName(label);
+    structuralSelect.options[0].selected = true;
+    structuralSelect.options[1].selected = true;
+    fireEvent.change(structuralSelect);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(structuralPreview.mock.calls[0][0].params).toEqual({
+      columns: [
+        { id: "c:0", name: "city" },
+        { id: "c:1", name: "sales" }
+      ]
+    });
+  });
+
+  it("preserves an existing select-columns order when previewed unchanged", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          latestStepInputSchema: metadata.schema,
+          steps: [
+            {
+              id: "reverse-columns",
+              kind: "selectColumns",
+              params: {
+                columns: [
+                  { id: "c:1", name: "sales" },
+                  { id: "c:0", name: "city" }
+                ]
+              }
+            }
+          ]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={{
+          id: "reverse-columns",
+          kind: "selectColumns",
+          params: {
+            columns: [
+              { id: "c:1", name: "sales" },
+              { id: "c:0", name: "city" }
+            ]
+          }
+        }}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByText("Output order: sales — column 2 → city — column 1")).toBeInTheDocument();
+    expect(screen.getByRole("listbox")).toHaveAccessibleName("Columns to keep");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      columns: [
+        { id: "c:1", name: "sales" },
+        { id: "c:0", name: "city" }
+      ]
+    });
+  });
+
+  it("records select-columns choices in interaction order", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="selectColumns"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const columnSelect = screen.getByRole("listbox") as HTMLSelectElement;
+    columnSelect.options[1].selected = true;
+    fireEvent.change(columnSelect);
+    columnSelect.options[0].selected = true;
+    fireEvent.change(columnSelect);
+    expect(screen.getByText("Output order: sales — column 2 → city — column 1")).toBeInTheDocument();
+    expect(screen.getByRole("listbox")).toHaveAccessibleName("Columns to keep");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      columns: [
+        { id: "c:1", name: "sales" },
+        { id: "c:0", name: "city" }
+      ]
+    });
+  });
+
+  it("leaves categorical selection name-based", () => {
+    const categoricalPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="oneHotEncode"
+        onClose={() => undefined}
+        onPreview={categoricalPreview}
+      />
+    );
+    const categoricalSelect = screen.getByLabelText(/Categorical columns/) as HTMLSelectElement;
+    categoricalSelect.options[1].selected = true;
+    fireEvent.change(categoricalSelect);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(categoricalPreview.mock.calls[0][0].params).toEqual({
+      columns: ["sales"],
+      prefixSeparator: "_",
+      dropOriginal: true
+    });
   });
 
   it("builds by-example inputs and reports malformed JSON before preview", () => {

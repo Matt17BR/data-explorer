@@ -152,7 +152,11 @@ describe("App applied-step inspection", () => {
   });
 
   it("keeps inspection failures local and ignores a superseded result", async () => {
-    const secondStep: TransformStep = { id: "drop-city", kind: "dropColumns", params: { columns: ["city"] } };
+    const secondStep: TransformStep = {
+      id: "drop-city",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:city", name: "city" }] }
+    };
     const withTwoSteps = { ...metadata, steps: [step, secondStep] };
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: withTwoSteps, page: confirmedPage, summaries: [] });

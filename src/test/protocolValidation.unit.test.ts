@@ -10,7 +10,8 @@ import {
   isOpenWranglerRequest,
   isOpenWranglerResponse,
   isRuntimeRequestEnvelope,
-  isRuntimeResponseEnvelope
+  isRuntimeResponseEnvelope,
+  isTransformStep
 } from "../shared/protocolValidation";
 
 const capabilities = {
@@ -21,6 +22,9 @@ const capabilities = {
   exportParquet: true,
   notebookInsert: false
 };
+
+const valueReference = { id: "column:0", name: "value" };
+const otherReference = { id: "column:1", name: "other" };
 
 const page: GridPage = {
   offset: 0,
@@ -261,6 +265,55 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("rejects empty, duplicate, or positionally ambiguous schema identities", () => {
+    const otherColumn = {
+      id: "column:1",
+      name: "other",
+      position: 1,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    };
+    const malformedSchemas = [
+      [{ ...metadata.schema[0], id: "" }],
+      [metadata.schema[0], { ...otherColumn, id: metadata.schema[0].id }],
+      [metadata.schema[0], { ...otherColumn, position: 0 }],
+      [metadata.schema[0], { ...otherColumn, position: 2 }],
+      [
+        { ...metadata.schema[0], position: 1 },
+        { ...otherColumn, position: 0 }
+      ]
+    ];
+
+    for (const schema of malformedSchemas) {
+      expect(
+        isOpenWranglerResponse({
+          kind: "sessionOpened",
+          metadata: { ...metadata, schema },
+          page,
+          summaries
+        })
+      ).toBe(false);
+      expect(
+        isOpenWranglerResponse({
+          kind: "sessionOpened",
+          metadata: { ...metadata, latestStepInputSchema: schema },
+          page,
+          summaries
+        })
+      ).toBe(false);
+    }
+
+    const inspection = responses.find((response) => response.kind === "stepInspection");
+    expect(inspection).toBeDefined();
+    expect(
+      isOpenWranglerResponse({
+        ...inspection,
+        outputSchema: [metadata.schema[0], { ...otherColumn, id: metadata.schema[0].id }]
+      })
+    ).toBe(false);
+  });
+
   it("rejects malformed pages, rows, and typed cells", () => {
     const pageResponse = (invalidPage: unknown): unknown => ({
       kind: "page",
@@ -390,7 +443,7 @@ const requests: OpenWranglerRequest[] = [
     kind: "previewStep",
     sessionId: "session-1",
     revision: 3,
-    step: { id: "rename", kind: "renameColumn", params: { column: "value", newName: "amount" } },
+    step: { id: "rename", kind: "renameColumn", params: { column: valueReference, newName: "amount" } },
     offset: 0,
     limit: 200
   },
@@ -437,6 +490,58 @@ describe("protocol-v2 request validation", () => {
       })
     ).toBe(true);
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
+  });
+
+  it.each([
+    { id: "select", kind: "selectColumns", params: { columns: [valueReference, otherReference] } },
+    { id: "drop", kind: "dropColumns", params: { columns: [valueReference] } },
+    { id: "rename", kind: "renameColumn", params: { column: valueReference, newName: "amount" } },
+    { id: "clone", kind: "cloneColumn", params: { column: valueReference, newName: "value_copy" } },
+    { id: "cast", kind: "castColumn", params: { column: valueReference, dtype: "float" } },
+    {
+      id: "formula-value",
+      kind: "formula",
+      params: { leftColumn: valueReference, operator: "multiply", value: 2, newColumn: "doubled" }
+    },
+    {
+      id: "formula-column",
+      kind: "formula",
+      params: { leftColumn: valueReference, operator: "add", rightColumn: otherReference, newColumn: "total" }
+    },
+    { id: "length", kind: "textLength", params: { column: { id: "column:2", name: "" }, newColumn: "length" } }
+  ])("accepts canonical column references for $kind", (step) => {
+    expect(isTransformStep(step)).toBe(true);
+  });
+
+  it.each([
+    { id: "select-string", kind: "selectColumns", params: { columns: ["value"] } },
+    { id: "drop-empty", kind: "dropColumns", params: { columns: [] } },
+    { id: "rename-string", kind: "renameColumn", params: { column: "value", newName: "amount" } },
+    { id: "clone-name-only", kind: "cloneColumn", params: { column: { name: "value" }, newName: "copy" } },
+    { id: "cast-id-only", kind: "castColumn", params: { column: { id: "column:0" }, dtype: "float" } },
+    {
+      id: "formula-string",
+      kind: "formula",
+      params: { leftColumn: "value", operator: "add", rightColumn: "other", newColumn: "total" }
+    },
+    {
+      id: "length-extra",
+      kind: "textLength",
+      params: { column: { ...valueReference, position: 0 }, newColumn: "length" }
+    },
+    { id: "length-empty-id", kind: "textLength", params: { column: { id: "", name: "value" }, newColumn: "length" } },
+    {
+      id: "length-non-string-name",
+      kind: "textLength",
+      params: { column: { id: "column:0", name: 42 }, newColumn: "length" }
+    },
+    {
+      id: "rename-name-field",
+      kind: "renameColumn",
+      params: { columnName: "value", newName: "amount" }
+    }
+  ])("rejects legacy or malformed column references for $kind", (step) => {
+    expect(isTransformStep(step)).toBe(false);
   });
 
   it.each([

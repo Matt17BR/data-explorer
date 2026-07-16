@@ -19,6 +19,14 @@ def step(kind: str, **params: Any) -> dict[str, Any]:
     return validate_step({"id": f"duckdb-{kind}", "kind": kind, "params": params})
 
 
+def bound_ref(identifier: str, name: str, position: int) -> dict[str, str | int]:
+    return {"id": identifier, "name": name, "position": position}
+
+
+def bound_step(kind: str, **params: Any) -> dict[str, Any]:
+    return {"id": f"duckdb-{kind}", "kind": kind, "params": params}
+
+
 def source_relation() -> Any:
     return duckdb.sql(
         """
@@ -66,6 +74,14 @@ def install_conversion_guards(monkeypatch: pytest.MonkeyPatch) -> None:
 
     for method in ("df", "to_df", "fetchdf", "pl", "arrow"):
         monkeypatch.setattr(duckdb.DuckDBPyRelation, method, reject_conversion)
+
+
+def test_duckdb_rejects_case_fold_ambiguous_source_columns() -> None:
+    engine = DuckDBEngine()
+    ambiguous = duckdb.sql('SELECT 1 AS "A", 2 AS "a"')
+
+    with pytest.raises(EngineError, match="differ only by case"):
+        engine.validate_column_addressability(ambiguous)
 
 
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:
@@ -237,15 +253,51 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         step("dropDuplicates", columns=["value", "other"], keep="first"),
     ]
     column_plan = [
-        step("cloneColumn", column="value", newName="value_copy"),
-        step("formula", leftColumn="other", operator="multiply", value=10, newColumn="score"),
-        step("textLength", column="text", newColumn="text_length"),
-        step("castColumn", column="other", dtype="float"),
-        step("renameColumn", column="group", newName="category"),
-        step("dropColumns", columns=["tags", "date"]),
-        step(
+        bound_step(
+            "cloneColumn",
+            column=bound_ref("c:source:3", "value", 3),
+            newName="value_copy",
+        ),
+        bound_step(
+            "formula",
+            leftColumn=bound_ref("c:source:4", "other", 4),
+            operator="multiply",
+            value=10,
+            newColumn="score",
+        ),
+        bound_step(
+            "textLength",
+            column=bound_ref("c:source:1", "text", 1),
+            newColumn="text_length",
+        ),
+        bound_step(
+            "castColumn",
+            column=bound_ref("c:source:4", "other", 4),
+            dtype="float",
+        ),
+        bound_step(
+            "renameColumn",
+            column=bound_ref("c:source:0", "group", 0),
+            newName="category",
+        ),
+        bound_step(
+            "dropColumns",
+            columns=[
+                bound_ref("c:source:2", "tags", 2),
+                bound_ref("c:source:5", "date", 5),
+            ],
+        ),
+        bound_step(
             "selectColumns",
-            columns=["category", "text", "value", "other", "value_copy", "score", "text_length"],
+            columns=[
+                bound_ref("c:source:0", "category", 0),
+                bound_ref("c:source:1", "text", 1),
+                bound_ref("c:source:3", "value", 2),
+                bound_ref("c:source:4", "other", 3),
+                bound_ref("c:step:duckdb-cloneColumn:0", "value_copy", 4),
+                bound_ref("c:step:duckdb-formula:0", "score", 5),
+                bound_ref("c:step:duckdb-textLength:0", "text_length", 6),
+            ],
         ),
     ]
     text_numeric_plan = [
@@ -374,7 +426,7 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
 
     operation = step(
         "formula",
-        leftColumn="value",
+        leftColumn={"id": "c:source:1", "name": "value"},
         operator="multiply",
         value=10,
         newColumn="score",

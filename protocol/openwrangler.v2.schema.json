@@ -67,7 +67,7 @@
       "additionalProperties": false,
       "required": ["id", "name", "position", "rawType", "type", "nullable"],
       "properties": {
-        "id": { "type": "string" },
+        "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string" },
         "position": { "type": "integer", "minimum": 0 },
         "rawType": { "type": "string" },
@@ -367,6 +367,20 @@
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
     },
+    "ColumnReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      }
+    },
+    "NonEmptyColumnReferenceArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/ColumnReference" }
+    },
     "SortRowsParams": {
       "type": "object",
       "additionalProperties": false,
@@ -401,14 +415,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["columns"],
-      "properties": { "columns": { "$ref": "#/definitions/NonEmptyStringArray" } }
+      "properties": { "columns": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" } }
     },
     "RenameColumnParams": {
       "type": "object",
       "additionalProperties": false,
       "required": ["column", "newName"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "newName": { "type": "string", "minLength": 1 }
       }
     },
@@ -417,7 +431,7 @@
       "additionalProperties": false,
       "required": ["column", "dtype"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "dtype": { "type": "string", "enum": ["string", "integer", "float", "boolean", "date", "datetime"] }
       }
     },
@@ -426,10 +440,10 @@
       "additionalProperties": false,
       "required": ["leftColumn", "operator", "newColumn"],
       "properties": {
-        "leftColumn": { "type": "string", "minLength": 1 },
+        "leftColumn": { "$ref": "#/definitions/ColumnReference" },
         "operator": { "type": "string", "enum": ["add", "subtract", "multiply", "divide", "modulo", "power"] },
         "newColumn": { "type": "string", "minLength": 1 },
-        "rightColumn": { "type": "string", "minLength": 1 },
+        "rightColumn": { "$ref": "#/definitions/ColumnReference" },
         "value": { "type": "number" }
       },
       "oneOf": [{ "required": ["rightColumn"] }, { "required": ["value"] }]
@@ -439,7 +453,7 @@
       "additionalProperties": false,
       "required": ["column", "newColumn"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },

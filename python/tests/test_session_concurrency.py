@@ -45,7 +45,11 @@ def test_foreground_page_overtakes_active_profile_while_mutation_waits(tmp_path:
             manager.preview_step,
             session_id,
             0,
-            {"id": "drop-city", "kind": "dropColumns", "params": {"columns": ["city"]}},
+            {
+                "id": "drop-city",
+                "kind": "dropColumns",
+                "params": {"columns": [{"id": "c:source:0", "name": "city"}]},
+            },
             0,
             1,
         )
@@ -134,7 +138,11 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
             manager.preview_step,
             session_id,
             0,
-            {"id": "drop-city", "kind": "dropColumns", "params": {"columns": ["city"]}},
+            {
+                "id": "drop-city",
+                "kind": "dropColumns",
+                "params": {"columns": [{"id": "c:source:0", "name": "city"}]},
+            },
             0,
             1,
         )
@@ -205,7 +213,11 @@ def test_response_metadata_is_detached_from_later_plan_mutations(tmp_path: Path)
     preview = manager.preview_step(
         session_id,
         0,
-        {"id": "drop-city", "kind": "dropColumns", "params": {"columns": ["city"]}},
+        {
+            "id": "drop-city",
+            "kind": "dropColumns",
+            "params": {"columns": [{"id": "c:source:0", "name": "city"}]},
+        },
         0,
         1,
     )

@@ -1,6 +1,6 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import { operationCatalog, operationByKind } from "../shared/operations";
+import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel } from "./webviewPanel";
@@ -155,7 +155,7 @@ export function registerNativeViews(
 ): NativeViewsTestController {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
     const hasDraft = Boolean(snapshot?.metadata.draftStep);
-    const canChangePlan = Boolean(snapshot && !snapshot.metadata.draftStep && snapshot.metadata.steps.length > 0);
+    const canChangePlan = canEditLatestStep(snapshot?.metadata);
     void vscode.commands.executeCommand("setContext", "openWrangler.hasDraft", hasDraft);
     void vscode.commands.executeCommand("setContext", "openWrangler.canChangePlan", canChangePlan);
   };
@@ -174,8 +174,22 @@ export function registerNativeViews(
   context.subscriptions.push(
     contextSubscription,
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
-      if (!kind || !operationCatalog.some((operation) => operation.kind === kind)) return;
-      if (!OpenWranglerPanel.sendEditorAction({ action: "openOperation", operationKind: kind })) {
+      if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
+      const snapshot = coordinator.activeSession();
+      if (snapshot && !canStartOperation(snapshot.metadata)) {
+        await vscode.window.showInformationMessage(
+          snapshot.metadata.draftStep
+            ? "Apply or discard the current draft before adding another cleaning step."
+            : "Open an editable dataframe before adding a cleaning step."
+        );
+        return;
+      }
+      if (
+        !OpenWranglerPanel.sendEditorAction({
+          action: "openOperation",
+          ...(kind === undefined ? {} : { operationKind: kind })
+        })
+      ) {
         await vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
       }
     }),
@@ -185,9 +199,22 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.discardStep", () =>
       OpenWranglerPanel.sendEditorAction({ action: "discardDraft" })
     ),
-    vscode.commands.registerCommand("openWrangler.editLatestStep", () =>
-      OpenWranglerPanel.sendEditorAction({ action: "editLatest" })
-    ),
+    vscode.commands.registerCommand("openWrangler.editLatestStep", async () => {
+      const snapshot = coordinator.activeSession();
+      if (!canEditLatestStep(snapshot?.metadata)) {
+        await vscode.window.showInformationMessage(
+          snapshot?.metadata.draftStep
+            ? "Apply or discard the current draft before editing the latest step."
+            : "Apply a cleaning step before editing the latest step."
+        );
+        return;
+      }
+      if (!OpenWranglerPanel.sendEditorAction({ action: "editLatest" })) {
+        await vscode.window.showInformationMessage(
+          "Open the active dataframe editor before editing the latest cleaning step."
+        );
+      }
+    }),
     vscode.commands.registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
@@ -407,13 +434,14 @@ export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefin
 function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
   if (!metadata) return [new ViewNode("Open a dataframe", "Operations appear here", "wand")];
   const editable = metadata.mode === "editing";
+  const canStart = canStartOperation(metadata);
   return operationCatalog.map(
     (operation) =>
       new ViewNode(
         operation.title,
-        editable ? operation.group : "Viewing mode",
+        !editable ? "Viewing mode" : metadata.draftStep ? "Apply or discard the current draft" : operation.group,
         operation.icon,
-        editable
+        canStart
           ? {
               command: "openWrangler.startOperation",
               title: `Start ${operation.title}`,
@@ -452,7 +480,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
           title: `Inspect ${operation.title}`,
           arguments: [step.id]
         },
-        isLatest ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep"
+        isLatest && !metadata.draftStep ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep"
       );
     })
   );
