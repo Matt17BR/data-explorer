@@ -31,6 +31,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 13. Cleaning-plan shortcuts must be state-scoped, mirrored inside the webview, documented in the generated reference, and tested without intercepting editable-field undo.
 14. Saved notebook-output queries use the pure `src/webviews/snapshotModel.ts` model. Null/NaN predicates and per-sort null placement must match live runtime semantics and remain directly unit-tested.
 15. Visual baselines and axe acceptance use the lockfile-pinned Playwright Chromium plus deterministic Liberation Sans/Mono harness tokens. Install Chromium with `npx playwright-core install chromium`; do not silently fall back to a moving system browser or distribution font. CI must retain actual/diff artifacts on failure.
+16. Engine registries contain factories, never shared adapters. Every live or transient session exclusively owns one engine instance; open failures, explicit close, orderly runtime shutdown, and notebook snapshot completion invoke cleanup at most once. Cleanup faults surface unless an earlier operation already failed. Normal process stops use bounded stdin/EOF shutdown; forced restart may kill only when recovery or the grace bound requires it.
 
 ## Required checks
 

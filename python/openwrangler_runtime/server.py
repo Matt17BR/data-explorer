@@ -127,32 +127,38 @@ def main() -> None:
             response = error_response(str(error), detail=traceback.format_exc())
         write(response_envelope(request_id, response))
 
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="openwrangler") as executor:
-        for line in sys.stdin:
-            if not line.strip():
-                continue
-            request_id = _safe_request_id(line)
-            try:
-                request_id, _, request = decode_envelope(json.loads(line))
-                if request["kind"] == "cancelRequest":
-                    target = str(request["targetRequestId"])
-                    with pending_lock:
-                        cancelled.add(target)
-                        future = pending.get(target)
-                    if future:
-                        future.cancel()
-                    write(response_envelope(request_id, {"kind": "cancelled", "targetRequestId": target}))
+    try:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="openwrangler") as executor:
+            for line in sys.stdin:
+                if not line.strip():
                     continue
-                future = executor.submit(dispatch, manager, request)
-                with pending_lock:
-                    pending[request_id] = future
-                future.add_done_callback(lambda done, current=request_id: complete(current, done))
-            except ProtocolError as error:
-                write(
-                    response_envelope(request_id, error_response(str(error), code="invalid_request", recoverable=False))
-                )
-            except Exception as error:
-                write(response_envelope(request_id, error_response(str(error), detail=traceback.format_exc())))
+                request_id = _safe_request_id(line)
+                try:
+                    request_id, _, request = decode_envelope(json.loads(line))
+                    if request["kind"] == "cancelRequest":
+                        target = str(request["targetRequestId"])
+                        with pending_lock:
+                            cancelled.add(target)
+                            future = pending.get(target)
+                        if future:
+                            future.cancel()
+                        write(response_envelope(request_id, {"kind": "cancelled", "targetRequestId": target}))
+                        continue
+                    future = executor.submit(dispatch, manager, request)
+                    with pending_lock:
+                        pending[request_id] = future
+                    future.add_done_callback(lambda done, current=request_id: complete(current, done))
+                except ProtocolError as error:
+                    write(
+                        response_envelope(
+                            request_id,
+                            error_response(str(error), code="invalid_request", recoverable=False),
+                        )
+                    )
+                except Exception as error:
+                    write(response_envelope(request_id, error_response(str(error), detail=traceback.format_exc())))
+    finally:
+        manager.close_all()
 
 
 def _safe_request_id(line: str) -> str:

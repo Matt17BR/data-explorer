@@ -22,9 +22,14 @@ export interface OpenWranglerExtensionApi {
   testing?: OpenWranglerTestApi;
 }
 
+let activeCoordinator: SessionCoordinator | undefined;
+let activeBridge: PythonBridge | undefined;
+
 export function activate(context: vscode.ExtensionContext): OpenWranglerExtensionApi | undefined {
   const bridge = new PythonBridge(context);
   const coordinator = new SessionCoordinator(context.workspaceState);
+  activeCoordinator = coordinator;
+  activeBridge = bridge;
   const coordinatedBridge = coordinator.createBridge(bridge);
   context.subscriptions.push(coordinator, bridge);
 
@@ -51,6 +56,14 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
   return undefined;
 }
 
-export function deactivate(): void {
-  // Disposables registered on the extension context clean up the Python bridge.
+export async function deactivate(): Promise<void> {
+  const coordinator = activeCoordinator;
+  const bridge = activeBridge;
+  activeCoordinator = undefined;
+  activeBridge = undefined;
+  try {
+    await coordinator?.shutdown();
+  } finally {
+    bridge?.dispose();
+  }
 }

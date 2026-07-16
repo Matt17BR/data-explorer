@@ -26,12 +26,25 @@ ColumnType = Literal[
     "struct",
     "unknown",
 ]
+EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
+ExportFormat = Literal["csv", "parquet"]
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 
 
 class EngineError(RuntimeError):
     """Raised when a backend cannot satisfy an Open Wrangler request."""
+
+
+@dataclass(frozen=True, slots=True)
+class EngineCapabilities:
+    """Immutable description of the work an engine can own."""
+
+    source_kinds: frozenset[EngineSourceKind]
+    supports_editing: bool
+    lazy_file_extensions: frozenset[str]
+    export_formats: frozenset[ExportFormat]
+    supports_interrupt: bool
 
 
 @dataclass(frozen=True)
@@ -44,6 +57,15 @@ class ColumnSchema:
 
 class DataFrameEngine(ABC):
     name: str
+    capabilities: EngineCapabilities
+
+    def interrupt(self) -> None:
+        """Request interruption of current work when the engine supports it."""
+        return None
+
+    def close(self) -> None:
+        """Release resources owned by this engine instance."""
+        return None
 
     @abstractmethod
     def detect(self, value: Any) -> bool:

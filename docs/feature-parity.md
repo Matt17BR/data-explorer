@@ -267,6 +267,17 @@ Final release-gate correction slice, 2026-07-15:
 - Visual and axe acceptance now use the Chromium revision pinned by `playwright-core` and the lockfile. CI installs that exact browser instead of inheriting a moving system Chrome, retaining the 1% visual threshold while eliminating browser-version drift.
 - The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.1 and Cursor 3.11.19 after these corrections.
 
+Session-owned engine foundation, 2026-07-16:
+
+- The ordered engine registry now creates a fresh Pandas or Polars adapter for every session, closes rejected detection candidates, validates factory/backend identity, and exposes immutable source/edit/lazy/export/interruption capabilities. Wire capabilities remain unchanged for all existing file, viewing, editing, and notebook-variable cases.
+- Open responses are fully constructed before registration. Injected reader, schema, initial-page, initial-summary, and metadata failures each close the acquired adapter and leave the session map empty. Explicit close serializes behind in-flight work; concurrent shutdown joins pending opens and disposes every registered session; notebook snapshots enforce source capabilities and distinguish cleanup failure from an earlier rendering failure.
+- Extension-host close failures are terminal and never replayed. Deactivation awaits bounded standalone and live-kernel cleanup, rejects work queued after close, closes late runtime opens without registering them, and lets the standalone server drain through stdin/EOF before force-kill fallback.
+- `npm run check`, `npm test`, and `npm run test:coverage` pass with 58 TypeScript and 141 Python tests; Python runtime coverage rises to 82.69%. Focused registry, lifecycle, coordinator, process-shutdown, notebook, and server tests cover fresh ownership, diagnostic cleanup, capability gating, concurrent open/shutdown, late opens, transport failure, failed initialization, and unsupported backends.
+- The strict runtime benchmark remains within every release ceiling: the 100k × 50 CSV reaches its first grid in 386.969 ms with 99.745 ms cached and 85.225 ms uncached page p95; the 1M × 20 Parquet reaches its first grid in 2,413.689 ms with 75.449 ms cached and 78.477 ms uncached page p95. Both retain zero sessions after close.
+- The final 57-entry allowlisted VSIX has SHA-256 `4ac2368972e0f537c5611a59fb81918a177799086d621f6597782a184c9d064b` and passes the complete two-process packaged acceptance in isolated VS Code 1.128.1 and Cursor 3.11.19 profiles.
+
+This strengthens the runtime crash/reload/session replay row without changing protocol v2 or the existing Pandas/Polars feature surface.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.

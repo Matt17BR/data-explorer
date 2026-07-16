@@ -10,6 +10,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Consolidated commands, settings, custom-editor state, and notebook rendering on the canonical `openWrangler.*` namespace and MIME v2 identifier.
 - Removed the unused pre-release identity and compatibility paths instead of carrying aliases or migrations into the experimental package.
 - Refreshed real installed-VSIX evidence from fixture-only VS Code and Cursor profiles without development-workspace diagnostics or test-host title chrome.
+- Replaced shared engine singletons with ordered factories and session-owned adapters, including diagnostic cleanup on failed opens, explicit close, runtime shutdown, and transient notebook rendering. Extension deactivation now awaits terminal session cleanup across standalone and Jupyter runtimes, while normal Python-process stops use bounded stdin/EOF shutdown before force-kill fallback.
 - Refreshed the product description to state the open-source dataframe-wrangling purpose directly and documented the project's independent inspiration from Microsoft Data Wrangler.
 
 ## [0.2.0-alpha.1] - 2026-07-15

@@ -20,6 +20,7 @@ import {
   resolvePythonEnvironment,
   type PythonEnvironment
 } from "./pythonEnvironment";
+import { stopChildProcessGracefully } from "./processShutdown";
 
 interface PendingRequest {
   resolve: (response: OpenWranglerResponse) => void;
@@ -131,14 +132,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   onIdle(): void {
     if (this.runtimeRunning) {
-      this.restart("Open Wrangler runtime stopped after its last session closed.");
+      this.stopGracefully("Open Wrangler runtime stopped after its last session closed.");
     }
   }
 
   clearRuntimeSelection(): void {
     this.environmentPromise = undefined;
     this.dependencyCache.clear();
-    this.restart("Python runtime selection changed.");
+    this.stopGracefully("Python runtime selection changed.");
   }
 
   async installMissingDependencies(confirmed?: boolean): Promise<boolean> {
@@ -171,15 +172,27 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     );
     this.lastMissingDependencies = undefined;
     this.dependencyCache.clear();
-    this.restart("Python dependencies changed; restarting the Open Wrangler runtime.");
+    this.stopGracefully("Python dependencies changed; restarting the Open Wrangler runtime.");
     await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
     return true;
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
-    this.restart("Open Wrangler runtime stopped.");
+    this.stopGracefully("Open Wrangler runtime stopped.");
     this.output.dispose();
+  }
+
+  private stopGracefully(reason: string): void {
+    this.output.appendLine(reason);
+    this.runtimeEpoch += 1;
+    const proc = this.process;
+    this.process = undefined;
+    this.processStart = undefined;
+    this.rejectAll(new Error(reason));
+    if (!proc) return;
+    stopChildProcessGracefully(proc);
   }
 
   private async ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams> {

@@ -24,6 +24,7 @@ export default defineConfig({
     }
   },
   test: {
+    alias: { vscode: resolve(__dirname, "src/test/vscode.mock.ts") },
     environment: "jsdom",
     globals: true,
     include: ["src/test/**/*.test.ts", "src/test/**/*.test.tsx"],

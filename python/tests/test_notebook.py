@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 
 import openwrangler_runtime.notebook as notebook
-from openwrangler_runtime.engines import EngineError
+from openwrangler_runtime.engines import EngineError, EngineRegistry
 
 
 @pytest.mark.parametrize(
@@ -45,6 +45,22 @@ def test_notebook_snapshot_validates_options():
         notebook.build_payload(pd.DataFrame({"value": [1]}), variable_name="not valid")
     with pytest.raises(EngineError, match="page_size"):
         notebook.build_payload(pd.DataFrame({"value": [1]}), page_size=0)
+
+
+def test_notebook_snapshot_preserves_backend_detection_faults(monkeypatch):
+    def broken_factory():
+        raise RuntimeError("factory exploded")
+
+    monkeypatch.setattr(notebook, "default_engine_registry", lambda: EngineRegistry((("broken", broken_factory),)))
+
+    with pytest.raises(EngineError, match=r"broken.*factory exploded") as caught:
+        notebook.build_payload(object())
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+def test_notebook_snapshot_translates_only_an_unsupported_value():
+    with pytest.raises(EngineError, match="supports Pandas and Polars"):
+        notebook.build_payload(object())
 
 
 class FakeFormatter:

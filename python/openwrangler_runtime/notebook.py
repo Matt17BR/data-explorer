@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from IPython.core.getipython import get_ipython
 from IPython.display import display
 
-from .engines import EngineError
-from .session import SessionManager
+from .engines import EngineError, UnsupportedDataFrameError, default_engine_registry
 
 MIME_TYPE_V2 = "application/vnd.openwrangler.viewer.v2+json"
 MIME_TYPE = MIME_TYPE_V2
@@ -40,49 +40,60 @@ def build_payload(
     if variable_name is not None and not _is_python_identifier(variable_name):
         raise EngineError("Notebook variable_name must be a valid Python identifier.")
 
-    manager = SessionManager()
-    engine = (
-        manager._engine(backend)
-        if backend
-        else next((candidate for candidate in manager.engines.values() if candidate.detect(value)), None)
-    )
-    if engine is None:
-        raise EngineError("Open Wrangler notebook output supports Pandas and Polars dataframe or series values.")
-    frame = getattr(engine, "normalize", lambda item: item)(value)
-    filter_model = {"filters": [], "sort": []}
-    filtered = engine.apply_filter_model(frame, filter_model)
-    source: dict[str, Any] = {"kind": "notebookOutput", "label": label}
-    if variable_name:
-        source["variableName"] = variable_name
-    shape = engine.shape(frame)
-    metadata = {
-        "protocolVersion": 2,
-        "sessionId": f"notebook-output:{label}",
-        "revision": 0,
-        "backend": engine.name,
-        "mode": "viewing",
-        "source": source,
-        "capabilities": {
-            "editable": False,
-            "lazy": False,
-            "cancel": False,
-            "exportCsv": False,
-            "exportParquet": False,
-            "notebookInsert": False,
-        },
-        "shape": shape,
-        "filteredShape": engine.shape(filtered),
-        "schema": engine.schema(frame),
-        "filterModel": filter_model,
-        "steps": [],
-        "stats": engine.header_stats(filtered),
-    }
-    return {
-        "mimeVersion": 2,
-        "metadata": metadata,
-        "page": engine.page(filtered, 0, page_size),
-        "summaries": engine.summaries(filtered),
-    }
+    registry = default_engine_registry()
+    try:
+        engine = registry.create(backend) if backend else registry.detect(value)
+    except UnsupportedDataFrameError as error:
+        raise EngineError(
+            "Open Wrangler notebook output supports Pandas and Polars dataframe or series values."
+        ) from error
+    try:
+        if "notebookOutput" not in engine.capabilities.source_kinds:
+            raise EngineError(f"The {engine.name} backend does not support notebook output sources.")
+        frame = getattr(engine, "normalize", lambda item: item)(value)
+        filter_model = {"filters": [], "sort": []}
+        filtered = engine.apply_filter_model(frame, filter_model)
+        source: dict[str, Any] = {"kind": "notebookOutput", "label": label}
+        if variable_name:
+            source["variableName"] = variable_name
+        shape = engine.shape(frame)
+        metadata = {
+            "protocolVersion": 2,
+            "sessionId": f"notebook-output:{label}",
+            "revision": 0,
+            "backend": engine.name,
+            "mode": "viewing",
+            "source": source,
+            "capabilities": {
+                "editable": False,
+                "lazy": False,
+                "cancel": False,
+                "exportCsv": False,
+                "exportParquet": False,
+                "notebookInsert": False,
+            },
+            "shape": shape,
+            "filteredShape": engine.shape(filtered),
+            "schema": engine.schema(frame),
+            "filterModel": filter_model,
+            "steps": [],
+            "stats": engine.header_stats(filtered),
+        }
+        payload = {
+            "mimeVersion": 2,
+            "metadata": metadata,
+            "page": engine.page(filtered, 0, page_size),
+            "summaries": engine.summaries(filtered),
+        }
+    except BaseException:
+        with suppress(Exception):
+            engine.close()
+        raise
+    try:
+        engine.close()
+    except Exception as error:
+        raise EngineError(f"Could not close the {engine.name} notebook output engine: {error}") from error
+    return payload
 
 
 def register_formatters(shell: Any | None = None) -> bool:

@@ -382,7 +382,8 @@ def test_failed_export_preserves_existing_destination_and_removes_temporary_file
             temporary.write("partial")
         raise EngineError("simulated export failure")
 
-    monkeypatch.setattr(manager.engines["pandas"], "export_data", fail_export)
+    session = manager.sessions[opened["metadata"]["sessionId"]]
+    monkeypatch.setattr(session.engine, "export_data", fail_export)
     with pytest.raises(EngineError, match="simulated"):
         manager.export_data(opened["metadata"]["sessionId"], 0, str(destination), "csv")
 

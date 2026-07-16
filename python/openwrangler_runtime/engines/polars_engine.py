@@ -9,6 +9,7 @@ from typing import Any, Literal
 from .base import (
     INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
+    EngineCapabilities,
     EngineError,
     boolean_visualization,
     categorical_visualization,
@@ -22,6 +23,13 @@ from .base import (
 
 class PolarsEngine(DataFrameEngine):
     name = "polars"
+    capabilities = EngineCapabilities(
+        source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
+        supports_editing=True,
+        lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl"}),
+        export_formats=frozenset({"csv", "parquet"}),
+        supports_interrupt=False,
+    )
 
     def detect(self, value: Any) -> bool:
         try:

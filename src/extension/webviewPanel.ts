@@ -131,11 +131,13 @@ export class OpenWranglerPanel {
     this.disposed = true;
     if (OpenWranglerPanel.activePanel === this) OpenWranglerPanel.activePanel = undefined;
     if (this.sessionId && !this.initialResponse) {
-      void this.bridge.request({
-        kind: "closeSession",
-        sessionId: this.sessionId,
-        revision: this.sessionRevision
-      });
+      void this.bridge
+        .request({
+          kind: "closeSession",
+          sessionId: this.sessionId,
+          revision: this.sessionRevision
+        })
+        .catch(() => undefined);
       this.sessionId = undefined;
     }
     while (this.disposables.length) {

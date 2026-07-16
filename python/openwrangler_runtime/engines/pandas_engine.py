@@ -8,6 +8,7 @@ from typing import Any, Literal
 from .base import (
     INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
+    EngineCapabilities,
     EngineError,
     boolean_visualization,
     categorical_visualization,
@@ -21,6 +22,13 @@ from .base import (
 
 class PandasEngine(DataFrameEngine):
     name = "pandas"
+    capabilities = EngineCapabilities(
+        source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
+        supports_editing=True,
+        lazy_file_extensions=frozenset(),
+        export_formats=frozenset({"csv", "parquet"}),
+        supports_interrupt=False,
+    )
 
     def detect(self, value: Any) -> bool:
         try:

@@ -6,11 +6,12 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from .engines import DataFrameEngine, EngineError, PandasEngine, PolarsEngine
+from .engines import DataFrameEngine, EngineError, EngineRegistry, default_engine_registry
 from .lineage import derive_lineage, reuse_latest_output_ids, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 
@@ -39,16 +40,29 @@ class Session:
     revision: int
     mode: str
     lock: Any
+    disposed: bool = False
+
+    def dispose(self, *, suppress_errors: bool = False) -> None:
+        if self.disposed:
+            return
+        self.disposed = True
+        try:
+            self.engine.close()
+        except Exception as error:
+            if not suppress_errors:
+                raise EngineError(f"Could not close the {self.backend} session: {error}") from error
 
 
 class SessionManager:
-    def __init__(self) -> None:
-        self.engines: dict[str, DataFrameEngine] = {
-            "polars": PolarsEngine(),
-            "pandas": PandasEngine(),
-        }
+    def __init__(self, registry: EngineRegistry | None = None) -> None:
+        self.registry = registry or default_engine_registry()
         self.sessions: dict[str, Session] = {}
         self._sessions_lock = threading.RLock()
+        self._sessions_condition = threading.Condition(self._sessions_lock)
+        self._pending_opens = 0
+        self._closed = False
+        self._shutdown_in_progress = False
+        self._shutdown_complete = False
 
     def initialize(self) -> dict[str, Any]:
         return {
@@ -72,9 +86,19 @@ class SessionManager:
         page_size: int = 200,
         mode: str | None = None,
     ) -> dict[str, Any]:
-        engine = self._engine_for_source(source, backend)
+        with self._sessions_condition:
+            if self._closed:
+                raise EngineError("The runtime session manager is closed.")
+            self._pending_opens += 1
+
+        engine: DataFrameEngine | None = None
         session_id = str(uuid.uuid4())
+        session: Session | None = None
         try:
+            engine = self._engine_for_source(source, backend)
+            source_kind = str(source.get("kind", ""))
+            if source_kind not in engine.capabilities.source_kinds:
+                raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
             frame = self._load_source(source, engine)
             if source.get("kind") != "file":
                 frame = getattr(engine, "normalize", lambda value: value)(frame)
@@ -88,44 +112,55 @@ class SessionManager:
                 filtered,
                 [column["name"] for column in source_schema[:8]],
             )
+            initial_lineage = source_lineage(source_schema)
+            session = Session(
+                session_id=session_id,
+                source=dict(source),
+                backend=engine.name,
+                engine=engine,
+                original=frame,
+                committed=frame,
+                filtered=filtered,
+                filter_model=filter_model,
+                plan=[],
+                plan_input_schemas=[],
+                committed_lineage=initial_lineage,
+                draft_step=None,
+                draft_frame=None,
+                draft_base=None,
+                draft_lineage=None,
+                replace_step_id=None,
+                stats=None,
+                source_shape=source_shape,
+                source_schema=source_schema,
+                revision=0,
+                mode=mode or ("editing" if source.get("kind") == "file" else "viewing"),
+                lock=threading.RLock(),
+            )
+            response = {
+                "kind": "sessionOpened",
+                "metadata": self._metadata(session),
+                "page": initial_page,
+                "summaries": initial_summaries,
+            }
+            with self._sessions_condition:
+                if self._closed:
+                    raise EngineError("The runtime session manager is closed.")
+                self.sessions[session_id] = session
+            return response
         except EngineError:
+            if engine is not None:
+                self._dispose_open_failure(session, engine)
             raise
         except Exception as error:
+            if engine is not None:
+                self._dispose_open_failure(session, engine)
             label = source.get("label") or source.get("path") or source.get("variableName") or "source"
             raise EngineError(f"Could not read {label}: {error}") from error
-        initial_lineage = source_lineage(source_schema)
-        session = Session(
-            session_id=session_id,
-            source=dict(source),
-            backend=engine.name,
-            engine=engine,
-            original=frame,
-            committed=frame,
-            filtered=filtered,
-            filter_model=filter_model,
-            plan=[],
-            plan_input_schemas=[],
-            committed_lineage=initial_lineage,
-            draft_step=None,
-            draft_frame=None,
-            draft_base=None,
-            draft_lineage=None,
-            replace_step_id=None,
-            stats=None,
-            source_shape=source_shape,
-            source_schema=source_schema,
-            revision=0,
-            mode=mode or ("editing" if source.get("kind") == "file" else "viewing"),
-            lock=threading.RLock(),
-        )
-        with self._sessions_lock:
-            self.sessions[session_id] = session
-        return {
-            "kind": "sessionOpened",
-            "metadata": self._metadata(session),
-            "page": initial_page,
-            "summaries": initial_summaries,
-        }
+        finally:
+            with self._sessions_condition:
+                self._pending_opens -= 1
+                self._sessions_condition.notify_all()
 
     def get_page(
         self,
@@ -324,6 +359,8 @@ class SessionManager:
                 raise EngineError("Apply or discard the draft step before exporting cleaned data.")
             if format_name not in {"csv", "parquet"}:
                 raise EngineError(f"Unsupported export format: {format_name}")
+            if format_name not in session.engine.capabilities.export_formats:
+                raise EngineError(f"The {session.backend} backend cannot export {format_name} data.")
 
             destination = Path(path).expanduser().resolve()
             source_path = session.source.get("path")
@@ -358,12 +395,39 @@ class SessionManager:
             }
 
     def close_session(self, session_id: str, revision: int) -> dict[str, Any]:
-        self._assert_revision(self._session(session_id), revision)
-        with self._sessions_lock:
-            session = self.sessions.pop(session_id, None)
-        if session is None:
-            raise EngineError(f"Unknown session: {session_id}")
-        return {"kind": "sessionClosed", "sessionId": session_id}
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            with self._sessions_lock:
+                if self.sessions.get(session_id) is not session:
+                    raise EngineError(f"Unknown session: {session_id}")
+                del self.sessions[session_id]
+            session.dispose()
+            return {"kind": "sessionClosed", "sessionId": session_id}
+
+    def close_all(self) -> None:
+        with self._sessions_condition:
+            self._closed = True
+            if self._shutdown_complete:
+                return
+            if self._shutdown_in_progress:
+                while not self._shutdown_complete:
+                    self._sessions_condition.wait()
+                return
+            self._shutdown_in_progress = True
+            while self._pending_opens:
+                self._sessions_condition.wait()
+            sessions = list(self.sessions.values())
+            self.sessions.clear()
+        try:
+            for session in sessions:
+                with session.lock:
+                    session.dispose(suppress_errors=True)
+        finally:
+            with self._sessions_condition:
+                self._shutdown_complete = True
+                self._shutdown_in_progress = False
+                self._sessions_condition.notify_all()
 
     def _filtered(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
         model = dict(filter_model)
@@ -511,48 +575,54 @@ class SessionManager:
     def _assert_editable(self, session: Session) -> None:
         if session.mode != "editing":
             raise EngineError("This session is in viewing mode. Change it to editing before adding steps.")
+        if not session.engine.capabilities.supports_editing:
+            raise EngineError(f"The {session.backend} backend does not support editing.")
 
     def _session(self, session_id: str) -> Session:
         with self._sessions_lock:
             try:
-                return self.sessions[session_id]
+                session = self.sessions[session_id]
             except KeyError as error:
                 raise EngineError(f"Unknown session: {session_id}") from error
+            if session.disposed:
+                raise EngineError(f"Unknown session: {session_id}")
+            return session
 
     def _capabilities(self, session: Session) -> dict[str, bool]:
         source_kind = session.source.get("kind")
         extension = str(session.source.get("path", "")).lower()
+        engine_capabilities = session.engine.capabilities
+        editable = session.mode == "editing" and engine_capabilities.supports_editing
         return {
-            "editable": session.mode == "editing",
-            "lazy": session.backend == "polars"
-            and source_kind == "file"
-            and extension.endswith((".csv", ".tsv", ".parquet", ".jsonl")),
+            "editable": editable,
+            "lazy": source_kind == "file" and extension.endswith(tuple(engine_capabilities.lazy_file_extensions)),
             "cancel": True,
-            "exportCsv": session.mode == "editing",
-            "exportParquet": session.mode == "editing",
+            "exportCsv": editable and "csv" in engine_capabilities.export_formats,
+            "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
             "notebookInsert": source_kind == "notebookVariable",
         }
 
     def _assert_revision(self, session: Session, revision: int) -> None:
+        if session.disposed:
+            raise EngineError(f"Unknown session: {session.session_id}")
         if revision != session.revision:
             raise EngineError(f"Stale session revision {revision}; current revision is {session.revision}.")
 
     def _engine_for_source(self, source: Mapping[str, Any], backend: str | None) -> DataFrameEngine:
         if backend:
-            return self._engine(backend)
+            return self.registry.create(backend)
         if source.get("kind") == "file":
-            return self._engine("polars")
+            return self.registry.create("polars")
         value = self._resolve_notebook_variable(source)
-        for engine in self.engines.values():
-            if engine.detect(value):
-                return engine
-        raise EngineError("Could not detect a supported dataframe backend for the source.")
+        return self.registry.detect(value)
 
-    def _engine(self, backend: str) -> DataFrameEngine:
-        try:
-            return self.engines[backend]
-        except KeyError as error:
-            raise EngineError(f"Unsupported backend: {backend}") from error
+    @staticmethod
+    def _dispose_open_failure(session: Session | None, engine: DataFrameEngine) -> None:
+        if session is not None:
+            session.dispose(suppress_errors=True)
+            return
+        with suppress(Exception):
+            engine.close()
 
     def _load_source(self, source: Mapping[str, Any], engine: DataFrameEngine) -> Any:
         kind = source.get("kind")

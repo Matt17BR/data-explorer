@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from io import StringIO
+
+import openwrangler_runtime.server as server
 
 
 def test_stdio_server_frames_protocol_v2_responses() -> None:
@@ -33,3 +36,20 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
     assert responses["initialize"]["protocolVersion"] == 2
     assert responses["initialize"]["response"]["kind"] == "initialized"
     assert responses["invalid"]["response"]["code"] == "invalid_request"
+
+
+def test_stdio_server_closes_all_sessions_when_input_ends(monkeypatch) -> None:
+    class TrackingManager:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close_all(self) -> None:
+            self.closed = True
+
+    manager = TrackingManager()
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", StringIO(""))
+
+    server.main()
+
+    assert manager.closed is True
