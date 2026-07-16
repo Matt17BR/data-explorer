@@ -153,6 +153,19 @@ def bind_step(
         "filterRows",
         "dropMissingRows",
         "dropDuplicates",
+        "oneHotEncode",
+        "multiLabelBinarize",
+        "findReplace",
+        "stripText",
+        "splitText",
+        "capitalizeText",
+        "lowerText",
+        "upperText",
+        "minMaxScale",
+        "roundNumber",
+        "floorNumber",
+        "ceilNumber",
+        "formatDatetime",
     }:
         return bound
 
@@ -203,13 +216,30 @@ def bind_step(
             params["columns"] = context.bind_many(params["columns"], f"{kind}.columns")
         return bound
 
-    if kind in {"selectColumns", "dropColumns"}:
+    if kind in {"selectColumns", "dropColumns", "oneHotEncode"}:
         params["columns"] = context.bind_many(params.get("columns"), f"{kind}.columns")
         if kind == "dropColumns" and len(params["columns"]) == len(context.columns):
             raise ColumnBindingError("dropColumns must leave at least one visible column.")
         return bound
 
-    if kind in {"renameColumn", "cloneColumn", "castColumn", "textLength"}:
+    if kind in {
+        "renameColumn",
+        "cloneColumn",
+        "castColumn",
+        "textLength",
+        "multiLabelBinarize",
+        "findReplace",
+        "stripText",
+        "splitText",
+        "capitalizeText",
+        "lowerText",
+        "upperText",
+        "minMaxScale",
+        "roundNumber",
+        "floorNumber",
+        "ceilNumber",
+        "formatDatetime",
+    }:
         params["column"] = context.bind(params.get("column"), f"{kind}.column")
 
     if kind == "renameColumn":
@@ -223,6 +253,29 @@ def bind_step(
         context.reject_output_collision(params.get("newColumn"), "formula.newColumn")
     elif kind == "textLength":
         context.reject_output_collision(params.get("newColumn"), "textLength.newColumn")
+    elif (
+        kind
+        in {
+            "multiLabelBinarize",
+            "findReplace",
+            "stripText",
+            "splitText",
+            "capitalizeText",
+            "lowerText",
+            "upperText",
+            "minMaxScale",
+            "roundNumber",
+            "floorNumber",
+            "ceilNumber",
+            "formatDatetime",
+        }
+        and "newColumn" in params
+    ):
+        context.reject_output_collision(
+            params["newColumn"],
+            f"{kind}.newColumn",
+            replacing=params["column"],
+        )
 
     return bound
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from math import isnan
 from typing import Any, cast
 
@@ -30,6 +31,10 @@ def step(kind: str, **params: Any) -> dict[str, Any]:
 
 def bound_ref(identifier: str, name: str, position: int) -> dict[str, str | int]:
     return {"id": identifier, "name": name, "position": position}
+
+
+def public_ref(identifier: str, name: str) -> dict[str, str]:
+    return {"id": identifier, "name": name}
 
 
 def bound_step(kind: str, **params: Any) -> dict[str, Any]:
@@ -138,7 +143,11 @@ def test_non_float_include_nan_value_filter_is_an_explicit_false_condition(engin
 
 def test_min_max_scale_preserves_null_and_nan_for_constant_columns(engine) -> None:
     frame = frame_for(engine, {"value": [5.0, None, 5.0, float("nan")]})
-    operation = step("minMaxScale", column="value", newColumn="scaled")
+    operation = bound_step(
+        "minMaxScale",
+        column=bound_ref("c:source:0", "value", 0),
+        newColumn="scaled",
+    )
 
     transformed = engine.apply_transform(frame, operation)
     assert [normalized(row["scaled"]) for row in records(transformed)] == [0.0, None, 0.0, None]
@@ -151,10 +160,15 @@ def test_numeric_operations_handle_non_finite_values_deterministically(engine) -
         {"value": [1.2, 3.2, None, float("nan"), float("inf"), float("-inf")]},
     )
     operations = [
-        step("minMaxScale", column="value", newColumn="scaled"),
-        step("roundNumber", column="value", decimals=0, newColumn="rounded"),
-        step("floorNumber", column="value", newColumn="floored"),
-        step("ceilNumber", column="value", newColumn="ceiled"),
+        bound_step("minMaxScale", column=bound_ref("c:source:0", "value", 0), newColumn="scaled"),
+        bound_step(
+            "roundNumber",
+            column=bound_ref("c:source:0", "value", 0),
+            decimals=0,
+            newColumn="rounded",
+        ),
+        bound_step("floorNumber", column=bound_ref("c:source:0", "value", 0), newColumn="floored"),
+        bound_step("ceilNumber", column=bound_ref("c:source:0", "value", 0), newColumn="ceiled"),
     ]
     transformed = frame
     for operation in operations:
@@ -331,27 +345,89 @@ def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(eng
     if isinstance(engine, PandasEngine):
         one_hot_frame = pd.DataFrame(
             {
-                "group": pd.Categorical(["a", None, "β"], categories=["a", "β", "unused"]),
-                "value": [1, 2, 3],
+                "group": pd.Categorical(["a", None, "β", ""], categories=["a", "β", "", "unused"]),
+                "value": [1, 2, 3, 4],
             }
         )
     else:
-        one_hot_frame = pl.DataFrame({"group": ["a", None, "β"], "value": [1, 2, 3]}).with_columns(
+        one_hot_frame = pl.DataFrame({"group": ["a", None, "β", ""], "value": [1, 2, 3, 4]}).with_columns(
             pl.col("group").cast(pl.Categorical)
         )
-    one_hot = step("oneHotEncode", columns=["group"], prefixSeparator="_", dropOriginal=False)
+    one_hot = bound_step(
+        "oneHotEncode",
+        columns=[bound_ref("c:source:0", "group", 0)],
+        prefixSeparator="_",
+        dropOriginal=False,
+    )
     one_hot_result = engine.apply_transform(one_hot_frame, one_hot)
     one_hot_rows = records(one_hot_result)
 
     assert list(one_hot_rows[0]) == ["group", "value", "group_a", "group_β"]
-    assert [row["group_a"] for row in one_hot_rows] == [1, 0, 0]
-    assert [row["group_β"] for row in one_hot_rows] == [0, 0, 1]
+    assert [row["group_a"] for row in one_hot_rows] == [1, 0, 0, 0]
+    assert [row["group_β"] for row in one_hot_rows] == [0, 0, 1, 0]
     assert_records_equal(one_hot_result, execute_generated(engine, one_hot_frame, one_hot))
 
-    labels_frame = frame_for(engine, {"tags": [None, "", "red|β"], "value": [1, 2, 3]})
-    labels = step(
+    scalar_frame = frame_for(
+        engine,
+        {
+            "value": [1.0, float("nan"), None],
+            "flag": [True, False, None],
+            "day": [date(2024, 1, 2), date(2024, 1, 3), None],
+        },
+    )
+    scalar_hot = bound_step(
+        "oneHotEncode",
+        columns=[
+            bound_ref("c:source:2", "day", 2),
+            bound_ref("c:source:1", "flag", 1),
+            bound_ref("c:source:0", "value", 0),
+        ],
+        prefixSeparator="_",
+        dropOriginal=False,
+    )
+    scalar_result = engine.apply_transform(scalar_frame, scalar_hot)
+    assert list(records(scalar_result)[0]) == [
+        "value",
+        "flag",
+        "day",
+        "day_2024-01-02",
+        "day_2024-01-03",
+        "flag_False",
+        "flag_True",
+        "value_1.0",
+    ]
+    assert [row["value_1.0"] for row in records(scalar_result)] == [1, 0, 0]
+    assert [row["flag_True"] for row in records(scalar_result)] == [1, 0, 0]
+    assert [row["day_2024-01-03"] for row in records(scalar_result)] == [0, 1, 0]
+    assert_records_equal(scalar_result, execute_generated(engine, scalar_frame, scalar_hot))
+
+    ordering_frame = frame_for(engine, {"zeta": ["b", "a"], "alpha": ["y", "x"]})
+    ordering = bound_step(
+        "oneHotEncode",
+        columns=[
+            bound_ref("c:source:0", "zeta", 0),
+            bound_ref("c:source:1", "alpha", 1),
+        ],
+        dropOriginal=False,
+    )
+    ordering_result = engine.apply_transform(ordering_frame, ordering)
+    assert list(records(ordering_result)[0]) == ["zeta", "alpha", "alpha_x", "alpha_y", "zeta_a", "zeta_b"]
+    assert_records_equal(ordering_result, execute_generated(engine, ordering_frame, ordering))
+
+    if isinstance(engine, PandasEngine):
+        labels_frame = pd.DataFrame(
+            {
+                "tags": pd.Categorical([None, "", "red|β"]),
+                "value": [1, 2, 3],
+            }
+        )
+    else:
+        labels_frame = pl.DataFrame({"tags": [None, "", "red|β"], "value": [1, 2, 3]}).with_columns(
+            pl.col("tags").cast(pl.Categorical)
+        )
+    labels = bound_step(
         "multiLabelBinarize",
-        column="tags",
+        column=bound_ref("c:source:0", "tags", 0),
         delimiter="|",
         prefix="tag_",
         dropOriginal=False,
@@ -374,12 +450,23 @@ def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(eng
     ("operation", "data", "message"),
     [
         (
-            step("oneHotEncode", columns=["group"], prefixSeparator="_", dropOriginal=False),
+            bound_step(
+                "oneHotEncode",
+                columns=[bound_ref("c:source:0", "group", 0)],
+                prefixSeparator="_",
+                dropOriginal=False,
+            ),
             {"group": ["a"], "group_a": [7]},
             "One-hot encoding would create duplicate column names: group_a",
         ),
         (
-            step("multiLabelBinarize", column="tags", delimiter="|", prefix="tag_", dropOriginal=False),
+            bound_step(
+                "multiLabelBinarize",
+                column=bound_ref("c:source:0", "tags", 0),
+                delimiter="|",
+                prefix="tag_",
+                dropOriginal=False,
+            ),
             {"tags": ["red"], "tag_red": [7]},
             "Multi-label binarization would create duplicate column names: tag_red",
         ),
@@ -392,6 +479,46 @@ def test_categorical_output_collisions_fail_before_creating_duplicate_columns(en
         engine.apply_transform(frame, operation)
     with pytest.raises(ValueError, match=message):
         execute_generated(engine, frame, operation)
+
+
+def test_dynamic_categorical_outputs_cannot_enter_the_private_row_identity_namespace(engine) -> None:
+    private_suffix = "open_wrangler_internal_row_id_forged"
+    frame = frame_for(engine, {"tags": [private_suffix], "value": [1]})
+    operation = bound_step(
+        "multiLabelBinarize",
+        column=bound_ref("c:source:0", "tags", 0),
+        delimiter="|",
+        prefix="__",
+        dropOriginal=False,
+    )
+
+    with pytest.raises(EngineError, match="reserved private row-identity column"):
+        engine.apply_transform(frame, operation)
+    with pytest.raises(ValueError, match="reserved private row-identity column"):
+        execute_generated(engine, frame, operation)
+
+
+def test_pandas_multi_label_categorical_null_does_not_require_a_blank_category() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        {
+            "tags": pd.Categorical(["red|β", None], categories=["red|β"]),
+            "value": [1, 2],
+        }
+    )
+    operation = bound_step(
+        "multiLabelBinarize",
+        column=bound_ref("c:source:0", "tags", 0),
+        delimiter="|",
+        prefix="tag_",
+        dropOriginal=False,
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+
+    assert transformed["tag_red"].tolist() == [1, 0]
+    assert transformed["tag_β"].tolist() == [1, 0]
+    pd.testing.assert_frame_equal(transformed, execute_generated(engine, frame, operation))
 
 
 def test_grouping_is_ordered_and_nullable_aggregations_match(engine) -> None:
@@ -456,24 +583,46 @@ def test_group_aliases_are_unique_and_cannot_replace_keys() -> None:
 @pytest.mark.parametrize(
     ("kind", "params", "message"),
     [
-        ("oneHotEncode", {"columns": ["group"], "dropOriginal": "yes"}, "dropOriginal must be a boolean"),
+        (
+            "oneHotEncode",
+            {"columns": [public_ref("c:source:0", "group")], "dropOriginal": "yes"},
+            "dropOriginal must be a boolean",
+        ),
         (
             "multiLabelBinarize",
-            {"column": "tags", "delimiter": "", "prefix": "tag_"},
+            {"column": public_ref("c:source:0", "tags"), "delimiter": "", "prefix": "tag_"},
             "delimiter must be a non-empty string",
         ),
         (
             "findReplace",
-            {"column": "text", "find": 1, "replacement": "x"},
+            {"column": public_ref("c:source:0", "text"), "find": 1, "replacement": "x"},
             "find and replacement must be strings",
         ),
         (
+            "stripText",
+            {"column": public_ref("c:source:0", "text"), "characters": ""},
+            "characters must be a non-empty string or null",
+        ),
+        (
             "splitText",
-            {"column": "text", "delimiter": "-", "index": True, "newColumn": "part"},
+            {
+                "column": public_ref("c:source:0", "text"),
+                "delimiter": "-",
+                "index": True,
+                "newColumn": "part",
+            },
             "index must be a non-negative integer",
         ),
-        ("roundNumber", {"column": "value", "decimals": True}, "decimals must be an integer"),
-        ("formatDatetime", {"column": "date", "format": ""}, "format must be a non-empty string"),
+        (
+            "roundNumber",
+            {"column": public_ref("c:source:0", "value"), "decimals": True},
+            "decimals must be an integer",
+        ),
+        (
+            "formatDatetime",
+            {"column": public_ref("c:source:0", "date"), "format": ""},
+            "format must be a non-empty string",
+        ),
         (
             "filterRows",
             {
@@ -516,9 +665,13 @@ def test_operation_parameters_are_rejected_before_engine_execution(kind, params,
 def test_unicode_text_operations_preserve_nulls_and_match_generated_code(engine) -> None:
     frame = frame_for(engine, {"text": ["straße", "İSTANBUL", "élAN", None]})
     operations = [
-        step("upperText", column="text", newColumn="upper"),
-        step("lowerText", column="text", newColumn="lower"),
-        step("capitalizeText", column="text", newColumn="capitalized"),
+        bound_step("upperText", column=bound_ref("c:source:0", "text", 0), newColumn="upper"),
+        bound_step("lowerText", column=bound_ref("c:source:0", "text", 0), newColumn="lower"),
+        bound_step(
+            "capitalizeText",
+            column=bound_ref("c:source:0", "text", 0),
+            newColumn="capitalized",
+        ),
     ]
     transformed = frame
     for operation in operations:
@@ -533,6 +686,146 @@ def test_unicode_text_operations_preserve_nulls_and_match_generated_code(engine)
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan(operations), namespace, namespace)
     assert_records_equal(transformed, namespace["clean_data"](frame))
+
+
+def test_pandas_value_transforms_target_duplicate_and_non_string_labels_positionally() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        [
+            ["élan", "red|blue", 1.2, "2024-01-02"],
+            [None, "blue", 2.8, "2024-02-03"],
+        ],
+        columns=cast(Any, ["duplicate", "duplicate", 7, "when"]),
+    )
+    operations = [
+        bound_step("upperText", column=bound_ref("c:source:0", "duplicate", 0)),
+        bound_step(
+            "multiLabelBinarize",
+            column=bound_ref("c:source:1", "duplicate", 1),
+            delimiter="|",
+            prefix="tag_",
+            dropOriginal=False,
+        ),
+        bound_step(
+            "oneHotEncode",
+            columns=[bound_ref("c:source:1", "duplicate", 1)],
+            prefixSeparator="_",
+            dropOriginal=False,
+        ),
+        bound_step("roundNumber", column=bound_ref("c:source:2", "7", 2)),
+        bound_step(
+            "formatDatetime",
+            column=bound_ref("c:source:3", "when", 3),
+            format="%Y/%m",
+            newColumn="month",
+        ),
+    ]
+
+    transformed = frame
+    for operation in operations:
+        transformed = engine.apply_transform(transformed, operation)
+    namespace: dict[str, Any] = {}
+    code = engine.compile_plan(operations)
+    exec(code, namespace, namespace)
+    generated = namespace["clean_data"](frame)
+
+    pd.testing.assert_frame_equal(transformed, generated)
+    assert transformed.iloc[0, 0] == "ÉLAN"
+    assert pd.isna(transformed.iloc[1, 0])
+    assert transformed.iloc[:, 1].tolist() == ["red|blue", "blue"]
+    assert transformed.iloc[:, 2].tolist() == [1.0, 3.0]
+    assert transformed["tag_red"].tolist() == [1, 0]
+    assert transformed["duplicate_blue"].tolist() == [0, 1]
+    assert transformed["month"].tolist() == ["2024/01", "2024/02"]
+    assert "df.iloc[:, 0]" in code
+    assert "df.iloc[:, 1]" in code
+    assert "df.iloc[:, 2]" in code
+    assert "df.iloc[:, 3]" in code
+    assert list(frame.columns) == ["duplicate", "duplicate", 7, "when"]
+
+
+def test_value_transforms_preserve_documented_coercive_inputs(engine) -> None:
+    frame = frame_for(
+        engine,
+        {
+            "text": [123, None],
+            "number": ["1.2", "2.8"],
+            "date": ["2024-01-02", "invalid"],
+        },
+    )
+    operations = [
+        bound_step("upperText", column=bound_ref("c:source:0", "text", 0), newColumn="upper"),
+        bound_step(
+            "roundNumber",
+            column=bound_ref("c:source:1", "number", 1),
+            decimals=0,
+            newColumn="rounded",
+        ),
+        bound_step(
+            "formatDatetime",
+            column=bound_ref("c:source:2", "date", 2),
+            format="%Y",
+            newColumn="year",
+        ),
+    ]
+
+    transformed = frame
+    for operation in operations:
+        transformed = engine.apply_transform(transformed, operation)
+
+    result = records(transformed)
+    assert result[0]["upper"] in {"123", "123.0"}
+    assert normalized(result[1]["upper"]) is None
+    assert result[0]["rounded"] == 1.0
+    assert result[1]["rounded"] == 3.0
+    assert result[0]["year"] == "2024"
+    assert normalized(result[1]["year"]) is None
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan(operations), namespace, namespace)
+    assert_records_equal(transformed, namespace["clean_data"](frame))
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected"),
+    [
+        ("\\", ["\\a\\b\\", "\\", None, "\\é\\🙂\\"]),
+        (r"\1", [r"\1a\1b\1", r"\1", None, r"\1é\1🙂\1"]),
+        ("$1", ["$1a$1b$1", "$1", None, "$1é$1🙂$1"]),
+    ],
+)
+def test_empty_literal_find_replaces_text_boundaries_and_matches_generated_code(
+    engine, replacement: str, expected: list[str | None]
+) -> None:
+    frame = frame_for(engine, {"text": ["ab", "", None, "é🙂"]})
+    operation = bound_step(
+        "findReplace",
+        column=bound_ref("c:source:0", "text", 0),
+        find="",
+        replacement=replacement,
+        regex=False,
+        newColumn="expanded",
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+
+    assert [normalized(row["expanded"]) for row in records(transformed)] == expected
+    assert_records_equal(transformed, execute_generated(engine, frame, operation))
+
+
+def test_default_strip_normalizes_control_and_unicode_whitespace(engine) -> None:
+    padded = "\t\n\r\v\f\u00a0\u2003X\t\n\r\v\f\u00a0\u2003"
+    frame = frame_for(engine, {"text": [padded, None]})
+    operation = bound_step(
+        "stripText",
+        column=bound_ref("c:source:0", "text", 0),
+        newColumn="clean",
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+
+    assert records(transformed)[0]["clean"] == "X"
+    assert normalized(records(transformed)[1]["clean"]) is None
+    assert_records_equal(transformed, execute_generated(engine, frame, operation))
 
 
 def test_custom_code_exceptions_are_structured_engine_errors(engine) -> None:

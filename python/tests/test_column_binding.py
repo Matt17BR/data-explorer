@@ -101,11 +101,38 @@ def test_binding_rejects_malformed_public_references(reference, message) -> None
             newColumn="duplicate",
         ),
         step("textLength", column=ref("c:source:2", "value"), newColumn="duplicate"),
+        step("minMaxScale", column=ref("c:source:2", "value"), newColumn="duplicate"),
+        step("roundNumber", column=ref("c:source:2", "value"), newColumn="duplicate"),
     ],
 )
 def test_binding_rejects_structural_output_name_collisions(operation) -> None:
     with pytest.raises(ColumnBindingError, match="collides with an existing column"):
         bind_step(operation, SCHEMA, LINEAGE)
+
+
+def test_duplicate_label_in_place_value_updates_require_no_explicit_output_name() -> None:
+    duplicate = ref("c:source:0", "duplicate")
+
+    bound = bind_step(step("roundNumber", column=duplicate), SCHEMA, LINEAGE)
+    assert bound["params"]["column"]["position"] == 0
+
+    with pytest.raises(ColumnBindingError, match="collides with an existing column"):
+        bind_step(step("roundNumber", column=duplicate, newColumn="duplicate"), SCHEMA, LINEAGE)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        step("upperText", column=ref("c:value", "value"), newColumn="duplicate"),
+        step("formatDatetime", column=ref("c:value", "value"), format="%Y", newColumn="duplicate"),
+    ],
+)
+def test_text_and_datetime_outputs_reject_existing_names(operation: dict[str, Any]) -> None:
+    schema = [{"name": "duplicate", "type": "string"}, {"name": "value", "type": "string"}]
+    lineage = [{"id": "c:duplicate", "name": "duplicate"}, {"id": "c:value", "name": "value"}]
+
+    with pytest.raises(ColumnBindingError, match="collides with an existing column"):
+        bind_step(operation, schema, lineage)
 
 
 @pytest.mark.parametrize(
@@ -152,14 +179,76 @@ def test_binding_allows_formula_to_use_one_identity_on_both_sides() -> None:
     assert bound["params"]["rightColumn"]["position"] == 2
 
 
-def test_binding_copies_operations_outside_the_id_backed_set() -> None:
-    public = step("roundNumber", column="value", decimals=1)
+def test_binding_resolves_value_transform_references_without_mutating_public_steps() -> None:
+    public = step("roundNumber", column=ref("c:source:2", "value"), decimals=1)
 
     bound = bind_step(public, SCHEMA, LINEAGE)
 
-    assert bound == public
+    assert bound["params"]["column"] == {
+        "id": "c:source:2",
+        "name": "value",
+        "position": 2,
+    }
     assert bound is not public
     assert bound["params"] is not public["params"]
+    assert public["params"]["column"] == ref("c:source:2", "value")
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        step("oneHotEncode", columns=[ref("c:source:0", "duplicate")]),
+        step("minMaxScale", column=ref("c:source:2", "value")),
+        step("floorNumber", column=ref("c:source:2", "value")),
+        step("ceilNumber", column=ref("c:source:2", "value")),
+    ],
+)
+def test_binding_accepts_categorical_and_numeric_references(operation: dict[str, Any]) -> None:
+    bound = bind_step(operation, SCHEMA, LINEAGE)
+
+    reference = bound["params"].get("column", bound["params"].get("columns", [None])[0])
+    assert reference["position"] in {0, 2}
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        step("multiLabelBinarize", column=ref("c:text", "text"), delimiter="|"),
+        step("findReplace", column=ref("c:text", "text"), find="a", replacement="b"),
+        step("stripText", column=ref("c:text", "text")),
+        step("splitText", column=ref("c:text", "text"), delimiter="-", index=0, newColumn="part"),
+        step("capitalizeText", column=ref("c:text", "text")),
+        step("lowerText", column=ref("c:text", "text")),
+        step("upperText", column=ref("c:text", "text")),
+        step("formatDatetime", column=ref("c:text", "text"), format="%Y"),
+    ],
+)
+def test_binding_accepts_text_and_parseable_datetime_references(operation: dict[str, Any]) -> None:
+    schema = [{"name": "text", "type": "string"}]
+    lineage = [{"id": "c:text", "name": "text"}]
+
+    bound = bind_step(operation, schema, lineage)
+
+    assert bound["params"]["column"]["position"] == 0
+
+
+@pytest.mark.parametrize(
+    ("operation", "schema_type"),
+    [
+        (step("upperText", column=ref("c:value", "value")), "integer"),
+        (step("roundNumber", column=ref("c:value", "value")), "string"),
+        (step("formatDatetime", column=ref("c:value", "value"), format="%Y"), "integer"),
+        (step("oneHotEncode", columns=[ref("c:value", "value")]), "struct"),
+    ],
+)
+def test_binding_preserves_coercive_value_transform_semantics(operation: dict[str, Any], schema_type: str) -> None:
+    schema = [{"name": "value", "type": schema_type}]
+    lineage = [{"id": "c:value", "name": "value"}]
+
+    bound = bind_step(operation, schema, lineage)
+
+    reference = bound["params"].get("column", bound["params"].get("columns", [None])[0])
+    assert reference == {"id": "c:value", "name": "value", "position": 0}
 
 
 def test_binding_recursively_resolves_row_and_order_references() -> None:

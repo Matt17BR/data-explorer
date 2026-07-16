@@ -32,6 +32,13 @@ PageColumnProjection = Sequence[tuple[int, str]]
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 _INTERNAL_ROW_ID_PREFIX_CASEFOLD = INTERNAL_ROW_ID_PREFIX.casefold()
+DEFAULT_STRIP_CHARACTERS = (
+    " \t\n\r\v\f"
+    "\x1c\x1d\x1e\x1f"
+    "\x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
 
 
 def is_internal_row_id_label(value: Any) -> bool:
@@ -412,6 +419,9 @@ def datetime_visualization(minimum: Any, maximum: Any) -> dict[str, Any]:
 def ensure_output_columns_available(existing: Iterable[Any], generated: Iterable[Any], operation: str) -> None:
     existing_names = {str(name) for name in existing}
     generated_names = [str(name) for name in generated]
+    reserved_names = sorted(name for name in generated_names if is_internal_row_id_label(name))
+    if reserved_names:
+        raise EngineError(f"{operation} would create Open Wrangler's reserved private row-identity column.")
     duplicate_names = {name for name, count in Counter(generated_names).items() if count > 1}
     collisions = sorted(duplicate_names | (existing_names & set(generated_names)))
     if collisions:

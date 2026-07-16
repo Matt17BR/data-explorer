@@ -96,7 +96,12 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
         manager,
         session_id,
         revision,
-        step("round-value", "roundNumber", column="value", decimals=0),
+        step(
+            "round-value",
+            "roundNumber",
+            column={"id": "c:source:1", "name": "value"},
+            decimals=0,
+        ),
     )
     revision = apply_step(
         manager,
@@ -239,7 +244,12 @@ def test_step_inspection_marks_a_nonzero_final_block_as_truncated(tmp_path: Path
         manager,
         session_id,
         0,
-        step("round-value", "roundNumber", column="value", decimals=0),
+        step(
+            "round-value",
+            "roundNumber",
+            column={"id": "c:source:0", "name": "value"},
+            decimals=0,
+        ),
     )
 
     inspection = manager.inspect_step(session_id, revision, "round-value", 2, 1)
@@ -283,7 +293,12 @@ def test_step_ids_are_unique_and_inspection_errors_leave_state_unchanged(tmp_pat
         manager.preview_step(
             session_id,
             revision,
-            step("stable-id", "roundNumber", column="value", decimals=0),
+            step(
+                "stable-id",
+                "roundNumber",
+                column={"id": "c:source:0", "name": "value"},
+                decimals=0,
+            ),
             0,
             2,
         )
@@ -306,7 +321,12 @@ def test_step_ids_are_unique_and_inspection_errors_leave_state_unchanged(tmp_pat
         manager,
         session_id,
         revision,
-        step("second-id", "roundNumber", column="value", decimals=0),
+        step(
+            "second-id",
+            "roundNumber",
+            column={"id": "c:source:0", "name": "value"},
+            decimals=0,
+        ),
     )
     session.plan[1]["id"] = "stable-id"
     with pytest.raises(EngineError, match="Applied step ID is not unique: stable-id"):
@@ -342,7 +362,12 @@ def test_step_inspection_serializes_with_plan_mutation(tmp_path: Path) -> None:
         manager,
         session_id,
         0,
-        step("round-value", "roundNumber", column="value", decimals=0),
+        step(
+            "round-value",
+            "roundNumber",
+            column={"id": "c:source:0", "name": "value"},
+            decimals=0,
+        ),
     )
     engine = manager.sessions[session_id].engine
     assert isinstance(engine, BlockingInspectionEngine)

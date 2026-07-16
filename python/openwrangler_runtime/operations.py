@@ -119,10 +119,23 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "castColumn": ("column",),
     "formula": ("leftColumn", "rightColumn"),
     "textLength": ("column",),
+    "multiLabelBinarize": ("column",),
+    "findReplace": ("column",),
+    "stripText": ("column",),
+    "splitText": ("column",),
+    "capitalizeText": ("column",),
+    "lowerText": ("column",),
+    "upperText": ("column",),
+    "minMaxScale": ("column",),
+    "roundNumber": ("column",),
+    "floorNumber": ("column",),
+    "ceilNumber": ("column",),
+    "formatDatetime": ("column",),
 }
 _COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "selectColumns": ("columns",),
     "dropColumns": ("columns",),
+    "oneHotEncode": ("columns",),
 }
 
 
@@ -231,8 +244,12 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     elif kind == "findReplace":
         if not isinstance(params["find"], str) or not isinstance(params["replacement"], str):
             raise OperationError("findReplace.find and replacement must be strings.")
-    elif kind == "stripText" and params.get("characters") is not None and not isinstance(params["characters"], str):
-        raise OperationError("stripText.characters must be a string or null.")
+    elif (
+        kind == "stripText"
+        and params.get("characters") is not None
+        and (not isinstance(params["characters"], str) or not params["characters"])
+    ):
+        raise OperationError("stripText.characters must be a non-empty string or null.")
     elif kind == "splitText":
         if not isinstance(params["delimiter"], str) or not params["delimiter"]:
             raise OperationError("splitText.delimiter must be a non-empty string.")
@@ -291,7 +308,11 @@ def _normalize_column_reference_list(
     if not isinstance(value, list) or (not allow_empty and not value):
         qualifier = "an array" if allow_empty else "a non-empty array"
         raise OperationError(f"{label} must be {qualifier} of column references.")
-    return [_normalize_column_reference(item, f"{label}[{index}]") for index, item in enumerate(value)]
+    normalized = [_normalize_column_reference(item, f"{label}[{index}]") for index, item in enumerate(value)]
+    identifiers = [reference["id"] for reference in normalized]
+    if len(identifiers) != len(set(identifiers)):
+        raise OperationError(f"{label} contains duplicate column identities.")
+    return normalized
 
 
 def _normalize_transform_sort_rules(value: Any, label: str, *, allow_empty: bool) -> list[dict[str, Any]]:
@@ -319,6 +340,7 @@ def _normalize_transform_sort_rules(value: Any, label: str, *, allow_empty: bool
                 "nulls": rule["nulls"],
             }
         )
+    _reject_duplicate_reference_identities((rule["column"] for rule in normalized), label)
     return normalized
 
 
@@ -414,10 +436,24 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
             normalized_filter["valueFilter"] = dict(value_filter)
         filters.append(normalized_filter)
 
+    _reject_duplicate_reference_identities(
+        (column_filter["column"] for column_filter in filters),
+        "filterRows.filterModel.filters",
+    )
+
     normalized: dict[str, Any] = {"filters": filters, "sort": sort}
     if "logic" in value:
         normalized["logic"] = value["logic"]
     return normalized
+
+
+def _reject_duplicate_reference_identities(
+    references: Any,
+    label: str,
+) -> None:
+    identifiers = [reference["id"] for reference in references]
+    if len(identifiers) != len(set(identifiers)):
+        raise OperationError(f"{label} contains duplicate column identities.")
 
 
 def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> None:
@@ -434,17 +470,13 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         )
     elif kind in {"dropMissingRows", "dropDuplicates"}:
         references.extend(("columns.name", item.get("name")) for item in params.get("columns", []))
-    elif kind == "oneHotEncode":
-        references.extend(("columns", name) for name in params.get("columns", []))
-    elif kind in {"selectColumns", "dropColumns"}:
+    elif kind in {"selectColumns", "dropColumns", "oneHotEncode"}:
         references.extend(("columns.name", item.get("name")) for item in params["columns"])
-    elif kind in {"renameColumn", "cloneColumn", "castColumn", "textLength"}:
-        references.append(("column.name", params["column"].get("name")))
-    elif kind == "formula":
-        references.append(("leftColumn.name", params["leftColumn"].get("name")))
-        if "rightColumn" in params:
-            references.append(("rightColumn.name", params["rightColumn"].get("name")))
     elif kind in {
+        "renameColumn",
+        "cloneColumn",
+        "castColumn",
+        "textLength",
         "multiLabelBinarize",
         "findReplace",
         "stripText",
@@ -458,7 +490,11 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "ceilNumber",
         "formatDatetime",
     }:
-        references.append(("column", params["column"]))
+        references.append(("column.name", params["column"].get("name")))
+    elif kind == "formula":
+        references.append(("leftColumn.name", params["leftColumn"].get("name")))
+        if "rightColumn" in params:
+            references.append(("rightColumn.name", params["rightColumn"].get("name")))
     elif kind == "groupBy":
         references.extend(("keys", name) for name in params["keys"])
         for aggregation in params["aggregations"]:

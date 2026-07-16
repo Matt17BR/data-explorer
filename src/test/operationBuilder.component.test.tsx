@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { SessionMetadata } from "../shared/protocol";
+import type { SessionMetadata, TransformStep } from "../shared/protocol";
 import { operationCatalog } from "../shared/operations";
 import { OperationBuilder } from "../webviews/operations/OperationBuilder";
 
@@ -374,6 +374,159 @@ describe("OperationBuilder", () => {
     expect((screen.getByRole("option", { name: "city — column 1" }) as HTMLOptionElement).selected).toBe(true);
   });
 
+  it("fails closed when a saved step has no recorded input schema while leaving cancel usable", () => {
+    const onClose = vi.fn();
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "rename-city",
+      kind: "renameColumn",
+      params: { column: { id: "c:0", name: "city" }, newName: "location" }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={onClose}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("recorded input schema is unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Cancel editing, then reload the session");
+    const preview = screen.getByRole("button", { name: "Preview changes" });
+    expect(preview).toBeDisabled();
+    fireEvent.submit(preview.closest("form") as HTMLFormElement);
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      caseName: "stale single reference",
+      step: {
+        id: "rename-missing",
+        kind: "renameColumn",
+        params: { column: { id: "c:missing", name: "city" }, newName: "location" }
+      },
+      message: "column ID “c:missing”, which is absent"
+    },
+    {
+      caseName: "list reference name mismatch",
+      step: {
+        id: "encode-mismatched",
+        kind: "oneHotEncode",
+        params: { columns: [{ id: "c:0", name: "not-city" }] }
+      },
+      message: "expects column name “not-city” for ID “c:0”"
+    },
+    {
+      caseName: "nested sort reference mismatch",
+      step: {
+        id: "sort-mismatched",
+        kind: "sortRows",
+        params: {
+          rules: [{ column: { id: "c:1", name: "not-sales" }, direction: "asc", nulls: "last" }]
+        }
+      },
+      message: "saved sort rule 1 expects column name “not-sales”"
+    },
+    {
+      caseName: "filter semantic type mismatch",
+      step: {
+        id: "filter-type-mismatched",
+        kind: "filterRows",
+        params: {
+          filterModel: {
+            filters: [{ column: { id: "c:1", name: "sales" }, type: "string", predicates: [] }],
+            sort: []
+          }
+        }
+      },
+      message: "declares type “string”, but its recorded input column has type “float”"
+    },
+    {
+      caseName: "nested filter-step sort mismatch",
+      step: {
+        id: "filter-sort-missing",
+        kind: "filterRows",
+        params: {
+          filterModel: {
+            filters: [],
+            sort: [{ column: { id: "c:missing", name: "other" }, direction: "asc", nulls: "last" }]
+          }
+        }
+      },
+      message: "saved filter-step sort 1 refers to column ID “c:missing”"
+    },
+    {
+      caseName: "nested formula reference mismatch",
+      step: {
+        id: "formula-missing-right",
+        kind: "formula",
+        params: {
+          leftColumn: { id: "c:1", name: "sales" },
+          rightColumn: { id: "c:missing", name: "other" },
+          operator: "add",
+          newColumn: "total"
+        }
+      },
+      message: "saved right formula column refers to column ID “c:missing”"
+    },
+    {
+      caseName: "repeated list identity",
+      step: {
+        id: "encode-repeated",
+        kind: "oneHotEncode",
+        params: {
+          columns: [
+            { id: "c:0", name: "city" },
+            { id: "c:0", name: "city" }
+          ]
+        }
+      },
+      message: "saved column list repeats column ID “c:0”"
+    },
+    {
+      caseName: "repeated nested sort identity",
+      step: {
+        id: "sort-repeated",
+        kind: "sortRows",
+        params: {
+          rules: [
+            { column: { id: "c:1", name: "sales" }, direction: "asc", nulls: "last" },
+            { column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "first" }
+          ]
+        }
+      },
+      message: "saved sort rules repeats column ID “c:1”"
+    }
+  ] satisfies { caseName: string; step: TransformStep; message: string }[])(
+    "blocks editing for a $caseName",
+    ({ step, message }) => {
+      const onClose = vi.fn();
+      const onPreview = vi.fn();
+      render(
+        <OperationBuilder
+          metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [step] }}
+          filterModel={{ filters: [], sort: [] }}
+          initialStep={step}
+          onClose={onClose}
+          onPreview={onPreview}
+        />
+      );
+
+      expect(screen.getByRole("alert")).toHaveTextContent(message);
+      const preview = screen.getByRole("button", { name: "Preview changes" });
+      expect(preview).toBeDisabled();
+      fireEvent.submit(preview.closest("form") as HTMLFormElement);
+      expect(onPreview).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(onClose).toHaveBeenCalledOnce();
+    }
+  );
+
   it("distinguishes duplicate labels by position and edits a structural reference by ID", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [
@@ -608,27 +761,257 @@ describe("OperationBuilder", () => {
     });
   });
 
-  it("leaves categorical selection name-based", () => {
+  it("edits a categorical reference list by stable ID when labels are duplicated", () => {
     const categoricalPreview = vi.fn();
+    const duplicateColumns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+    ];
+    const initialStep: TransformStep = {
+      id: "encode-second-value",
+      kind: "oneHotEncode",
+      params: {
+        columns: [{ id: "c:1", name: "value" }],
+        prefixSeparator: "",
+        dropOriginal: true
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: duplicateColumns,
+          latestStepInputSchema: duplicateColumns,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={categoricalPreview}
+      />
+    );
+    const categoricalSelect = screen.getByLabelText(/Categorical columns/) as HTMLSelectElement;
+    expect(Array.from(categoricalSelect.selectedOptions, (option) => option.value)).toEqual(["c:1"]);
+    expect(Array.from(categoricalSelect.options, (option) => option.text)).toEqual([
+      "value — column 1",
+      "value — column 2"
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(categoricalPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("authors one-hot encoding with an intentionally empty prefix separator", () => {
+    const onPreview = vi.fn();
     render(
       <OperationBuilder
         metadata={metadata}
         filterModel={{ filters: [], sort: [] }}
         initialKind="oneHotEncode"
         onClose={() => undefined}
-        onPreview={categoricalPreview}
+        onPreview={onPreview}
       />
     );
-    const categoricalSelect = screen.getByLabelText(/Categorical columns/) as HTMLSelectElement;
-    categoricalSelect.options[1].selected = true;
-    fireEvent.change(categoricalSelect);
+
+    const columns = screen.getByLabelText("Categorical columns") as HTMLSelectElement;
+    columns.options[0].selected = true;
+    fireEvent.change(columns);
+    fireEvent.change(screen.getByLabelText("Prefix separator"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(categoricalPreview.mock.calls[0][0].params).toEqual({
-      columns: ["sales"],
-      prefixSeparator: "_",
+
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      columns: [{ id: "c:0", name: "city" }],
+      prefixSeparator: "",
       dropOriginal: true
     });
   });
+
+  it("round-trips an intentionally empty multi-label output prefix", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "labels-without-prefix",
+      kind: "multiLabelBinarize",
+      params: {
+        column: { id: "c:0", name: "city" },
+        delimiter: ",",
+        prefix: "",
+        dropOriginal: false
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Output prefix mode")).toHaveValue("custom");
+    expect(screen.getByLabelText("Custom output prefix")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("authors and edits a find/replace step with an empty find pattern", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "replace-empty-boundaries",
+      kind: "findReplace",
+      params: {
+        column: { id: "c:0", name: "city" },
+        find: "",
+        replacement: "-",
+        regex: false
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Find (blank matches empty boundaries)")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it.each([
+    ["omitted", undefined],
+    ["null", null]
+  ] as const)("preserves default whitespace stripping when characters is %s", (_caseName, characters) => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: `strip-${_caseName}`,
+      kind: "stripText",
+      params: {
+        column: { id: "c:0", name: "city" },
+        ...(characters === null ? { characters } : {})
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Characters (blank means whitespace)")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: initialStep.id,
+        kind: "stripText",
+        params: { column: { id: "c:0", name: "city" } }
+      },
+      initialStep.id
+    );
+  });
+
+  it.each([
+    {
+      label: "Labels column",
+      step: {
+        id: "labels",
+        kind: "multiLabelBinarize",
+        params: { column: { id: "c:1", name: "value" }, delimiter: ",", dropOriginal: false }
+      }
+    },
+    {
+      label: "Text column",
+      step: {
+        id: "replace",
+        kind: "findReplace",
+        params: {
+          column: { id: "c:1", name: "value" },
+          find: "before",
+          replacement: "after",
+          regex: false
+        }
+      }
+    },
+    {
+      label: "Text column",
+      step: {
+        id: "strip",
+        kind: "stripText",
+        params: { column: { id: "c:1", name: "value" } }
+      }
+    },
+    {
+      label: "Text column",
+      step: {
+        id: "split",
+        kind: "splitText",
+        params: { column: { id: "c:1", name: "value" }, delimiter: ",", index: 0, newColumn: "part" }
+      }
+    },
+    ...(["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"] as const).map(
+      (kind) => ({
+        label: "Column",
+        step: {
+          id: kind,
+          kind,
+          params: { column: { id: "c:1", name: "value" }, newColumn: `${kind}_result` }
+        }
+      })
+    ),
+    {
+      label: "Numeric column",
+      step: {
+        id: "round",
+        kind: "roundNumber",
+        params: { column: { id: "c:1", name: "value" }, decimals: 2, newColumn: "rounded" }
+      }
+    },
+    {
+      label: "Date or datetime column",
+      step: {
+        id: "format",
+        kind: "formatDatetime",
+        params: { column: { id: "c:1", name: "value" }, format: "%Y-%m-%d", newColumn: "formatted" }
+      }
+    }
+  ] satisfies { label: string; step: TransformStep }[])(
+    "edits $step.kind by saved column ID instead of a duplicate label",
+    ({ label, step }) => {
+      const onPreview = vi.fn();
+      const duplicateColumns = [
+        { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+        { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+      ];
+      render(
+        <OperationBuilder
+          metadata={{
+            ...metadata,
+            schema: duplicateColumns,
+            latestStepInputSchema: duplicateColumns,
+            steps: [step]
+          }}
+          filterModel={{ filters: [], sort: [] }}
+          initialStep={step}
+          onClose={() => undefined}
+          onPreview={onPreview}
+        />
+      );
+
+      const columnSelect = screen.getByLabelText(label) as HTMLSelectElement;
+      expect(columnSelect.value).toBe("c:1");
+      expect(Array.from(columnSelect.options, (option) => option.text)).toEqual([
+        "value — column 1",
+        "value — column 2"
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+      expect(onPreview).toHaveBeenCalledWith(step, step.id);
+    }
+  );
 
   it("builds by-example inputs and reports malformed JSON before preview", () => {
     const onPreview = vi.fn();

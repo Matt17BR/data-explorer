@@ -75,7 +75,7 @@ const metadata: SessionMetadata = {
     ],
     sort: [{ column: "value", direction: "asc", nulls: "last" }]
   },
-  steps: [{ id: "step-1", kind: "roundNumber", params: { column: "value", decimals: 0 } }],
+  steps: [{ id: "step-1", kind: "roundNumber", params: { column: valueReference, decimals: 0 } }],
   latestStepInputSchema: [
     { id: "column:0", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }
   ],
@@ -125,7 +125,10 @@ const responses: OpenWranglerResponse[] = [
   {
     kind: "stepPreview",
     revision: 3,
-    metadata: { ...metadata, draftStep: { id: "draft-1", kind: "floorNumber", params: { column: "value" } } },
+    metadata: {
+      ...metadata,
+      draftStep: { id: "draft-1", kind: "floorNumber", params: { column: valueReference } }
+    },
     page,
     diff: {
       addedRows: 0,
@@ -314,6 +317,33 @@ describe("protocol-v2 response validation", () => {
         outputSchema: [metadata.schema[0], { ...otherColumn, id: metadata.schema[0].id }]
       })
     ).toBe(false);
+  });
+
+  it("requires a recorded latest-step input schema only when applied steps exist", () => {
+    const metadataWithoutLatest = { ...metadata };
+    delete metadataWithoutLatest.latestStepInputSchema;
+
+    expect(
+      isOpenWranglerResponse({
+        kind: "sessionOpened",
+        metadata: metadataWithoutLatest,
+        page,
+        summaries
+      })
+    ).toBe(false);
+
+    expect(
+      isOpenWranglerResponse({
+        kind: "sessionOpened",
+        metadata: {
+          ...metadataWithoutLatest,
+          steps: [],
+          draftStep: { id: "first-draft", kind: "floorNumber", params: { column: valueReference } }
+        },
+        page,
+        summaries
+      })
+    ).toBe(true);
   });
 
   it("rejects malformed pages, rows, and typed cells", () => {
@@ -609,7 +639,7 @@ describe("protocol-v2 request validation", () => {
               predicates: [{ kind: "predicate", operator: "gte", value: 1 }]
             }
           ],
-          sort: [{ column: otherReference, direction: "desc", nulls: "first" }]
+          sort: [{ column: valueReference, direction: "desc", nulls: "first" }]
         }
       }
     },
@@ -630,7 +660,41 @@ describe("protocol-v2 request validation", () => {
       kind: "formula",
       params: { leftColumn: valueReference, operator: "add", rightColumn: otherReference, newColumn: "total" }
     },
-    { id: "length", kind: "textLength", params: { column: { id: "column:2", name: "" }, newColumn: "length" } }
+    { id: "length", kind: "textLength", params: { column: { id: "column:2", name: "" }, newColumn: "length" } },
+    {
+      id: "one-hot",
+      kind: "oneHotEncode",
+      params: {
+        columns: [valueReference, { id: "column:2", name: "value" }],
+        prefixSeparator: "",
+        dropOriginal: true
+      }
+    },
+    {
+      id: "multi-label",
+      kind: "multiLabelBinarize",
+      params: { column: valueReference, delimiter: ",", prefix: "label", dropOriginal: false }
+    },
+    {
+      id: "find-replace",
+      kind: "findReplace",
+      params: { column: valueReference, find: "old", replacement: "new", regex: false }
+    },
+    { id: "strip-null", kind: "stripText", params: { column: valueReference, characters: null } },
+    { id: "strip-omitted", kind: "stripText", params: { column: valueReference } },
+    {
+      id: "split",
+      kind: "splitText",
+      params: { column: valueReference, delimiter: ",", index: 0, newColumn: "first" }
+    },
+    { id: "capitalize", kind: "capitalizeText", params: { column: valueReference } },
+    { id: "lower", kind: "lowerText", params: { column: valueReference, newColumn: "lower" } },
+    { id: "upper", kind: "upperText", params: { column: valueReference } },
+    { id: "scale", kind: "minMaxScale", params: { column: valueReference } },
+    { id: "round", kind: "roundNumber", params: { column: valueReference, decimals: 2 } },
+    { id: "floor", kind: "floorNumber", params: { column: valueReference } },
+    { id: "ceil", kind: "ceilNumber", params: { column: valueReference } },
+    { id: "format", kind: "formatDatetime", params: { column: valueReference, format: "%Y-%m-%d" } }
   ])("accepts canonical column references for $kind", (step) => {
     expect(isTransformStep(step)).toBe(true);
   });
@@ -679,7 +743,70 @@ describe("protocol-v2 request validation", () => {
       id: "rename-name-field",
       kind: "renameColumn",
       params: { columnName: "value", newName: "amount" }
-    }
+    },
+    { id: "one-hot-string", kind: "oneHotEncode", params: { columns: ["value"] } },
+    {
+      id: "one-hot-duplicate-id",
+      kind: "oneHotEncode",
+      params: { columns: [valueReference, { id: valueReference.id, name: "renamed" }] }
+    },
+    {
+      id: "sort-duplicate-id",
+      kind: "sortRows",
+      params: {
+        rules: [
+          { column: valueReference, direction: "asc", nulls: "last" },
+          { column: { id: valueReference.id, name: "renamed" }, direction: "desc", nulls: "first" }
+        ]
+      }
+    },
+    {
+      id: "filter-duplicate-id",
+      kind: "filterRows",
+      params: {
+        filterModel: {
+          filters: [
+            { column: valueReference, type: "integer", predicates: [] },
+            { column: { id: valueReference.id, name: "renamed" }, type: "integer", predicates: [] }
+          ],
+          sort: []
+        }
+      }
+    },
+    {
+      id: "filter-sort-duplicate-id",
+      kind: "filterRows",
+      params: {
+        filterModel: {
+          filters: [],
+          sort: [
+            { column: valueReference, direction: "asc", nulls: "last" },
+            { column: { id: valueReference.id, name: "renamed" }, direction: "desc", nulls: "first" }
+          ]
+        }
+      }
+    },
+    { id: "multi-label-string", kind: "multiLabelBinarize", params: { column: "value", delimiter: "," } },
+    {
+      id: "find-replace-string",
+      kind: "findReplace",
+      params: { column: "value", find: "old", replacement: "new" }
+    },
+    { id: "strip-string", kind: "stripText", params: { column: "value" } },
+    { id: "strip-empty-characters", kind: "stripText", params: { column: valueReference, characters: "" } },
+    {
+      id: "split-string",
+      kind: "splitText",
+      params: { column: "value", delimiter: ",", index: 0, newColumn: "first" }
+    },
+    { id: "capitalize-string", kind: "capitalizeText", params: { column: "value" } },
+    { id: "lower-string", kind: "lowerText", params: { column: "value" } },
+    { id: "upper-string", kind: "upperText", params: { column: "value" } },
+    { id: "scale-string", kind: "minMaxScale", params: { column: "value" } },
+    { id: "round-string", kind: "roundNumber", params: { column: "value" } },
+    { id: "floor-string", kind: "floorNumber", params: { column: "value" } },
+    { id: "ceil-string", kind: "ceilNumber", params: { column: "value" } },
+    { id: "format-string", kind: "formatDatetime", params: { column: "value", format: "%Y" } }
   ])("rejects legacy or malformed column references for $kind", (step) => {
     expect(isTransformStep(step)).toBe(false);
   });

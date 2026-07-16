@@ -120,7 +120,17 @@ def test_group_lineage_preserves_keys_and_creates_deterministic_aggregate_ids() 
 
 def test_generated_output_identities_are_deterministic_for_replay() -> None:
     base = source_lineage(schema("a", "b"))
-    step = {"id": "hot", "kind": "oneHotEncode", "params": {"columns": ["a", "b"]}}
+    step = {
+        "id": "hot",
+        "kind": "oneHotEncode",
+        "params": {
+            "columns": [
+                {"id": "c:source:0", "name": "a", "position": 0},
+                {"id": "c:source:1", "name": "b", "position": 1},
+            ],
+            "dropOriginal": False,
+        },
+    }
     expected = [
         *base,
         {"id": "c:step:hot:0", "name": "a_x"},
@@ -129,6 +139,34 @@ def test_generated_output_identities_are_deterministic_for_replay() -> None:
 
     assert derive_lineage(base, schema("a", "b", "a_x", "b_x"), step) == expected
     assert derive_lineage(base, schema("a", "b", "a_x", "b_x"), step) == expected
+
+
+@pytest.mark.parametrize("kind", ["oneHotEncode", "multiLabelBinarize"])
+@pytest.mark.parametrize(("removed", "surviving_id"), [(0, "c:source:1"), (1, "c:source:0")])
+def test_encoder_drop_original_removes_the_exact_duplicate_identity(
+    kind: str,
+    removed: int,
+    surviving_id: str,
+) -> None:
+    before = source_lineage(schema("duplicate", "duplicate", "value"))
+    reference = {"id": f"c:source:{removed}", "name": "duplicate", "position": removed}
+    operation_params = (
+        {"columns": [reference], "dropOriginal": True}
+        if kind == "oneHotEncode"
+        else {"column": reference, "delimiter": "|", "dropOriginal": True}
+    )
+
+    derived = derive_lineage(
+        before,
+        schema("duplicate", "value", "duplicate_x"),
+        {"id": "encode", "kind": kind, "params": operation_params},
+    )
+
+    assert derived == [
+        {"id": surviving_id, "name": "duplicate"},
+        {"id": "c:source:2", "name": "value"},
+        {"id": "c:step:encode:0", "name": "duplicate_x"},
+    ]
 
 
 def test_schema_with_lineage_rejects_duplicate_identities() -> None:

@@ -37,6 +37,14 @@ def derive_lineage(
         bound_ids = {_reference_id(reference) for reference in references}
         _require_known_ids(candidates, bound_ids)
         candidates = [column for column in candidates if column["id"] not in bound_ids]
+    elif kind == "oneHotEncode" and params.get("dropOriginal", True):
+        bound_ids = {_reference_id(reference) for reference in params["columns"]}
+        _require_known_ids(candidates, bound_ids)
+        candidates = [column for column in candidates if column["id"] not in bound_ids]
+    elif kind == "multiLabelBinarize" and params.get("dropOriginal", False):
+        bound_id = _reference_id(params["column"])
+        _require_known_ids(candidates, {bound_id})
+        candidates = [column for column in candidates if column["id"] != bound_id]
     elif kind == "groupBy":
         by_name = _pools(candidates)
         candidates = []

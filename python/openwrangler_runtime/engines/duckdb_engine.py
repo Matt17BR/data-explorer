@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Any, Literal, cast
 
 from .base import (
+    DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
     EngineCapabilities,
@@ -451,15 +452,24 @@ class DuckDBEngine(DataFrameEngine):
                 f"length(CAST({_quote_ident(column)} AS VARCHAR))",
             )
         if kind == "oneHotEncode":
-            return self._one_hot(frame, params)
+            native_params = {
+                **params,
+                "columns": [bound_column_name(column, kind) for column in params["columns"]],
+            }
+            return self._one_hot(frame, native_params)
         if kind == "multiLabelBinarize":
-            return self._multi_label(frame, params)
+            native_params = {**params, "column": bound_column_name(params["column"], kind)}
+            return self._multi_label(frame, native_params)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
-            return self._text_transform(frame, kind, params)
+            native_params = {**params, "column": bound_column_name(params["column"], kind)}
+            if kind == "stripText" and native_params.get("characters") is None:
+                native_params["characters"] = DEFAULT_STRIP_CHARACTERS
+            return self._text_transform(frame, kind, native_params)
         if kind == "minMaxScale":
-            return self._min_max(frame, params["column"], params.get("newColumn", params["column"]))
+            column = bound_column_name(params["column"], kind)
+            return self._min_max(frame, column, params.get("newColumn", column))
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
             if kind == "roundNumber":
@@ -470,7 +480,7 @@ class DuckDBEngine(DataFrameEngine):
                 expression = f"ceil({value})"
             return self._assign(frame, target, expression)
         if kind == "formatDatetime":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             return self._assign(
                 frame,
                 params.get("newColumn", column),
@@ -588,17 +598,24 @@ class DuckDBEngine(DataFrameEngine):
                 f"'length(CAST(' + _ow_ident({column!r}) + ' AS VARCHAR))')"
             ]
         if kind == "oneHotEncode":
-            return [f"{prefix}df = _ow_one_hot(df, {dict(params)!r})"]
+            native_params = {
+                **params,
+                "columns": [bound_column_name(column, kind) for column in params["columns"]],
+            }
+            return [f"{prefix}df = _ow_one_hot(df, {native_params!r})"]
         if kind == "multiLabelBinarize":
-            return [f"{prefix}df = _ow_multi_label(df, {dict(params)!r})"]
+            native_params = {**params, "column": bound_column_name(params["column"], kind)}
+            return [f"{prefix}df = _ow_multi_label(df, {native_params!r})"]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
-            return [f"{prefix}df = _ow_text(df, {kind!r}, {dict(params)!r})"]
+            native_params = {**params, "column": bound_column_name(params["column"], kind)}
+            if kind == "stripText" and native_params.get("characters") is None:
+                native_params["characters"] = DEFAULT_STRIP_CHARACTERS
+            return [f"{prefix}df = _ow_text(df, {kind!r}, {native_params!r})"]
         if kind == "minMaxScale":
-            return [
-                f"{prefix}df = _ow_min_max(df, {params['column']!r}, {params.get('newColumn', params['column'])!r})"
-            ]
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = _ow_min_max(df, {column!r}, {params.get('newColumn', column)!r})"]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
             expression = (
@@ -608,7 +625,7 @@ class DuckDBEngine(DataFrameEngine):
             )
             return [f"{prefix}df = _ow_assign(df, {target!r}, {expression!r})"]
         if kind == "formatDatetime":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             expression = f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})"
             return [f"{prefix}df = _ow_assign(df, {params.get('newColumn', column)!r}, {expression!r})"]
         if kind == "groupBy":
@@ -791,7 +808,8 @@ class DuckDBEngine(DataFrameEngine):
         valid = _valid_predicate(identifier, types[column])
         rows = self._terminal_rows(
             frame,
-            f"SELECT DISTINCT {identifier} FROM ow WHERE {valid} ORDER BY CAST({identifier} AS VARCHAR)",
+            f"SELECT DISTINCT {identifier} FROM ow WHERE {valid} "
+            f"AND CAST({identifier} AS VARCHAR) <> '' ORDER BY CAST({identifier} AS VARCHAR)",
         )
         return [row[0] for row in rows]
 
@@ -800,14 +818,22 @@ class DuckDBEngine(DataFrameEngine):
         target = params.get("newColumn", column)
         value = f"CAST({_quote_ident(column)} AS VARCHAR)"
         if kind == "findReplace":
-            function = "regexp_replace" if params.get("regex", False) else "replace"
-            suffix = ", 'g'" if params.get("regex", False) else ""
-            expression = (
-                f"{function}({value}, {_sql_literal(params['find'])}, {_sql_literal(params['replacement'])}{suffix})"
-            )
+            if not params.get("regex", False) and params["find"] == "":
+                replacement = _sql_literal(params["replacement"])
+                expression = (
+                    f"CASE WHEN {value} = '' THEN {replacement} ELSE {replacement} || "
+                    f"array_to_string(string_split({value}, ''), {replacement}) || {replacement} END"
+                )
+            else:
+                function = "regexp_replace" if params.get("regex", False) else "replace"
+                suffix = ", 'g'" if params.get("regex", False) else ""
+                expression = (
+                    f"{function}({value}, {_sql_literal(params['find'])}, "
+                    f"{_sql_literal(params['replacement'])}{suffix})"
+                )
         elif kind == "stripText":
-            characters = params.get("characters")
-            expression = f"trim({value})" if characters is None else f"trim({value}, {_sql_literal(characters)})"
+            characters = params.get("characters") or DEFAULT_STRIP_CHARACTERS
+            expression = f"trim({value}, {_sql_literal(characters)})"
         elif kind == "splitText":
             expression = f"string_split({value}, {_sql_literal(params['delimiter'])})[{int(params['index']) + 1}]"
         elif kind == "capitalizeText":
@@ -1388,6 +1414,8 @@ def _ow_drop_duplicates(df, columns, keep):
 
 def _ow_check_outputs(existing, generated, operation):
     generated = [str(name) for name in generated]
+    if any(name.casefold().startswith('__open_wrangler_internal_row_id_') for name in generated):
+        raise ValueError(operation + " would create Open Wrangler's reserved private row-identity column.")
     duplicates = {name for name, count in Counter(generated).items() if count > 1}
     collisions = sorted(duplicates | (set(map(str, existing)) & set(generated)))
     if collisions:
@@ -1404,7 +1432,8 @@ def _ow_one_hot(df, params):
         values = _ow_query(
             df,
             "SELECT DISTINCT " + identifier + " FROM ow WHERE "
-            + _ow_valid(identifier, types[column]) + " ORDER BY CAST(" + identifier + " AS VARCHAR)",
+            + _ow_valid(identifier, types[column]) + " AND CAST(" + identifier
+            + " AS VARCHAR) <> '' ORDER BY CAST(" + identifier + " AS VARCHAR)",
         ).fetchall()
         generated.extend((column, row[0], str(column) + separator + str(row[0])) for row in values)
     generated.sort(key=lambda item: item[2])
@@ -1451,7 +1480,14 @@ def _ow_text(df, kind, params):
     target = params.get("newColumn", column)
     value = "CAST(" + _ow_ident(column) + " AS VARCHAR)"
     if kind == "findReplace":
-        if params.get("regex", False):
+        if not params.get("regex", False) and params["find"] == "":
+            replacement = _ow_literal(params["replacement"])
+            expression = (
+                "CASE WHEN " + value + " = '' THEN " + replacement
+                + " ELSE " + replacement + " || array_to_string(string_split("
+                + value + ", ''), " + replacement + ") || " + replacement + " END"
+            )
+        elif params.get("regex", False):
             expression = (
                 "regexp_replace(" + value + ", " + _ow_literal(params["find"])
                 + ", " + _ow_literal(params["replacement"]) + ", 'g')"

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .base import (
+    DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
     EngineCapabilities,
@@ -386,30 +387,52 @@ class PandasEngine(DataFrameEngine):
             result = df.iloc[:, position].astype("string").str.len()
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "oneHotEncode":
-            columns = params["columns"]
-            encoded = pd.get_dummies(df[columns], prefix_sep=params.get("prefixSeparator", "_"), dtype="int8")
-            encoded = encoded.loc[:, encoded.ne(0).any(axis=0)]
-            encoded = encoded.loc[:, sorted(encoded.columns, key=str)]
-            base = df.drop(columns=columns) if params.get("dropOriginal", True) else df
+            positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
+            names = [bound_column_name(column, kind) for column in params["columns"]]
+            separator = params.get("prefixSeparator", "_")
+            encoded_parts = []
+            for position, name in zip(positions, names, strict=True):
+                series = df.iloc[:, position]
+                values = sorted(pd.unique(series[series.notna()]), key=str)
+                encoded_parts.extend(
+                    series.eq(value).fillna(False).astype("int8").rename(f"{name}{separator}{value}")
+                    for value in values
+                    if str(value)
+                )
+            encoded = pd.concat(encoded_parts, axis=1) if encoded_parts else pd.DataFrame(index=df.index)
+            encoded = encoded.iloc[
+                :, sorted(range(encoded.shape[1]), key=lambda position: str(encoded.columns[position]))
+            ]
+            base = (
+                df.iloc[:, [position for position in range(df.shape[1]) if position not in set(positions)]].copy()
+                if params.get("dropOriginal", True)
+                else df
+            )
             ensure_output_columns_available(base.columns, encoded.columns, "One-hot encoding")
             return pd.concat([base, encoded], axis=1)
         if kind == "multiLabelBinarize":
-            column = params["column"]
-            encoded = df[column].fillna("").astype(str).str.get_dummies(sep=params["delimiter"])
+            position = self._bound_frame_position(df, params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            encoded = df.iloc[:, position].astype("string").fillna("").str.get_dummies(sep=params["delimiter"])
             encoded = encoded.loc[:, [str(name) != "" for name in encoded.columns]]
-            encoded = encoded.loc[:, sorted(encoded.columns, key=str)]
+            encoded = encoded.iloc[:, sorted(range(encoded.shape[1]), key=lambda item: str(encoded.columns[item]))]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")
-            base = df.drop(columns=[column]) if params.get("dropOriginal", False) else df
+            base = (
+                df.iloc[:, [item for item in range(df.shape[1]) if item != position]].copy()
+                if params.get("dropOriginal", False)
+                else df
+            )
             ensure_output_columns_available(base.columns, encoded.columns, "Multi-label binarization")
             return pd.concat([base, encoded], axis=1)
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
-            column = params["column"]
-            target = params.get("newColumn", column)
-            series = df[column].astype("string")
+            position = self._bound_frame_position(df, params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
+            series = df.iloc[:, position].astype("string")
             if kind == "findReplace":
                 result = series.str.replace(params["find"], params["replacement"], regex=params.get("regex", False))
             elif kind == "stripText":
-                result = series.str.strip(params.get("characters"))
+                result = series.str.strip(params.get("characters") or DEFAULT_STRIP_CHARACTERS)
             elif kind == "splitText":
                 result = series.str.split(params["delimiter"], regex=False).str.get(params["index"])
             elif kind == "capitalizeText":
@@ -418,32 +441,48 @@ class PandasEngine(DataFrameEngine):
                 result = series.map(str.lower, na_action="ignore")
             else:
                 result = series.map(str.upper, na_action="ignore")
-            df[target] = result
-            return df
+            if target is None or target == column:
+                df.isetitem(position, result)
+                return df
+            return pd.concat([df, result.rename(target)], axis=1)
         if kind == "minMaxScale":
-            column = params["column"]
-            series: Any = pd.to_numeric(df[column], errors="coerce")
+            position = self._bound_frame_position(df, params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
+            series: Any = pd.to_numeric(df.iloc[:, position], errors="coerce")
             finite = series.where(np.isfinite(series))
             span = finite.max() - finite.min()
-            df[params.get("newColumn", column)] = (
+            result = (
                 (finite - finite.min()) / span if pd.notna(span) and span != 0 else finite.where(finite.isna(), 0.0)
             )
-            return df
+            if target is None or target == column:
+                df.isetitem(position, result)
+                return df
+            return pd.concat([df, result.rename(target)], axis=1)
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
-            column = params["column"]
-            target = params.get("newColumn", column)
-            series: Any = pd.to_numeric(df[column], errors="coerce")
+            position = self._bound_frame_position(df, params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
+            series: Any = pd.to_numeric(df.iloc[:, position], errors="coerce")
             if kind == "roundNumber":
-                df[target] = series.round(params.get("decimals", 0))
+                result = series.round(params.get("decimals", 0))
             elif kind == "floorNumber":
-                df[target] = np.floor(series)
+                result = np.floor(series)
             else:
-                df[target] = np.ceil(series)
-            return df
+                result = np.ceil(series)
+            if target is None or target == column:
+                df.isetitem(position, result)
+                return df
+            return pd.concat([df, result.rename(target)], axis=1)
         if kind == "formatDatetime":
-            target = params.get("newColumn", params["column"])
-            df[target] = pd.to_datetime(df[params["column"]], errors="coerce").dt.strftime(params["format"])
-            return df
+            position = self._bound_frame_position(df, params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
+            result = pd.to_datetime(df.iloc[:, position], errors="coerce").dt.strftime(params["format"])
+            if target is None or target == column:
+                df.isetitem(position, result)
+                return df
+            return pd.concat([df, result.rename(target)], axis=1)
         if kind == "groupBy":
             named = {
                 aggregation["alias"]: (
@@ -758,20 +797,48 @@ class PandasEngine(DataFrameEngine):
                 f".rename({params['newColumn']!r})], axis=1)"
             ]
         if kind == "oneHotEncode":
-            columns = params["columns"]
+            positions = [bound_column_position(column, kind) for column in params["columns"]]
+            names = [bound_column_name(column, kind) for column in params["columns"]]
+            pairs = list(zip(positions, names, strict=True))
+            parts = f"_encoded_parts_{index}"
+            series = f"_encoded_series_{index}"
+            values = f"_encoded_values_{index}"
             name = f"_encoded_{index}"
             base = f"_base_{index}"
             generated = f"_generated_{index}"
             collisions = f"_collisions_{index}"
+            reserved = f"_reserved_{index}"
+            order = f"_encoded_order_{index}"
             return [
+                f"{prefix}{parts} = []",
+                f"{prefix}for _position_{index}, _column_{index} in {pairs!r}:",
+                f"{prefix}    {series} = df.iloc[:, _position_{index}]",
+                f"{prefix}    {values} = sorted(pd.unique({series}[{series}.notna()]), key=str)",
+                f"{prefix}    {parts}.extend(",
+                f"{prefix}        {series}.eq(value).fillna(False).astype('int8')",
                 (
-                    f"{prefix}{name} = pd.get_dummies(df[{columns!r}], "
-                    f"prefix_sep={params.get('prefixSeparator', '_')!r}, dtype='int8')"
+                    f"{prefix}        .rename(str(_column_{index}) + "
+                    f"{params.get('prefixSeparator', '_')!r} + str(value))"
                 ),
-                f"{prefix}{name} = {name}.loc[:, {name}.ne(0).any(axis=0)]",
-                f"{prefix}{name} = {name}.loc[:, sorted({name}.columns, key=str)]",
-                f"{prefix}{base} = df.drop(columns={columns!r}) if {params.get('dropOriginal', True)!r} else df",
+                f"{prefix}        for value in {values} if str(value)",
+                f"{prefix}    )",
+                f"{prefix}{name} = pd.concat({parts}, axis=1) if {parts} else pd.DataFrame(index=df.index)",
+                f"{prefix}{order} = sorted(range({name}.shape[1]), key=lambda position: str({name}.columns[position]))",
+                f"{prefix}{name} = {name}.iloc[:, {order}]",
+                (
+                    f"{prefix}{base} = df.iloc[:, [position for position in range(df.shape[1]) "
+                    f"if position not in {positions!r}]].copy() if {params.get('dropOriginal', True)!r} else df"
+                ),
                 f"{prefix}{generated} = [str(column) for column in {name}.columns]",
+                (
+                    f"{prefix}{reserved} = [column for column in {generated} "
+                    f"if column.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError("
+                    f'"One-hot encoding would create Open Wrangler\'s reserved private row-identity column.")'
+                ),
                 (
                     f"{prefix}{collisions} = sorted((set(map(str, {base}.columns)) & set({generated})) | "
                     f"{{column for column, count in Counter({generated}).items() if count > 1}})"
@@ -784,18 +851,37 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
             ]
         if kind == "multiLabelBinarize":
-            column = params["column"]
+            position = bound_column_position(params["column"], kind)
+            column = bound_column_name(params["column"], kind)
             name = f"_encoded_{index}"
             base = f"_base_{index}"
             generated = f"_generated_{index}"
             collisions = f"_collisions_{index}"
+            reserved = f"_reserved_{index}"
+            order = f"_encoded_order_{index}"
             return [
-                f"{prefix}{name} = df[{column!r}].fillna('').astype(str).str.get_dummies(sep={params['delimiter']!r})",
+                (
+                    f"{prefix}{name} = df.iloc[:, {position}].astype('string').fillna('')"
+                    f".str.get_dummies(sep={params['delimiter']!r})"
+                ),
                 f"{prefix}{name} = {name}.loc[:, [str(column) != '' for column in {name}.columns]]",
-                f"{prefix}{name} = {name}.loc[:, sorted({name}.columns, key=str)]",
+                f"{prefix}{order} = sorted(range({name}.shape[1]), key=lambda item: str({name}.columns[item]))",
+                f"{prefix}{name} = {name}.iloc[:, {order}]",
                 f"{prefix}{name} = {name}.add_prefix({params.get('prefix', f'{column}_')!r}).astype('int8')",
-                f"{prefix}{base} = df.drop(columns={[column]!r}) if {params.get('dropOriginal', False)!r} else df",
+                (
+                    f"{prefix}{base} = df.iloc[:, [item for item in range(df.shape[1]) if item != {position}]].copy() "
+                    f"if {params.get('dropOriginal', False)!r} else df"
+                ),
                 f"{prefix}{generated} = [str(column) for column in {name}.columns]",
+                (
+                    f"{prefix}{reserved} = [column for column in {generated} "
+                    f"if column.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError("
+                    f'"Multi-label binarization would create Open Wrangler\'s reserved private row-identity column.")'
+                ),
                 (
                     f"{prefix}{collisions} = sorted((set(map(str, {base}.columns)) & set({generated})) | "
                     f"{{column for column, count in Counter({generated}).items() if count > 1}})"
@@ -808,55 +894,67 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
-            column = params["column"]
-            target = params.get("newColumn", column)
-            base = f"df[{column!r}].astype('string').str"
+            position = bound_column_position(params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
+            base = f"df.iloc[:, {position}].astype('string').str"
             if kind == "findReplace":
                 expression = (
                     f"{base}.replace({params['find']!r}, {params['replacement']!r}, "
                     f"regex={params.get('regex', False)!r})"
                 )
             elif kind == "stripText":
-                expression = f"{base}.strip({params.get('characters')!r})"
+                expression = f"{base}.strip({params.get('characters') or DEFAULT_STRIP_CHARACTERS!r})"
             elif kind == "splitText":
                 expression = f"{base}.split({params['delimiter']!r}, regex=False).str.get({params['index']!r})"
             else:
                 method = {"capitalizeText": "capitalize", "lowerText": "lower", "upperText": "upper"}[kind]
-                expression = f"df[{column!r}].astype('string').map(str.{method}, na_action='ignore')"
-            return [f"{prefix}df[{target!r}] = {expression}"]
+                expression = f"df.iloc[:, {position}].astype('string').map(str.{method}, na_action='ignore')"
+            if target is None or target == column:
+                return [f"{prefix}df.isetitem({position}, {expression})"]
+            return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
         if kind == "minMaxScale":
-            column = params["column"]
-            target = params.get("newColumn", column)
+            position = bound_column_position(params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
             name = f"_series_{index}"
-            return [
-                f"{prefix}{name} = pd.to_numeric(df[{column!r}], errors='coerce')",
+            result = f"_scaled_{index}"
+            lines = [
+                f"{prefix}{name} = pd.to_numeric(df.iloc[:, {position}], errors='coerce')",
                 f"{prefix}{name} = {name}.where(np.isfinite({name}))",
                 f"{prefix}_span_{index} = {name}.max() - {name}.min()",
                 (
-                    f"{prefix}df[{target!r}] = (({name} - {name}.min()) / _span_{index} "
+                    f"{prefix}{result} = (({name} - {name}.min()) / _span_{index} "
                     f"if pd.notna(_span_{index}) and _span_{index} != 0 "
                     f"else {name}.where({name}.isna(), 0.0))"
                 ),
             ]
+            if target is None or target == column:
+                return [*lines, f"{prefix}df.isetitem({position}, {result})"]
+            return [*lines, f"{prefix}df = pd.concat([df, {result}.rename({target!r})], axis=1)"]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
-            column = params["column"]
-            target = params.get("newColumn", column)
+            position = bound_column_position(params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
             expression = (
-                f"pd.to_numeric(df[{column!r}], errors='coerce').round({params.get('decimals', 0)!r})"
+                f"pd.to_numeric(df.iloc[:, {position}], errors='coerce').round({params.get('decimals', 0)!r})"
                 if kind == "roundNumber"
                 else (
-                    f"np.{'floor' if kind == 'floorNumber' else 'ceil'}(pd.to_numeric(df[{column!r}], errors='coerce'))"
+                    f"np.{'floor' if kind == 'floorNumber' else 'ceil'}("
+                    f"pd.to_numeric(df.iloc[:, {position}], errors='coerce'))"
                 )
             )
-            return [f"{prefix}df[{target!r}] = {expression}"]
+            if target is None or target == column:
+                return [f"{prefix}df.isetitem({position}, {expression})"]
+            return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
         if kind == "formatDatetime":
-            target = params.get("newColumn", params["column"])
-            return [
-                (
-                    f"{prefix}df[{target!r}] = pd.to_datetime(df[{params['column']!r}], "
-                    f"errors='coerce').dt.strftime({params['format']!r})"
-                )
-            ]
+            position = bound_column_position(params["column"], kind)
+            column = bound_column_name(params["column"], kind)
+            target = params.get("newColumn")
+            expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce').dt.strftime({params['format']!r})"
+            if target is None or target == column:
+                return [f"{prefix}df.isetitem({position}, {expression})"]
+            return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
         if kind == "groupBy":
             named = {
                 aggregation["alias"]: (

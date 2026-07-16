@@ -372,8 +372,16 @@
       "required": ["filters", "sort"],
       "properties": {
         "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
-        "filters": { "type": "array", "items": { "$ref": "#/definitions/TransformColumnFilter" } },
-        "sort": { "type": "array", "items": { "$ref": "#/definitions/TransformSortRule" } }
+        "filters": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/TransformColumnFilter" }
+        },
+        "sort": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/TransformSortRule" }
+        }
       }
     },
     "OperationKind": {
@@ -428,6 +436,7 @@
     "NonEmptyColumnReferenceArray": {
       "type": "array",
       "minItems": 1,
+      "uniqueItems": true,
       "items": { "$ref": "#/definitions/ColumnReference" }
     },
     "SortRowsParams": {
@@ -435,7 +444,12 @@
       "additionalProperties": false,
       "required": ["rules"],
       "properties": {
-        "rules": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/TransformSortRule" } }
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/TransformSortRule" }
+        }
       }
     },
     "FilterRowsParams": {
@@ -448,7 +462,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "columns": { "type": "array", "items": { "$ref": "#/definitions/ColumnReference" } },
+        "columns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/ColumnReference" }
+        },
         "how": { "type": "string", "enum": ["any", "all"] }
       }
     },
@@ -511,7 +529,7 @@
       "additionalProperties": false,
       "required": ["columns"],
       "properties": {
-        "columns": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "columns": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" },
         "prefixSeparator": { "type": "string" },
         "dropOriginal": { "type": "boolean" }
       }
@@ -521,7 +539,7 @@
       "additionalProperties": false,
       "required": ["column", "delimiter"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "delimiter": { "type": "string", "minLength": 1 },
         "prefix": { "type": "string" },
         "dropOriginal": { "type": "boolean" }
@@ -532,7 +550,7 @@
       "additionalProperties": false,
       "required": ["column", "find", "replacement"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "find": { "type": "string" },
         "replacement": { "type": "string" },
         "regex": { "type": "boolean" },
@@ -544,8 +562,8 @@
       "additionalProperties": false,
       "required": ["column"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
-        "characters": { "type": ["string", "null"] },
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "characters": { "type": ["string", "null"], "minLength": 1 },
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },
@@ -554,7 +572,7 @@
       "additionalProperties": false,
       "required": ["column", "delimiter", "index", "newColumn"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "delimiter": { "type": "string", "minLength": 1 },
         "index": { "type": "integer", "minimum": 0 },
         "newColumn": { "type": "string", "minLength": 1 }
@@ -565,7 +583,7 @@
       "additionalProperties": false,
       "required": ["column"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },
@@ -574,7 +592,7 @@
       "additionalProperties": false,
       "required": ["column"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "decimals": { "type": "integer" },
         "newColumn": { "type": "string", "minLength": 1 }
       }
@@ -584,7 +602,7 @@
       "additionalProperties": false,
       "required": ["column", "format"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "format": { "type": "string", "minLength": 1 },
         "newColumn": { "type": "string", "minLength": 1 }
       }

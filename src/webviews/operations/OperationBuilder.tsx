@@ -25,6 +25,148 @@ interface OperationBuilderProps {
 const formulaOperators = ["add", "subtract", "multiply", "divide", "modulo", "power"] as const;
 const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"];
 
+interface SavedReferenceCheck {
+  label: string;
+  reference: ColumnReference;
+  expectedType?: ColumnSchema["type"];
+}
+
+interface SavedReferenceGroup {
+  label: string;
+  references: SavedReferenceCheck[];
+  rejectRepeatedIds: boolean;
+}
+
+function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
+  switch (step.kind) {
+    case "sortRows":
+      return [
+        {
+          label: "sort rules",
+          references: step.params.rules.map((rule, index) => ({
+            label: `sort rule ${index + 1}`,
+            reference: rule.column
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
+    case "filterRows":
+      return [
+        {
+          label: "filters",
+          references: step.params.filterModel.filters.map((filter, index) => ({
+            label: `filter ${index + 1}`,
+            reference: filter.column,
+            expectedType: filter.type
+          })),
+          rejectRepeatedIds: true
+        },
+        {
+          label: "filter-step sorts",
+          references: step.params.filterModel.sort.map((rule, index) => ({
+            label: `filter-step sort ${index + 1}`,
+            reference: rule.column
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
+    case "dropMissingRows":
+    case "dropDuplicates":
+      return [
+        {
+          label: "column list",
+          references: (step.params.columns ?? []).map((reference, index) => ({
+            label: `column ${index + 1}`,
+            reference
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
+    case "selectColumns":
+    case "dropColumns":
+    case "oneHotEncode":
+      return [
+        {
+          label: "column list",
+          references: step.params.columns.map((reference, index) => ({
+            label: `column ${index + 1}`,
+            reference
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
+    case "formula":
+      return [
+        {
+          label: "formula operands",
+          references: [
+            { label: "left formula column", reference: step.params.leftColumn },
+            ...(step.params.rightColumn ? [{ label: "right formula column", reference: step.params.rightColumn }] : [])
+          ],
+          rejectRepeatedIds: false
+        }
+      ];
+    case "renameColumn":
+    case "cloneColumn":
+    case "castColumn":
+    case "textLength":
+    case "multiLabelBinarize":
+    case "findReplace":
+    case "stripText":
+    case "splitText":
+    case "capitalizeText":
+    case "lowerText":
+    case "upperText":
+    case "minMaxScale":
+    case "roundNumber":
+    case "floorNumber":
+    case "ceilNumber":
+    case "formatDatetime":
+      return [
+        {
+          label: "input column",
+          references: [{ label: "input column", reference: step.params.column }],
+          rejectRepeatedIds: false
+        }
+      ];
+    default:
+      return [];
+  }
+}
+
+function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | undefined): string | undefined {
+  const recovery = "Cancel editing, then reload the session or undo and recreate this step.";
+  if (!inputSchema) {
+    return `This saved step cannot be edited safely because its recorded input schema is unavailable. ${recovery}`;
+  }
+
+  const columnsById = new Map(inputSchema.map((column) => [column.id, column]));
+  if (columnsById.size !== inputSchema.length) {
+    return `This saved step cannot be edited safely because its recorded input schema contains duplicate column IDs. ${recovery}`;
+  }
+
+  for (const group of savedReferenceGroups(step)) {
+    const seenIds = new Set<string>();
+    for (const check of group.references) {
+      const column = columnsById.get(check.reference.id);
+      if (!column) {
+        return `The saved ${check.label} refers to column ID “${check.reference.id}”, which is absent from the recorded input schema. ${recovery}`;
+      }
+      if (column.name !== check.reference.name) {
+        return `The saved ${check.label} expects column name “${check.reference.name}” for ID “${check.reference.id}”, but the recorded input schema names it “${column.name}”. ${recovery}`;
+      }
+      if (check.expectedType !== undefined && column.type !== check.expectedType) {
+        return `The saved ${check.label} declares type “${check.expectedType}”, but its recorded input column has type “${column.type}”. ${recovery}`;
+      }
+      if (group.rejectRepeatedIds && seenIds.has(check.reference.id)) {
+        return `The saved ${group.label} repeats column ID “${check.reference.id}”. ${recovery}`;
+      }
+      seenIds.add(check.reference.id);
+    }
+  }
+  return undefined;
+}
+
 export function OperationBuilder({
   metadata,
   filterModel,
@@ -49,18 +191,18 @@ export function OperationBuilder({
       : operationCatalog;
   }, [search]);
   const activeInitial = initialStep?.kind === selectedKind ? initialStep : undefined;
-  const availableColumns =
-    activeInitial && metadata.latestStepInputSchema ? metadata.latestStepInputSchema : metadata.schema;
+  const availableColumns = initialStep ? (metadata.latestStepInputSchema ?? []) : metadata.schema;
+  const editPreflightError = initialStep ? savedStepEditError(initialStep, metadata.latestStepInputSchema) : undefined;
   const savedFilterModel = activeInitial?.kind === "filterRows" ? activeInitial.params.filterModel : undefined;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy || !selectedKind) return;
+    if (busy || !selectedKind || editPreflightError) return;
     try {
       const form = new FormData(event.currentTarget);
       const params = buildParams(selectedKind, form, filterModel, availableColumns, savedFilterModel);
       const step = {
-        id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
+        id: initialStep?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
         kind: selectedKind,
         params
       };
@@ -68,7 +210,7 @@ export function OperationBuilder({
         throw new Error("The operation contains invalid or incomplete parameters.");
       }
       setFormError(undefined);
-      onPreview(step, activeInitial?.id);
+      onPreview(step, initialStep?.id);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
     }
@@ -89,7 +231,7 @@ export function OperationBuilder({
       >
         <header className="operationDialogHeader">
           <div>
-            <strong id="operation-dialog-title">{activeInitial ? "Edit cleaning step" : "Add cleaning step"}</strong>
+            <strong id="operation-dialog-title">{initialStep ? "Edit cleaning step" : "Add cleaning step"}</strong>
             <span role="status" aria-live="polite">
               {busy ? "Previewing changes…" : "Every step is previewed before it changes the cleaning plan."}
             </span>
@@ -149,21 +291,29 @@ export function OperationBuilder({
                     <p>{operationByKind(selectedKind).description}</p>
                   </div>
                 </div>
-                <OperationFields
-                  kind={selectedKind}
-                  metadata={metadata}
-                  columns={availableColumns}
-                  filterModel={filterModel}
-                  initialStep={activeInitial}
-                  sortRows={sortRows}
-                  aggregationRows={aggregationRows}
-                  onAddSort={() => setSortRows((count) => count + 1)}
-                  onAddAggregation={() => setAggregationRows((count) => count + 1)}
-                />
-                {formError && (
+                {editPreflightError ? (
                   <p className="operationFormError" role="alert">
-                    {formError}
+                    {editPreflightError}
                   </p>
+                ) : (
+                  <>
+                    <OperationFields
+                      kind={selectedKind}
+                      metadata={metadata}
+                      columns={availableColumns}
+                      filterModel={filterModel}
+                      initialStep={activeInitial}
+                      sortRows={sortRows}
+                      aggregationRows={aggregationRows}
+                      onAddSort={() => setSortRows((count) => count + 1)}
+                      onAddAggregation={() => setAggregationRows((count) => count + 1)}
+                    />
+                    {formError && (
+                      <p className="operationFormError" role="alert">
+                        {formError}
+                      </p>
+                    )}
+                  </>
                 )}
                 <footer className="operationFormActions">
                   <button type="button" className="secondaryButton" onClick={onClose}>
@@ -172,9 +322,10 @@ export function OperationBuilder({
                   <button
                     type="submit"
                     disabled={
-                      selectedKind === "filterRows" &&
-                      (savedFilterModel ?? filterModel).filters.length === 0 &&
-                      (savedFilterModel ?? filterModel).sort.length === 0
+                      editPreflightError !== undefined ||
+                      (selectedKind === "filterRows" &&
+                        (savedFilterModel ?? filterModel).filters.length === 0 &&
+                        (savedFilterModel ?? filterModel).sort.length === 0)
                     }
                   >
                     Preview changes
@@ -220,6 +371,9 @@ function OperationFields({
 }: OperationFieldsProps) {
   const params = initialStep?.params ?? {};
   const [formulaOperandMode, setFormulaOperandMode] = useState(params.rightColumn ? "column" : "value");
+  const [multiLabelPrefixMode, setMultiLabelPrefixMode] = useState(
+    Object.prototype.hasOwnProperty.call(params, "prefix") ? "custom" : "default"
+  );
   const param = (name: string, fallback = "") => String(params[name] ?? fallback);
   const columnNames = columns.map((column) => column.name);
   const initialColumns = (name: string) => (Array.isArray(params[name]) ? (params[name] as string[]) : []);
@@ -359,18 +513,13 @@ function OperationFields({
   if (kind === "oneHotEncode") {
     return (
       <>
-        <ColumnsSelect
+        <ColumnReferencesSelect
           name="columns"
           label="Categorical columns"
-          columns={columnNames}
-          defaultValue={initialColumns("columns")}
+          columns={columns}
+          defaultValue={initialColumnReferences("columns")}
         />
-        <TextField
-          name="prefixSeparator"
-          label="Prefix separator"
-          defaultValue={param("prefixSeparator", "_")}
-          required
-        />
+        <TextField name="prefixSeparator" label="Prefix separator" defaultValue={param("prefixSeparator", "_")} />
         <CheckboxField
           name="dropOriginal"
           label="Drop original columns"
@@ -466,14 +615,27 @@ function OperationFields({
   if (kind === "multiLabelBinarize") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Labels column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
-        <TextField name="prefix" label="Output prefix" defaultValue={param("prefix")} />
+        <label className="formField">
+          <span>Output prefix mode</span>
+          <select
+            name="prefixMode"
+            value={multiLabelPrefixMode}
+            onChange={(event) => setMultiLabelPrefixMode(event.target.value)}
+          >
+            <option value="default">Default (column name + _)</option>
+            <option value="custom">Custom (blank means none)</option>
+          </select>
+        </label>
+        {multiLabelPrefixMode === "custom" && (
+          <TextField name="prefix" label="Custom output prefix" defaultValue={param("prefix")} />
+        )}
         <CheckboxField name="dropOriginal" label="Drop original column" defaultChecked={params.dropOriginal === true} />
       </>
     );
@@ -481,13 +643,13 @@ function OperationFields({
   if (kind === "findReplace") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
-        <TextField name="find" label="Find" defaultValue={param("find")} required />
+        <TextField name="find" label="Find (blank matches empty boundaries)" defaultValue={param("find")} />
         <TextField name="replacement" label="Replace with" defaultValue={param("replacement")} />
         <CheckboxField name="regex" label="Use regular expression" defaultChecked={params.regex === true} />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
@@ -497,11 +659,11 @@ function OperationFields({
   if (kind === "stripText") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
         <TextField name="characters" label="Characters (blank means whitespace)" defaultValue={param("characters")} />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
@@ -511,11 +673,11 @@ function OperationFields({
   if (kind === "splitText") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
         <TextField name="index" label="Part index" type="number" min={0} defaultValue={param("index", "0")} required />
@@ -526,11 +688,11 @@ function OperationFields({
   if (["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
       </>
@@ -539,11 +701,11 @@ function OperationFields({
   if (kind === "roundNumber") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Numeric column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
         <TextField
           name="decimals"
@@ -559,11 +721,11 @@ function OperationFields({
   if (kind === "formatDatetime") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="column"
           label="Date or datetime column"
-          columns={columnNames}
-          defaultValue={param("column", columnNames[0])}
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
         />
         <TextField name="format" label="strftime format" defaultValue={param("format", "%Y-%m-%d")} required />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
@@ -696,7 +858,7 @@ function buildParams(
   if (kind === "selectColumns" || kind === "dropColumns") return { columns: columnReferences("columns") };
   if (kind === "oneHotEncode")
     return {
-      columns: form.getAll("columns").map(String),
+      columns: columnReferences("columns"),
       prefixSeparator: value("prefixSeparator"),
       dropOriginal: form.has("dropOriginal")
     };
@@ -716,16 +878,16 @@ function buildParams(
   if (kind === "textLength") return { column: columnReference("column"), newColumn: value("newColumn") };
   if (kind === "multiLabelBinarize") {
     const params: Record<string, unknown> = {
-      column: value("column"),
+      column: columnReference("column"),
       delimiter: value("delimiter"),
       dropOriginal: form.has("dropOriginal")
     };
-    optional(params, "prefix");
+    if (value("prefixMode") === "custom") params.prefix = value("prefix");
     return params;
   }
   if (kind === "findReplace") {
     const params: Record<string, unknown> = {
-      column: value("column"),
+      column: columnReference("column"),
       find: value("find"),
       replacement: value("replacement"),
       regex: form.has("regex")
@@ -734,30 +896,33 @@ function buildParams(
     return params;
   }
   if (kind === "stripText") {
-    const params: Record<string, unknown> = { column: value("column") };
+    const params: Record<string, unknown> = { column: columnReference("column") };
     optional(params, "characters");
     optional(params, "newColumn");
     return params;
   }
   if (kind === "splitText")
     return {
-      column: value("column"),
+      column: columnReference("column"),
       delimiter: value("delimiter"),
       index: Number(value("index")),
       newColumn: value("newColumn")
     };
   if (["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
-    const params: Record<string, unknown> = { column: value("column") };
+    const params: Record<string, unknown> = { column: columnReference("column") };
     optional(params, "newColumn");
     return params;
   }
   if (kind === "roundNumber") {
-    const params: Record<string, unknown> = { column: value("column"), decimals: Number(value("decimals")) };
+    const params: Record<string, unknown> = {
+      column: columnReference("column"),
+      decimals: Number(value("decimals"))
+    };
     optional(params, "newColumn");
     return params;
   }
   if (kind === "formatDatetime") {
-    const params: Record<string, unknown> = { column: value("column"), format: value("format") };
+    const params: Record<string, unknown> = { column: columnReference("column"), format: value("format") };
     optional(params, "newColumn");
     return params;
   }

@@ -28,7 +28,7 @@ const columnWindow = { columnOffset: 0, columnLimit: 16 } as const;
 const inspectionStep: TransformStep = {
   id: "round-sales",
   kind: "roundNumber",
-  params: { column: "sales", decimals: 0 }
+  params: { column: { id: "c:sales", name: "sales" }, decimals: 0 }
 };
 
 describe("SessionCoordinator", () => {
@@ -514,7 +514,11 @@ describe("SessionCoordinator", () => {
   });
 
   it("rejects preview diff cells that do not bind to the output schema", async () => {
-    const step: TransformStep = { id: "round", kind: "roundNumber", params: { column: "sales" } };
+    const step: TransformStep = {
+      id: "round",
+      kind: "roundNumber",
+      params: { column: { id: "c:sales", name: "sales" } }
+    };
     const runtimeOpened = openedResponse();
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({
@@ -559,7 +563,11 @@ describe("SessionCoordinator", () => {
       kind: "dropColumns",
       params: { columns: [{ id: "c:source:0", name: "city" }] }
     };
-    const previewStep: TransformStep = { id: "upper-city", kind: "upperText", params: { column: "city" } };
+    const previewStep: TransformStep = {
+      id: "upper-city",
+      kind: "upperText",
+      params: { column: { id: "c:source:0", name: "city" } }
+    };
     const firstInspection = deferred<OpenWranglerResponse>();
     const pendingPreview = deferred<OpenWranglerResponse>();
     const runtimeOpened = openedResponse();
@@ -718,7 +726,7 @@ describe("SessionCoordinator", () => {
     const draftStep: TransformStep = {
       id: "persisted-round",
       kind: "roundNumber",
-      params: { column: "sales", decimals: 1 }
+      params: { column: { id: "c:sales", name: "sales" }, decimals: 1 }
     };
     const staleFilterModel: FilterModel = {
       filters: [],

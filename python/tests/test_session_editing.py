@@ -547,7 +547,7 @@ def test_projected_preview_diff_samples_the_confirmed_filtered_sorted_lens(tmp_p
     preview = manager.preview_step(
         session_id,
         0,
-        transform("round-value", "roundNumber", column="value", decimals=0),
+        transform("round-value", "roundNumber", column=source_ref(1, "value"), decimals=0),
         0,
         1,
         column_offset=1,

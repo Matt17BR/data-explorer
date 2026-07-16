@@ -1,4 +1,5 @@
 import type {
+  ColumnReference,
   ColumnSchema,
   FilterModel,
   OpenWranglerRequest,
@@ -6,6 +7,8 @@ import type {
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope,
   SessionMetadata,
+  TransformColumnFilter,
+  TransformSortRule,
   TransformStep
 } from "./protocol.generated";
 import { PROTOCOL_VERSION } from "./protocol";
@@ -525,7 +528,9 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isDataShape(candidate.filteredShape) &&
     isColumnSchemaArray(candidate.schema) &&
     isFilterModel(candidate.filterModel) &&
-    isArrayOf(candidate.steps, isTransformStep) &&
+    Array.isArray(candidate.steps) &&
+    candidate.steps.every(isTransformStep) &&
+    (candidate.steps.length === 0 || Object.prototype.hasOwnProperty.call(candidate, "latestStepInputSchema")) &&
     optional(candidate, "latestStepInputSchema", isColumnSchemaArray) &&
     optional(candidate, "draftStep", isTransformStep) &&
     optional(candidate, "draftReplacesStepId", isString) &&
@@ -601,9 +606,14 @@ function isColumnSchemaArray(value: unknown): value is ColumnSchema[] {
   });
 }
 
-function isColumnReference(value: unknown): boolean {
+function isColumnReference(value: unknown): value is ColumnReference {
   const candidate = exactRecord(value, ["id", "name"]);
   return candidate !== undefined && isNonEmptyString(candidate.id) && isString(candidate.name);
+}
+
+function isUniqueColumnReferenceArray(value: unknown, allowEmpty: boolean): value is ColumnReference[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || !value.every(isColumnReference)) return false;
+  return new Set(value.map((reference) => reference.id)).size === value.length;
 }
 
 export function isFilterModel(value: unknown): value is FilterModel {
@@ -667,7 +677,7 @@ function isSortRule(value: unknown): boolean {
   );
 }
 
-function isTransformSortRule(value: unknown): boolean {
+function isTransformSortRule(value: unknown): value is TransformSortRule {
   const candidate = exactRecord(value, ["column", "direction", "nulls"]);
   return (
     candidate !== undefined &&
@@ -677,7 +687,7 @@ function isTransformSortRule(value: unknown): boolean {
   );
 }
 
-function isTransformColumnFilter(value: unknown): boolean {
+function isTransformColumnFilter(value: unknown): value is TransformColumnFilter {
   const candidate = exactRecord(value, ["column", "type", "predicates"], ["logic", "valueFilter"]);
   return (
     candidate !== undefined &&
@@ -689,13 +699,30 @@ function isTransformColumnFilter(value: unknown): boolean {
   );
 }
 
+function hasUniqueReferencedColumnIds(values: readonly { column: ColumnReference }[]): boolean {
+  return new Set(values.map((value) => value.column.id)).size === values.length;
+}
+
+function isUniqueTransformSortRuleArray(value: unknown, allowEmpty: boolean): value is TransformSortRule[] {
+  return (
+    Array.isArray(value) &&
+    (allowEmpty || value.length > 0) &&
+    value.every(isTransformSortRule) &&
+    hasUniqueReferencedColumnIds(value)
+  );
+}
+
+function isUniqueTransformColumnFilterArray(value: unknown): value is TransformColumnFilter[] {
+  return Array.isArray(value) && value.every(isTransformColumnFilter) && hasUniqueReferencedColumnIds(value);
+}
+
 function isTransformFilterModel(value: unknown): boolean {
   const candidate = exactRecord(value, ["filters", "sort"], ["logic"]);
   return (
     candidate !== undefined &&
     optional(candidate, "logic", (logic) => isOneOf(logic, ["and", "or"])) &&
-    isArrayOf(candidate.filters, isTransformColumnFilter) &&
-    isArrayOf(candidate.sort, isTransformSortRule)
+    isUniqueTransformColumnFilterArray(candidate.filters) &&
+    isUniqueTransformSortRuleArray(candidate.sort, true)
   );
 }
 
@@ -714,7 +741,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
   switch (candidate.kind) {
     case "sortRows": {
       const decoded = exactRecord(params, ["rules"]);
-      return decoded !== undefined && isNonEmptyArrayOf(decoded.rules, isTransformSortRule);
+      return decoded !== undefined && isUniqueTransformSortRuleArray(decoded.rules, false);
     }
     case "filterRows": {
       const decoded = exactRecord(params, ["filterModel"]);
@@ -724,7 +751,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, [], ["columns", "how"]);
       return (
         decoded !== undefined &&
-        optional(decoded, "columns", (columns) => isArrayOf(columns, isColumnReference)) &&
+        optional(decoded, "columns", (columns) => isUniqueColumnReferenceArray(columns, true)) &&
         optional(decoded, "how", (how) => isOneOf(how, ["any", "all"]))
       );
     }
@@ -732,14 +759,14 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, [], ["columns", "keep"]);
       return (
         decoded !== undefined &&
-        optional(decoded, "columns", (columns) => isNonEmptyArrayOf(columns, isColumnReference)) &&
+        optional(decoded, "columns", (columns) => isUniqueColumnReferenceArray(columns, false)) &&
         optional(decoded, "keep", (keep) => isOneOf(keep, ["first", "last", "none"]))
       );
     }
     case "selectColumns":
     case "dropColumns": {
       const decoded = exactRecord(params, ["columns"]);
-      return decoded !== undefined && isNonEmptyArrayOf(decoded.columns, isColumnReference);
+      return decoded !== undefined && isUniqueColumnReferenceArray(decoded.columns, false);
     }
     case "renameColumn":
     case "cloneColumn": {
@@ -776,7 +803,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, ["columns"], ["prefixSeparator", "dropOriginal"]);
       return (
         decoded !== undefined &&
-        isStringArray(decoded.columns, false) &&
+        isUniqueColumnReferenceArray(decoded.columns, false) &&
         optional(decoded, "prefixSeparator", isString) &&
         optional(decoded, "dropOriginal", isBoolean)
       );
@@ -785,7 +812,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, ["column", "delimiter"], ["prefix", "dropOriginal"]);
       return (
         decoded !== undefined &&
-        isNonEmptyString(decoded.column) &&
+        isColumnReference(decoded.column) &&
         isNonEmptyString(decoded.delimiter) &&
         optional(decoded, "prefix", isString) &&
         optional(decoded, "dropOriginal", isBoolean)
@@ -795,7 +822,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, ["column", "find", "replacement"], ["regex", "newColumn"]);
       return (
         decoded !== undefined &&
-        isNonEmptyString(decoded.column) &&
+        isColumnReference(decoded.column) &&
         isString(decoded.find) &&
         isString(decoded.replacement) &&
         optional(decoded, "regex", isBoolean) &&
@@ -806,8 +833,8 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, ["column"], ["characters", "newColumn"]);
       return (
         decoded !== undefined &&
-        isNonEmptyString(decoded.column) &&
-        optional(decoded, "characters", (characters) => characters === null || isString(characters)) &&
+        isColumnReference(decoded.column) &&
+        optional(decoded, "characters", (characters) => characters === null || isNonEmptyString(characters)) &&
         optional(decoded, "newColumn", isNonEmptyString)
       );
     }
@@ -815,7 +842,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, ["column", "delimiter", "index", "newColumn"]);
       return (
         decoded !== undefined &&
-        isNonEmptyString(decoded.column) &&
+        isColumnReference(decoded.column) &&
         isNonEmptyString(decoded.delimiter) &&
         isNonNegativeInteger(decoded.index) &&
         isNonEmptyString(decoded.newColumn)
@@ -830,14 +857,14 @@ export function isTransformStep(value: unknown): value is TransformStep {
       if (!SIMPLE_COLUMN_OPERATIONS.has(candidate.kind)) return false;
       const decoded = exactRecord(params, ["column"], ["newColumn"]);
       return (
-        decoded !== undefined && isNonEmptyString(decoded.column) && optional(decoded, "newColumn", isNonEmptyString)
+        decoded !== undefined && isColumnReference(decoded.column) && optional(decoded, "newColumn", isNonEmptyString)
       );
     }
     case "roundNumber": {
       const decoded = exactRecord(params, ["column"], ["decimals", "newColumn"]);
       return (
         decoded !== undefined &&
-        isNonEmptyString(decoded.column) &&
+        isColumnReference(decoded.column) &&
         optional(decoded, "decimals", isInteger) &&
         optional(decoded, "newColumn", isNonEmptyString)
       );
@@ -846,7 +873,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, ["column", "format"], ["newColumn"]);
       return (
         decoded !== undefined &&
-        isNonEmptyString(decoded.column) &&
+        isColumnReference(decoded.column) &&
         isNonEmptyString(decoded.format) &&
         optional(decoded, "newColumn", isNonEmptyString)
       );

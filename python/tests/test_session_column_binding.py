@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import pandas as pd
 import pytest
 
 from openwrangler_runtime.engines import EngineError
@@ -228,7 +229,7 @@ def test_private_row_identity_cannot_be_named_by_legacy_operations(
     if case_variant == "upper":
         hidden = hidden.upper()
     malicious = (
-        step("attack", "roundNumber", column="value", newColumn=hidden)
+        step("attack", "roundNumber", column=ref("c:source:1", "value"), newColumn=hidden)
         if attack == "overwrite"
         else step(
             "attack",
@@ -288,9 +289,15 @@ def test_every_transform_must_retain_one_visible_column(tmp_path: Path, backend:
     session_id = opened["metadata"]["sessionId"]
     runtime = manager.sessions[session_id]
     operation = (
-        step("empty-output", kind, columns=["only"], dropOriginal=True)
+        step("empty-output", kind, columns=[ref("c:source:0", "only")], dropOriginal=True)
         if kind == "oneHotEncode"
-        else step("empty-output", kind, column="only", delimiter="|", dropOriginal=True)
+        else step(
+            "empty-output",
+            kind,
+            column=ref("c:source:0", "only"),
+            delimiter="|",
+            dropOriginal=True,
+        )
     )
     before_cache = deepcopy(runtime.page_cache)
 
@@ -379,7 +386,7 @@ def test_dynamic_latest_step_edit_keeps_output_identities_replay_stable(tmp_path
     manager.preview_step(
         session_id,
         0,
-        step("hot", "oneHotEncode", columns=["right"], dropOriginal=False),
+        step("hot", "oneHotEncode", columns=[ref("c:source:1", "right")], dropOriginal=False),
         0,
         10,
     )
@@ -388,7 +395,12 @@ def test_dynamic_latest_step_edit_keeps_output_identities_replay_stable(tmp_path
     preview = manager.preview_step(
         session_id,
         2,
-        step("hot", "oneHotEncode", columns=["left", "right"], dropOriginal=False),
+        step(
+            "hot",
+            "oneHotEncode",
+            columns=[ref("c:source:0", "left"), ref("c:source:1", "right")],
+            dropOriginal=False,
+        ),
         0,
         10,
         replace_step_id="hot",
@@ -417,6 +429,81 @@ def test_dynamic_latest_step_edit_keeps_output_identities_replay_stable(tmp_path
         (column["id"], column["name"]) for column in schema
     ]
     assert [item["id"] for item in undone["metadata"]["steps"]] == ["hot"]
+
+
+def test_duplicate_encoder_edit_replay_and_undo_preserve_the_exact_surviving_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import __main__
+
+    source = pd.DataFrame(
+        [["left-a", "right-u", 1.2], ["left-b", "right-v", 2.8]],
+        columns=cast(Any, ["duplicate", "duplicate", 7]),
+    )
+    monkeypatch.setattr(__main__, "stable_value_duplicate_frame", source, raising=False)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "label": "stable_value_duplicate_frame",
+            "variableName": "stable_value_duplicate_frame",
+        },
+        backend="pandas",
+        mode="editing",
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    first = ref("c:source:0", "duplicate")
+    second = ref("c:source:1", "duplicate")
+
+    manager.preview_step(
+        session_id,
+        0,
+        step("hot", "oneHotEncode", columns=[first], dropOriginal=True),
+        0,
+        10,
+    )
+    initial = manager.apply_draft(session_id, 1, 0, 10)
+    assert [(column["id"], column["name"]) for column in initial["metadata"]["schema"][:2]] == [
+        ("c:source:1", "duplicate"),
+        ("c:source:2", "7"),
+    ]
+
+    manager.preview_step(
+        session_id,
+        2,
+        step("hot", "oneHotEncode", columns=[second], dropOriginal=True),
+        0,
+        10,
+        replace_step_id="hot",
+    )
+    edited = manager.apply_draft(session_id, 3, 0, 10)
+    edited_schema = [(column["id"], column["name"]) for column in edited["metadata"]["schema"]]
+    assert edited_schema[:2] == [("c:source:0", "duplicate"), ("c:source:2", "7")]
+    assert any(name == "duplicate_right-u" for _, name in edited_schema)
+
+    inspection = manager.inspect_step(session_id, 4, "hot", 0, 10)
+    assert [(column["id"], column["name"]) for column in inspection["outputSchema"]] == edited_schema
+
+    manager.preview_step(
+        session_id,
+        4,
+        step("upper", "upperText", column=first, newColumn="upper_duplicate"),
+        0,
+        10,
+    )
+    manager.apply_draft(session_id, 5, 0, 10)
+    undone = manager.undo_step(session_id, 6, 0, 10)
+
+    assert [(column["id"], column["name"]) for column in undone["metadata"]["schema"]] == edited_schema
+    pd.testing.assert_frame_equal(
+        source,
+        pd.DataFrame(
+            [["left-a", "right-u", 1.2], ["left-b", "right-v", 2.8]],
+            columns=cast(Any, ["duplicate", "duplicate", 7]),
+        ),
+    )
+    manager.close_session(session_id, 7)
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

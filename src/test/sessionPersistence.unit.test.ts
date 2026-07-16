@@ -47,6 +47,11 @@ const metadata: SessionMetadata = {
       id: "rename",
       kind: "renameColumn",
       params: { column: { id: "c:source:0", name: "old" }, newName: "new" }
+    },
+    {
+      id: "round",
+      kind: "roundNumber",
+      params: { column: { id: "c:source:1", name: "value" }, decimals: 2 }
     }
   ],
   draftStep: {
@@ -155,6 +160,31 @@ describe("session persistence", () => {
       decodePersistedSession({
         backend: "polars",
         cleaning: { steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["old"] } }] },
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      })
+    ).toBeUndefined();
+    expect(
+      decodePersistedSession({
+        backend: "polars",
+        cleaning: { steps: [{ id: "legacy-value", kind: "oneHotEncode", params: { columns: ["value"] } }] },
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      })
+    ).toBeUndefined();
+    expect(
+      decodePersistedSession({
+        backend: "polars",
+        cleaning: {
+          steps: [],
+          draftStep: { id: "legacy-draft", kind: "upperText", params: { column: "value" } }
+        },
         view: {
           filterModel: { filters: [], sort: [] },
           columnWidths: {},

@@ -177,10 +177,6 @@ export type OneHotEncodeTransformStep = TransformStepTemplate & {
   params: OneHotEncodeParams;
   [k: string]: unknown;
 };
-/**
- * @minItems 1
- */
-export type NonEmptyStringArray = [string, ...string[]];
 export type MultiLabelBinarizeTransformStep = TransformStepTemplate & {
   kind: "multiLabelBinarize";
   params: MultiLabelBinarizeParams;
@@ -246,6 +242,10 @@ export type GroupByTransformStep = TransformStepTemplate & {
   params: GroupByParams;
   [k: string]: unknown;
 };
+/**
+ * @minItems 1
+ */
+export type NonEmptyStringArray = [string, ...string[]];
 export type ByExampleTransformStep = TransformStepTemplate & {
   kind: "byExample";
   params: ByExampleParams;
@@ -553,45 +553,45 @@ export interface ColumnOutputParams {
   newColumn: string;
 }
 export interface OneHotEncodeParams {
-  columns: NonEmptyStringArray;
+  columns: NonEmptyColumnReferenceArray;
   prefixSeparator?: string;
   dropOriginal?: boolean;
 }
 export interface MultiLabelBinarizeParams {
-  column: string;
+  column: ColumnReference;
   delimiter: string;
   prefix?: string;
   dropOriginal?: boolean;
 }
 export interface FindReplaceParams {
-  column: string;
+  column: ColumnReference;
   find: string;
   replacement: string;
   regex?: boolean;
   newColumn?: string;
 }
 export interface StripTextParams {
-  column: string;
+  column: ColumnReference;
   characters?: string | null;
   newColumn?: string;
 }
 export interface SplitTextParams {
-  column: string;
+  column: ColumnReference;
   delimiter: string;
   index: number;
   newColumn: string;
 }
 export interface ColumnOptionalOutputParams {
-  column: string;
+  column: ColumnReference;
   newColumn?: string;
 }
 export interface RoundNumberParams {
-  column: string;
+  column: ColumnReference;
   decimals?: number;
   newColumn?: string;
 }
 export interface FormatDatetimeParams {
-  column: string;
+  column: ColumnReference;
   format: string;
   newColumn?: string;
 }

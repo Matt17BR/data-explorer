@@ -152,7 +152,11 @@ describe("App progressive profiling and view correlation", () => {
   });
 
   it("clears host-invalidated applied-step inspection locally without echoing the clear", () => {
-    const step = { id: "round-sales", kind: "roundNumber", params: { column: "sales", decimals: 0 } } as const;
+    const step = {
+      id: "round-sales",
+      kind: "roundNumber",
+      params: { column: { id: "c:1", name: "sales" }, decimals: 0 }
+    } as const;
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: { ...metadata, steps: [step] }, page, summaries: [] });
     postMessage.mockClear();

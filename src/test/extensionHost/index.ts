@@ -10,6 +10,7 @@ import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookI
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type {
   ColumnReference,
+  GridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
   FilterModel,
@@ -72,6 +73,20 @@ function columnReferenceAt(metadata: SessionMetadata, position: number): ColumnR
   const column = metadata.schema[position];
   assert.ok(column, `Expected a column at position ${position} in the opened session schema.`);
   return { id: column.id, name: column.name };
+}
+
+function gridColumnCells(page: GridPage, columnId: string): GridPage["rows"][number]["values"] {
+  const position = page.columnIds.indexOf(columnId);
+  assert.notEqual(position, -1, `Expected projected page column ${columnId}.`);
+  return page.rows.map((row) => {
+    const value = row.values[position];
+    assert.ok(value, `Expected a cell for projected page column ${columnId}.`);
+    return value;
+  });
+}
+
+function gridColumnDisplays(page: GridPage, columnId: string): string[] {
+  return gridColumnCells(page, columnId).map((value) => value.display);
 }
 
 export async function run(): Promise<void> {
@@ -1004,7 +1019,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "import pandas as pd",
       "import polars as pl",
       "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
-      "duplicate_frame = pd.DataFrame([[2, 10, 'a'], [1, 20, 'b'], [2, 10, 'c'], [2, None, 'd']], columns=['duplicate', 'duplicate', 7])",
+      "duplicate_frame = pd.DataFrame([[2, 10.26, 'a', 'red', 'x', '2024-01-02', '2020-05-06'], [1, 20.74, 'b', 'blue', 'y', '2024-02-03', '2021-06-07'], [2, 10.26, 'c', 'red', 'z', '2024-03-04', '2022-07-08'], [2, None, 'd', 'green', 'x', '2024-04-05', '2023-08-09']], columns=['duplicate', 'duplicate', 7, 'category', 'category', 'when', 'when'])",
+      "duplicate_frame_source = duplicate_frame.copy(deep=True)",
       "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})"
     ].join("\n");
     await jupyter.testing.execute(notebook.uri, setupCode);
@@ -1103,15 +1119,132 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (!active) throw new Error("Duplicate-column Pandas notebook session did not become active.");
     assert.deepEqual(
       active.metadata.schema.map((column) => column.name),
-      ["duplicate", "duplicate", "7"]
+      ["duplicate", "duplicate", "7", "category", "category", "when", "when"]
     );
     const firstDuplicate = columnReferenceAt(active.metadata, 0);
     const secondDuplicate = columnReferenceAt(active.metadata, 1);
     const integerLabel = columnReferenceAt(active.metadata, 2);
+    const firstCategory = columnReferenceAt(active.metadata, 3);
+    const secondCategory = columnReferenceAt(active.metadata, 4);
+    const firstDatetime = columnReferenceAt(active.metadata, 5);
+    const secondDatetime = columnReferenceAt(active.metadata, 6);
     assert.notEqual(firstDuplicate.id, secondDuplicate.id, "Duplicate labels must retain distinct stable identities.");
+    assert.notEqual(firstCategory.id, secondCategory.id, "Duplicate category labels must retain distinct identities.");
+    assert.notEqual(firstDatetime.id, secondDatetime.id, "Duplicate datetime labels must retain distinct identities.");
     assert.equal(integerLabel.name, "7");
 
     let duplicateRevision = active.metadata.revision;
+    const valueSteps: TransformStep[] = [
+      {
+        id: "duplicate-one-hot-second-category",
+        kind: "oneHotEncode",
+        params: { columns: [secondCategory], prefixSeparator: "__", dropOriginal: false }
+      },
+      {
+        id: "integer-label-uppercase",
+        kind: "upperText",
+        params: { column: integerLabel }
+      },
+      {
+        id: "duplicate-round-second",
+        kind: "roundNumber",
+        params: { column: secondDuplicate, decimals: 1 }
+      },
+      {
+        id: "duplicate-format-second-datetime",
+        kind: "formatDatetime",
+        params: { column: secondDatetime, format: "%Y" }
+      }
+    ];
+    const valueCodeMarkers: readonly (readonly RegExp[])[] = [
+      [
+        /for _position_0, _column_0 in \[\(4, 'category'\)\]:\s+_encoded_series_0 = df\.iloc\[:, _position_0\]/u,
+        /\.eq\(value\)\.fillna\(False\)\.astype\('int8'\)/u
+      ],
+      [/df\.isetitem\(2, df\.iloc\[:, 2\]\.astype\('string'\)\.map\(str\.upper, na_action='ignore'\)\)/u],
+      [/df\.isetitem\(1, pd\.to_numeric\(df\.iloc\[:, 1\], errors='coerce'\)\.round\(1\)\)/u],
+      [/df\.isetitem\(6, pd\.to_datetime\(df\.iloc\[:, 6\], errors='coerce'\)\.dt\.strftime\('%Y'\)\)/u]
+    ];
+
+    for (const [index, step] of valueSteps.entries()) {
+      const valuePreview = await testing.request({
+        kind: "previewStep",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: active.sessionId,
+        revision: duplicateRevision,
+        step,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(valuePreview.kind, "stepPreview", `Packaged ${step.kind} must preview duplicate labels.`);
+      if (valuePreview.kind !== "stepPreview") {
+        throw new Error(`Packaged ${step.kind} duplicate-label preview did not resolve.`);
+      }
+      for (const marker of valueCodeMarkers[index]) {
+        assert.match(
+          valuePreview.code,
+          marker,
+          `${step.kind} generated code must bind its operation-specific implementation to the exact Pandas position.`
+        );
+      }
+      assert.doesNotMatch(
+        JSON.stringify(valuePreview.metadata.draftStep),
+        /"position"\s*:/u,
+        "Private bound positions must not leak into public value-operation drafts."
+      );
+
+      if (step.kind === "oneHotEncode") {
+        const encodedX = columnReference(valuePreview.metadata, "category__x");
+        const encodedY = columnReference(valuePreview.metadata, "category__y");
+        const encodedZ = columnReference(valuePreview.metadata, "category__z");
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, encodedX.id), ["1", "0", "0", "1"]);
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, encodedY.id), ["0", "1", "0", "0"]);
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, encodedZ.id), ["0", "0", "1", "0"]);
+        assert.equal(
+          valuePreview.metadata.schema.some((column) => column.name === "category__red"),
+          false,
+          "One-hot encoding must use the selected second duplicate, not its same-named neighbor."
+        );
+      } else if (step.kind === "upperText") {
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, integerLabel.id), ["A", "B", "C", "D"]);
+      } else if (step.kind === "roundNumber") {
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, secondDuplicate.id).slice(0, 3), [
+          "10.3",
+          "20.7",
+          "10.3"
+        ]);
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, firstDuplicate.id), ["2", "1", "2", "2"]);
+      } else if (step.kind === "formatDatetime") {
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, secondDatetime.id), ["2020", "2021", "2022", "2023"]);
+        assert.deepEqual(gridColumnDisplays(valuePreview.page, firstDatetime.id), [
+          "2024-01-02",
+          "2024-02-03",
+          "2024-03-04",
+          "2024-04-05"
+        ]);
+      }
+
+      const valueApplied = await testing.request({
+        kind: "applyDraft",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: active.sessionId,
+        revision: valuePreview.revision,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(valueApplied.kind, "planUpdated", `Packaged ${step.kind} must apply duplicate labels.`);
+      if (valueApplied.kind !== "planUpdated") {
+        throw new Error(`Packaged ${step.kind} duplicate-label apply did not resolve.`);
+      }
+      assert.equal(valueApplied.metadata.steps.length, index + 1);
+      assert.doesNotMatch(
+        JSON.stringify(valueApplied.metadata.steps),
+        /"position"\s*:/u,
+        "Private bound positions must not leak into persisted value-operation steps."
+      );
+      duplicateRevision = valueApplied.revision;
+    }
+
     const duplicateSteps: TransformStep[] = [
       {
         id: "duplicate-sort-second",
@@ -1151,12 +1284,18 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         params: { columns: [firstDuplicate, secondDuplicate], keep: "first" }
       }
     ];
-    const expectedThirdColumnAfterStep = [["b", "c", "a", "d"], ["c", "a", "d"], ["c", "a"], ["c"]];
-    const expectedCodeMarkerAfterStep = [
-      /_sort_order_/u,
-      /_filter_mask_/u,
-      /_missing_positions_/u,
-      /_duplicate_positions_/u
+    const expectedThirdColumnAfterStep = [["B", "C", "A", "D"], ["C", "A", "D"], ["C", "A"], ["C"]];
+    const expectedCodeMarkerAfterStep: readonly (readonly RegExp[])[] = [
+      [/_sort_order_4_0 = df\.iloc\[:, 2\]/u, /_sort_order_4_1 = df\.iloc\[:, 1\]/u],
+      [/_filter_mask_5 = \(\(df\.iloc\[:, 0\] == 2\)\)/u],
+      [
+        /_missing_positions_6 = \[1\] or list\(range\(df\.shape\[1\]\)\)/u,
+        /\[df\.iloc\[:, position\]\.notna\(\) for position in _missing_positions_6\]/u
+      ],
+      [
+        /_duplicate_positions_7 = \[0, 1\] or list\(range\(df\.shape\[1\]\)\)/u,
+        /df\.iloc\[:, _duplicate_positions_7\]/u
+      ]
     ];
 
     for (const [index, step] of duplicateSteps.entries()) {
@@ -1173,12 +1312,13 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       if (duplicatePreview.kind !== "stepPreview") {
         throw new Error(`Packaged ${step.kind} duplicate-label preview did not resolve.`);
       }
-      assert.match(duplicatePreview.code, /\.iloc\b/u, `${step.kind} generated code must address Pandas positionally.`);
-      assert.match(
-        duplicatePreview.code,
-        expectedCodeMarkerAfterStep[index],
-        `${step.kind} generated code must contain its operation-specific positional implementation.`
-      );
+      for (const marker of expectedCodeMarkerAfterStep[index]) {
+        assert.match(
+          duplicatePreview.code,
+          marker,
+          `${step.kind} generated code must bind its operation-specific implementation to the exact Pandas position.`
+        );
+      }
       assert.doesNotMatch(
         JSON.stringify(duplicatePreview.metadata.draftStep),
         /"position"\s*:/u,
@@ -1201,7 +1341,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       if (duplicateApplied.kind !== "planUpdated") {
         throw new Error(`Packaged ${step.kind} duplicate-label apply did not resolve.`);
       }
-      assert.equal(duplicateApplied.metadata.steps.length, index + 1);
+      assert.equal(duplicateApplied.metadata.steps.length, valueSteps.length + index + 1);
       assert.doesNotMatch(
         JSON.stringify(duplicateApplied.metadata.steps),
         /"position"\s*:/u,
@@ -1212,11 +1352,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
 
     const duplicateSourceBeforeRestart = await jupyter.testing.execute(
       notebook.uri,
-      "print(duplicate_frame.iloc[:, 0].tolist(), duplicate_frame.iloc[:, 1].tolist(), duplicate_frame.iloc[:, 2].tolist())"
+      "print(duplicate_frame.equals(duplicate_frame_source))"
     );
     assert.match(
       duplicateSourceBeforeRestart,
-      /\[2, 1, 2, 2\] \[10\.0, 20\.0, 10\.0, nan\] \['a', 'b', 'c', 'd'\]/u,
+      /\bTrue\b/u,
       "Cleaning steps must not mutate the originating notebook dataframe before kernel recovery."
     );
 
@@ -1237,14 +1377,44 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (duplicateReplayed.kind !== "page") throw new Error("Duplicate/non-string row-operation replay failed.");
     assert.equal(jupyter.testing.stats(notebook.uri)?.generation, duplicateReplacementGeneration);
     assert.equal(duplicateReplayed.page.totalRows, 1);
+    assert.equal(duplicateReplayed.metadata.steps.length, valueSteps.length + duplicateSteps.length);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, firstDuplicate.id), ["2"]);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, secondDuplicate.id), ["10.3"]);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, integerLabel.id), ["C"]);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, firstCategory.id), ["red"]);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, secondCategory.id), ["z"]);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, firstDatetime.id), ["2024-03-04"]);
+    assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, secondDatetime.id), ["2022"]);
+    assert.deepEqual(gridColumnCells(duplicateReplayed.page, secondDuplicate.id), [
+      { kind: "number", raw: 10.3, display: "10.3", isNull: false, isNaN: false }
+    ]);
+    assert.deepEqual(gridColumnCells(duplicateReplayed.page, integerLabel.id), [
+      { kind: "string", raw: "C", display: "C", isNull: false, isNaN: false }
+    ]);
+    assert.deepEqual(gridColumnCells(duplicateReplayed.page, secondDatetime.id), [
+      { kind: "string", raw: "2022", display: "2022", isNull: false, isNaN: false }
+    ]);
+    for (const [name, expected] of [
+      ["category__x", "0"],
+      ["category__y", "0"],
+      ["category__z", "1"]
+    ] as const) {
+      assert.deepEqual(
+        gridColumnDisplays(duplicateReplayed.page, columnReference(duplicateReplayed.metadata, name).id),
+        [expected]
+      );
+      assert.deepEqual(gridColumnCells(duplicateReplayed.page, columnReference(duplicateReplayed.metadata, name).id), [
+        { kind: "integer", raw: Number(expected), display: expected, isNull: false, isNaN: false }
+      ]);
+    }
     assert.deepEqual(
-      duplicateReplayed.page.rows[0]?.values.map((value) => value.display),
-      ["2", "10.0", "c"],
-      "Every operation must target the exact selected duplicate-column identity."
+      duplicateReplayed.metadata.schema.slice(0, 7).map((column) => column.name),
+      ["duplicate", "duplicate", "7", "category", "category", "when", "when"]
     );
-    assert.deepEqual(
-      duplicateReplayed.metadata.schema.map((column) => column.name),
-      ["duplicate", "duplicate", "7"]
+    assert.doesNotMatch(
+      JSON.stringify(duplicateReplayed.metadata.steps),
+      /"position"\s*:/u,
+      "Kernel replay must retain position-free public references."
     );
     const duplicateClosed = await testing.request({
       kind: "closeSession",
@@ -1258,13 +1428,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       10_000,
       "the duplicate-column Pandas notebook session to close"
     );
+    assert.deepEqual(testing.diagnostics().sessions, [], "Duplicate/non-string acceptance must retain no session.");
     const duplicateSourceState = await jupyter.testing.execute(
       notebook.uri,
-      "print(duplicate_frame.iloc[:, 0].tolist(), duplicate_frame.iloc[:, 1].tolist(), duplicate_frame.iloc[:, 2].tolist())"
+      "print(duplicate_frame.equals(duplicate_frame_source))"
     );
     assert.match(
       duplicateSourceState,
-      /\[2, 1, 2, 2\] \[10\.0, 20\.0, 10\.0, nan\] \['a', 'b', 'c', 'd'\]/u,
+      /\bTrue\b/u,
       "Cleaning steps must not mutate the originating notebook dataframe."
     );
 
@@ -2141,12 +2312,16 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         {
           id: `${backend}-text`,
           kind: "upperText",
-          params: { column: "city", newColumn: "city_upper" }
+          params: { column: columnReference(opened.metadata, "city"), newColumn: "city_upper" }
         },
         {
           id: `${backend}-numeric`,
           kind: "roundNumber",
-          params: { column: "score", decimals: 0, newColumn: "rounded_score" }
+          params: {
+            column: { id: `c:step:${backend}-formula:0`, name: "score" },
+            decimals: 0,
+            newColumn: "rounded_score"
+          }
         },
         {
           id: `${backend}-example`,

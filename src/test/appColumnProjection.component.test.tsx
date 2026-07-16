@@ -13,7 +13,7 @@ import { App, alignedColumnWindow } from "../webviews/App";
 const step: TransformStep = {
   id: "round-column",
   kind: "roundNumber",
-  params: { column: "column-20", decimals: 0 }
+  params: { column: { id: "c:20", name: "column-20" }, decimals: 0 }
 };
 
 const schema = Array.from({ length: 40 }, (_, position) => ({

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import isnan
+from typing import Any
 
 import pandas as pd
 import polars as pl
@@ -107,6 +108,69 @@ def test_row_order_operations_reject_name_only_transform_columns(operation) -> N
         validate_step(operation)
 
 
+@pytest.mark.parametrize(
+    ("kind", "params"),
+    [
+        ("oneHotEncode", {"columns": ["group"]}),
+        ("multiLabelBinarize", {"column": "tags", "delimiter": "|"}),
+        ("findReplace", {"column": "text", "find": "a", "replacement": "b"}),
+        ("stripText", {"column": "text"}),
+        ("splitText", {"column": "text", "delimiter": "-", "index": 0, "newColumn": "part"}),
+        ("capitalizeText", {"column": "text"}),
+        ("lowerText", {"column": "text"}),
+        ("upperText", {"column": "text"}),
+        ("minMaxScale", {"column": "value"}),
+        ("roundNumber", {"column": "value"}),
+        ("floorNumber", {"column": "value"}),
+        ("ceilNumber", {"column": "value"}),
+        ("formatDatetime", {"column": "date", "format": "%Y"}),
+    ],
+)
+def test_value_operations_reject_legacy_name_only_columns(kind: str, params: dict[str, Any]) -> None:
+    with pytest.raises(OperationError, match="column reference"):
+        validate_step({"id": f"legacy-{kind}", "kind": kind, "params": params})
+
+
+def test_public_validation_rejects_repeated_one_hot_identities() -> None:
+    group = public_ref("c:source:0", "group")
+
+    with pytest.raises(OperationError, match="contains duplicate column identities"):
+        step("duplicate-hot", "oneHotEncode", columns=[group, group])
+
+
+def test_public_validation_scopes_nested_row_reference_uniqueness() -> None:
+    value = public_ref("c:source:3", "value")
+    rule = {"column": value, "direction": "asc", "nulls": "last"}
+    column_filter = {
+        "column": value,
+        "type": "float",
+        "predicates": [{"kind": "predicate", "operator": "gt", "value": 1}],
+    }
+
+    with pytest.raises(OperationError, match="sortRows.rules contains duplicate column identities"):
+        step("duplicate-sort", "sortRows", rules=[rule, rule])
+    with pytest.raises(OperationError, match="filterRows.filterModel.filters contains duplicate column identities"):
+        step(
+            "duplicate-filter",
+            "filterRows",
+            filterModel={"filters": [column_filter, column_filter], "sort": []},
+        )
+    with pytest.raises(OperationError, match="filterRows.filterModel.sort contains duplicate column identities"):
+        step(
+            "duplicate-filter-sort",
+            "filterRows",
+            filterModel={"filters": [], "sort": [rule, rule]},
+        )
+
+    normalized = step(
+        "shared-filter-sort",
+        "filterRows",
+        filterModel={"filters": [column_filter], "sort": [rule]},
+    )
+    assert normalized["params"]["filterModel"]["filters"][0]["column"] == value
+    assert normalized["params"]["filterModel"]["sort"][0]["column"] == value
+
+
 def test_optional_row_column_lists_have_strict_empty_semantics() -> None:
     missing = validate_step({"id": "missing", "kind": "dropMissingRows", "params": {"columns": [], "how": "any"}})
     omitted = validate_step({"id": "all", "kind": "dropMissingRows", "params": {}})
@@ -173,19 +237,33 @@ def test_optional_row_column_lists_have_strict_empty_semantics() -> None:
             "textLength",
             {"column": public_ref("c:source:0", "value"), "newColumn": PRIVATE_COLUMN},
         ),
-        ("oneHotEncode", {"columns": [PRIVATE_COLUMN]}),
-        ("multiLabelBinarize", {"column": "tags", "delimiter": "|", "prefix": PRIVATE_COLUMN}),
-        ("findReplace", {"column": PRIVATE_COLUMN, "find": "a", "replacement": "b"}),
-        ("stripText", {"column": PRIVATE_COLUMN}),
-        ("splitText", {"column": PRIVATE_COLUMN, "delimiter": "-", "index": 0, "newColumn": "part"}),
-        ("capitalizeText", {"column": PRIVATE_COLUMN}),
-        ("lowerText", {"column": PRIVATE_COLUMN}),
-        ("upperText", {"column": PRIVATE_COLUMN}),
-        ("minMaxScale", {"column": PRIVATE_COLUMN}),
-        ("roundNumber", {"column": "value", "newColumn": PRIVATE_COLUMN}),
-        ("floorNumber", {"column": PRIVATE_COLUMN}),
-        ("ceilNumber", {"column": PRIVATE_COLUMN}),
-        ("formatDatetime", {"column": PRIVATE_COLUMN, "format": "%Y"}),
+        ("oneHotEncode", {"columns": [public_ref("private", PRIVATE_COLUMN)]}),
+        (
+            "multiLabelBinarize",
+            {"column": public_ref("c:source:2", "tags"), "delimiter": "|", "prefix": PRIVATE_COLUMN},
+        ),
+        ("findReplace", {"column": public_ref("private", PRIVATE_COLUMN), "find": "a", "replacement": "b"}),
+        ("stripText", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        (
+            "splitText",
+            {
+                "column": public_ref("private", PRIVATE_COLUMN),
+                "delimiter": "-",
+                "index": 0,
+                "newColumn": "part",
+            },
+        ),
+        ("capitalizeText", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        ("lowerText", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        ("upperText", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        ("minMaxScale", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        (
+            "roundNumber",
+            {"column": public_ref("c:source:3", "value"), "newColumn": PRIVATE_COLUMN},
+        ),
+        ("floorNumber", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        ("ceilNumber", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        ("formatDatetime", {"column": public_ref("private", PRIVATE_COLUMN), "format": "%Y"}),
         (
             "groupBy",
             {
@@ -350,13 +428,38 @@ def test_column_and_type_operations_match_generated_code(engine_and_frame):
     assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
 
 
-def test_structural_adapters_reject_public_references_before_execution(engine_and_frame):
+@pytest.mark.parametrize(
+    "public_step",
+    [
+        {
+            "id": "unbound-cast",
+            "kind": "castColumn",
+            "params": {"column": public_ref("c:source:3", "value"), "dtype": "float"},
+        },
+        {
+            "id": "unbound-hot",
+            "kind": "oneHotEncode",
+            "params": {"columns": [public_ref("c:source:0", "group")]},
+        },
+        {
+            "id": "unbound-upper",
+            "kind": "upperText",
+            "params": {"column": public_ref("c:source:1", "text")},
+        },
+        {
+            "id": "unbound-round",
+            "kind": "roundNumber",
+            "params": {"column": public_ref("c:source:3", "value")},
+        },
+        {
+            "id": "unbound-date",
+            "kind": "formatDatetime",
+            "params": {"column": public_ref("c:source:5", "date"), "format": "%Y"},
+        },
+    ],
+)
+def test_adapters_reject_public_references_before_execution(engine_and_frame, public_step):
     engine, frame = engine_and_frame
-    public_step = {
-        "id": "unbound-cast",
-        "kind": "castColumn",
-        "params": {"column": public_ref("c:source:3", "value"), "dtype": "float"},
-    }
 
     with pytest.raises(EngineError, match="requires a bound column reference"):
         engine.apply_transform(frame, public_step)
@@ -551,55 +654,111 @@ def test_pandas_multiindex_derived_columns_append_flat_labels_without_overwritin
 def test_text_operations(engine_and_frame):
     engine, frame = engine_and_frame
     plan = [
-        step("strip", "stripText", column="text", newColumn="clean"),
-        step("replace", "findReplace", column="text", find="-", replacement=" ", newColumn="replaced"),
-        step("split", "splitText", column="text", delimiter="-", index=1, newColumn="suffix"),
-        step("lower", "lowerText", column="text", newColumn="lower"),
-        step("upper", "upperText", column="text", newColumn="upper"),
-        step("capitalize", "capitalizeText", column="text", newColumn="capitalized"),
+        bound_step("strip", "stripText", column=bound_ref("c:source:1", "text", 1), newColumn="clean"),
+        bound_step(
+            "replace",
+            "findReplace",
+            column=bound_ref("c:source:1", "text", 1),
+            find="-",
+            replacement=" ",
+            newColumn="replaced",
+        ),
+        bound_step(
+            "split",
+            "splitText",
+            column=bound_ref("c:source:1", "text", 1),
+            delimiter="-",
+            index=1,
+            newColumn="suffix",
+        ),
+        bound_step("lower", "lowerText", column=bound_ref("c:source:1", "text", 1), newColumn="lower"),
+        bound_step("upper", "upperText", column=bound_ref("c:source:1", "text", 1), newColumn="upper"),
+        bound_step(
+            "capitalize",
+            "capitalizeText",
+            column=bound_ref("c:source:1", "text", 1),
+            newColumn="capitalized",
+        ),
     ]
-    result = records(apply_plan(engine, frame, plan))
+    transformed = apply_plan(engine, frame, plan)
+    result = records(transformed)
     assert result[0]["clean"] == "alpha-one"
     assert result[0]["replaced"] == " alpha one "
     assert result[1]["suffix"] == "two"
     assert result[1]["lower"] == "beta-two"
     assert result[1]["upper"] == "BETA-TWO"
     assert result[1]["capitalized"] == "Beta-two"
+    assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
 
 
 def test_categorical_encoders(engine_and_frame):
     engine, frame = engine_and_frame
-    encoded = engine.apply_transform(
-        frame,
-        step("one-hot", "oneHotEncode", columns=["group"], prefixSeparator="_", dropOriginal=False),
+    one_hot = bound_step(
+        "one-hot",
+        "oneHotEncode",
+        columns=[bound_ref("c:source:0", "group", 0)],
+        prefixSeparator="_",
+        dropOriginal=False,
     )
+    encoded = engine.apply_transform(frame, one_hot)
     result = records(encoded)
     assert result[0]["group_a"] == 1
     assert result[2]["group_b"] == 1
+    assert_semantically_equal(encoded, execute_generated(engine, frame, [one_hot]))
 
-    multilabel = engine.apply_transform(
-        frame,
-        step("multi-label", "multiLabelBinarize", column="tags", delimiter="|", prefix="tag_", dropOriginal=False),
+    multi_label = bound_step(
+        "multi-label",
+        "multiLabelBinarize",
+        column=bound_ref("c:source:2", "tags", 2),
+        delimiter="|",
+        prefix="tag_",
+        dropOriginal=False,
     )
+    multilabel = engine.apply_transform(frame, multi_label)
     result = records(multilabel)
     assert result[0]["tag_blue"] == 1
     assert result[0]["tag_red"] == 1
     assert result[1]["tag_red"] == 0
+    assert_semantically_equal(multilabel, execute_generated(engine, frame, [multi_label]))
 
 
 def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     engine, frame = engine_and_frame
-    numeric = apply_plan(
-        engine,
-        frame,
-        [
-            step("scale", "minMaxScale", column="value", newColumn="scaled"),
-            step("round", "roundNumber", column="value", decimals=0, newColumn="rounded"),
-            step("floor", "floorNumber", column="value", newColumn="floored"),
-            step("ceil", "ceilNumber", column="value", newColumn="ceiled"),
-            step("date", "formatDatetime", column="date", format="%Y/%m", newColumn="month"),
-        ],
-    )
+    numeric_plan = [
+        bound_step(
+            "scale",
+            "minMaxScale",
+            column=bound_ref("c:source:3", "value", 3),
+            newColumn="scaled",
+        ),
+        bound_step(
+            "round",
+            "roundNumber",
+            column=bound_ref("c:source:3", "value", 3),
+            decimals=0,
+            newColumn="rounded",
+        ),
+        bound_step(
+            "floor",
+            "floorNumber",
+            column=bound_ref("c:source:3", "value", 3),
+            newColumn="floored",
+        ),
+        bound_step(
+            "ceil",
+            "ceilNumber",
+            column=bound_ref("c:source:3", "value", 3),
+            newColumn="ceiled",
+        ),
+        bound_step(
+            "date",
+            "formatDatetime",
+            column=bound_ref("c:source:5", "date", 5),
+            format="%Y/%m",
+            newColumn="month",
+        ),
+    ]
+    numeric = apply_plan(engine, frame, numeric_plan)
     result = records(numeric)
     assert result[0]["scaled"] == 0.0
     assert result[1]["scaled"] == pytest.approx(1.0)
@@ -607,6 +766,7 @@ def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     assert result[0]["floored"] == 1.0
     assert result[0]["ceiled"] == 2.0
     assert result[0]["month"] == "2024/01"
+    assert_semantically_equal(numeric, execute_generated(engine, frame, numeric_plan))
 
     grouped = engine.apply_transform(
         frame,

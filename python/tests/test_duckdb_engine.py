@@ -69,6 +69,59 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
     return result
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        step("oneHotEncode", columns=[{"id": "c:source:0", "name": "group"}]),
+        step("upperText", column={"id": "c:source:1", "name": "text"}),
+        step("roundNumber", column={"id": "c:source:3", "name": "value"}),
+        step("formatDatetime", column={"id": "c:source:5", "name": "date"}, format="%Y"),
+    ],
+)
+def test_duckdb_value_adapters_reject_unbound_public_references(operation: dict[str, Any]) -> None:
+    engine = DuckDBEngine()
+    try:
+        with pytest.raises(EngineError, match="requires a bound column reference"):
+            engine.apply_transform(source_relation(), operation)
+        with pytest.raises(EngineError, match="requires a bound column reference"):
+            engine.compile_plan([operation])
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected"),
+    [
+        ("\\", ["\\a\\b\\", "\\", None, "\\é\\🙂\\"]),
+        (r"\1", [r"\1a\1b\1", r"\1", None, r"\1é\1🙂\1"]),
+        ("$1", ["$1a$1b$1", "$1", None, "$1é$1🙂$1"]),
+    ],
+)
+def test_duckdb_empty_literal_find_replaces_boundaries_and_matches_generated_code(
+    replacement: str, expected: list[str | None]
+) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql("SELECT * FROM (VALUES ('ab'), (''), (NULL), ('é🙂')) AS source(text)")
+    operation = bound_step(
+        "findReplace",
+        column=bound_ref("c:source:0", "text", 0),
+        find="",
+        replacement=replacement,
+        regex=False,
+        newColumn="expanded",
+    )
+
+    try:
+        transformed = engine.apply_transform(frame, operation)
+        generated = execute_generated(engine, frame, [operation])
+
+        assert [row["expanded"] for row in records(transformed)] == expected
+        assert_same_relation(transformed, generated)
+        assert "array_to_string" in engine.compile_plan([operation])
+    finally:
+        engine.close()
+
+
 def install_conversion_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     def reject_conversion(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("DuckDB operations must never convert to Pandas, Polars, or Arrow")
@@ -381,25 +434,52 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         ),
     ]
     text_numeric_plan = [
-        step("stripText", column="text", newColumn="clean"),
-        step("findReplace", column="text", find="-", replacement=" ", newColumn="replaced"),
-        step("splitText", column="text", delimiter="-", index=1, newColumn="suffix"),
-        step("lowerText", column="text", newColumn="lower"),
-        step("upperText", column="text", newColumn="upper"),
-        step("capitalizeText", column="text", newColumn="capitalized"),
-        step("oneHotEncode", columns=["group"], prefixSeparator="_", dropOriginal=False),
-        step(
+        bound_step("stripText", column=bound_ref("c:source:1", "text", 1), newColumn="clean"),
+        bound_step(
+            "findReplace",
+            column=bound_ref("c:source:1", "text", 1),
+            find="-",
+            replacement=" ",
+            newColumn="replaced",
+        ),
+        bound_step(
+            "splitText",
+            column=bound_ref("c:source:1", "text", 1),
+            delimiter="-",
+            index=1,
+            newColumn="suffix",
+        ),
+        bound_step("lowerText", column=bound_ref("c:source:1", "text", 1), newColumn="lower"),
+        bound_step("upperText", column=bound_ref("c:source:1", "text", 1), newColumn="upper"),
+        bound_step("capitalizeText", column=bound_ref("c:source:1", "text", 1), newColumn="capitalized"),
+        bound_step(
+            "oneHotEncode",
+            columns=[bound_ref("c:source:0", "group", 0)],
+            prefixSeparator="_",
+            dropOriginal=False,
+        ),
+        bound_step(
             "multiLabelBinarize",
-            column="tags",
+            column=bound_ref("c:source:2", "tags", 2),
             delimiter="|",
             prefix="tag_",
             dropOriginal=False,
         ),
-        step("minMaxScale", column="value", newColumn="scaled"),
-        step("roundNumber", column="value", decimals=0, newColumn="rounded"),
-        step("floorNumber", column="value", newColumn="floored"),
-        step("ceilNumber", column="value", newColumn="ceiled"),
-        step("formatDatetime", column="date", format="%Y/%m", newColumn="month"),
+        bound_step("minMaxScale", column=bound_ref("c:source:3", "value", 3), newColumn="scaled"),
+        bound_step(
+            "roundNumber",
+            column=bound_ref("c:source:3", "value", 3),
+            decimals=0,
+            newColumn="rounded",
+        ),
+        bound_step("floorNumber", column=bound_ref("c:source:3", "value", 3), newColumn="floored"),
+        bound_step("ceilNumber", column=bound_ref("c:source:3", "value", 3), newColumn="ceiled"),
+        bound_step(
+            "formatDatetime",
+            column=bound_ref("c:source:5", "date", 5),
+            format="%Y/%m",
+            newColumn="month",
+        ),
     ]
     group_plan = [
         step(
@@ -496,11 +576,71 @@ def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
     )
 
     collision = duckdb.sql("SELECT 'a' AS group_name, 7 AS group_name_a")
-    operation = step("oneHotEncode", columns=["group_name"], prefixSeparator="_", dropOriginal=False)
+    operation = bound_step(
+        "oneHotEncode",
+        columns=[bound_ref("c:source:0", "group_name", 0)],
+        prefixSeparator="_",
+        dropOriginal=False,
+    )
     with pytest.raises(EngineError, match="duplicate column names: group_name_a"):
         engine.apply_transform(collision, operation)
     with pytest.raises(ValueError, match="duplicate column names: group_name_a"):
         execute_generated(engine, collision, [operation])
+
+    private_output = duckdb.sql("SELECT 'open_wrangler_internal_row_id_forged' AS tags, 1 AS keep")
+    private_operation = bound_step(
+        "multiLabelBinarize",
+        column=bound_ref("c:source:0", "tags", 0),
+        delimiter="|",
+        prefix="__",
+        dropOriginal=False,
+    )
+    with pytest.raises(EngineError, match="reserved private row-identity column"):
+        engine.apply_transform(private_output, private_operation)
+    with pytest.raises(ValueError, match="reserved private row-identity column"):
+        execute_generated(engine, private_output, [private_operation])
+
+    scalar_categories = duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (CAST(1.0 AS DOUBLE), TRUE, DATE '2024-01-02'),
+            (CAST('NaN' AS DOUBLE), FALSE, DATE '2024-01-03'),
+            (CAST(NULL AS DOUBLE), NULL, NULL)
+        ) AS source(value, flag, day)
+        """
+    )
+    scalar_operation = bound_step(
+        "oneHotEncode",
+        columns=[
+            bound_ref("c:source:0", "value", 0),
+            bound_ref("c:source:1", "flag", 1),
+            bound_ref("c:source:2", "day", 2),
+        ],
+        dropOriginal=False,
+    )
+    scalar_result = engine.apply_transform(scalar_categories, scalar_operation)
+    assert scalar_result.columns == [
+        "value",
+        "flag",
+        "day",
+        "day_2024-01-02",
+        "day_2024-01-03",
+        "flag_False",
+        "flag_True",
+        "value_1.0",
+    ]
+    assert_same_relation(scalar_result, execute_generated(engine, scalar_categories, [scalar_operation]))
+
+    padded = "\t\n\r\v\f\u00a0\u2003X\t\n\r\v\f\u00a0\u2003"
+    whitespace = duckdb.sql(f"SELECT '{padded}' AS text")
+    strip_operation = bound_step(
+        "stripText",
+        column=bound_ref("c:source:0", "text", 0),
+        newColumn="clean",
+    )
+    stripped = engine.apply_transform(whitespace, strip_operation)
+    assert records(stripped)[0]["clean"] == "X"
+    assert_same_relation(stripped, execute_generated(engine, whitespace, [strip_operation]))
 
     with pytest.raises(EngineError, match="Custom DuckDB code failed: boom"):
         engine.apply_transform(source_relation(), step("customCode", code="raise ValueError('boom')"))

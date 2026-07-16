@@ -20,7 +20,7 @@ import { App } from "../webviews/App";
 const step: TransformStep = {
   id: "round-sales",
   kind: "roundNumber",
-  params: { column: "sales", decimals: 0 }
+  params: { column: { id: "c:sales", name: "sales" }, decimals: 0 }
 };
 
 const metadata: SessionMetadata = {

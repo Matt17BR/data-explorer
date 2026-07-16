@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .base import (
+    DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
     DataFrameEngine,
     EngineCapabilities,
@@ -757,13 +758,15 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(pl.col(column).cast(pl.String).str.len_chars().alias(params["newColumn"]))
         if kind == "oneHotEncode":
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
-            columns = params["columns"]
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
             separator = params.get("prefixSeparator", "_")
             generated = [
                 (column, value, f"{column}{separator}{value}")
                 for column in columns
                 for value in sorted(eager.get_column(column).drop_nulls().unique().to_list(), key=str)
+                if str(value) and not (isinstance(value, float) and value != value)
             ]
+            generated.sort(key=lambda item: item[2])
             base = eager.drop(columns) if params.get("dropOriginal", True) else eager
             ensure_output_columns_available(base.columns, [name for _, _, name in generated], "One-hot encoding")
             if not generated:
@@ -777,7 +780,7 @@ class PolarsEngine(DataFrameEngine):
             return base.hstack(encoded)
         if kind == "multiLabelBinarize":
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             delimiter = params["delimiter"]
             labels = (
                 eager.select(pl.col(column).cast(pl.String).str.split(delimiter).explode().drop_nulls().unique())
@@ -804,7 +807,7 @@ class PolarsEngine(DataFrameEngine):
                 return base
             return base.hstack(eager.select(expressions))
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             expression = pl.col(column).cast(pl.String)
             if kind == "findReplace":
@@ -812,7 +815,7 @@ class PolarsEngine(DataFrameEngine):
                     params["find"], params["replacement"], literal=not params.get("regex", False)
                 )
             elif kind == "stripText":
-                expression = expression.str.strip_chars(params.get("characters"))
+                expression = expression.str.strip_chars(params.get("characters") or DEFAULT_STRIP_CHARACTERS)
             elif kind == "splitText":
                 expression = expression.str.split(params["delimiter"]).list.get(params["index"], null_on_oob=True)
             elif kind == "capitalizeText":
@@ -823,7 +826,7 @@ class PolarsEngine(DataFrameEngine):
                 expression = expression.str.to_uppercase()
             return df.with_columns(expression.alias(target))
         if kind == "minMaxScale":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             expression = pl.col(column).cast(pl.Float64, strict=False)
             valid = pl.when(expression.is_finite()).then(expression).otherwise(None)
             scaled = (
@@ -835,7 +838,7 @@ class PolarsEngine(DataFrameEngine):
             )
             return df.with_columns(scaled.alias(params.get("newColumn", column)))
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             expression = pl.col(column).cast(pl.Float64, strict=False)
             if kind == "roundNumber":
                 expression = expression.round(params.get("decimals", 0))
@@ -845,7 +848,7 @@ class PolarsEngine(DataFrameEngine):
                 expression = expression.ceil()
             return df.with_columns(expression.alias(params.get("newColumn", column)))
         if kind == "formatDatetime":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             expression = pl.col(column)
             if schema[column].base_type() not in {pl.Datetime, pl.Date}:
@@ -984,22 +987,34 @@ class PolarsEngine(DataFrameEngine):
                 )
             ]
         if kind == "oneHotEncode":
-            columns = params["columns"]
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
             eager = f"_eager_{index}"
             generated = f"_generated_{index}"
             encoded = f"_encoded_{index}"
             base = f"_base_{index}"
             names = f"_generated_names_{index}"
             collisions = f"_collisions_{index}"
+            reserved = f"_reserved_{index}"
             return [
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
                 (
                     f"{prefix}{generated} = [(column, value, str(column) + "
                     f"{params.get('prefixSeparator', '_')!r} + str(value)) for column in {columns!r} "
-                    f"for value in sorted({eager}.get_column(column).drop_nulls().unique().to_list(), key=str)]"
+                    f"for value in sorted({eager}.get_column(column).drop_nulls().unique().to_list(), key=str) "
+                    f"if str(value) and not (isinstance(value, float) and value != value)]"
                 ),
+                f"{prefix}{generated}.sort(key=lambda item: item[2])",
                 f"{prefix}{base} = {eager}.drop({columns!r}) if {params.get('dropOriginal', True)!r} else {eager}",
                 f"{prefix}{names} = [name for _, _, name in {generated}]",
+                (
+                    f"{prefix}{reserved} = [name for name in {names} "
+                    f"if name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError("
+                    f'"One-hot encoding would create Open Wrangler\'s reserved private row-identity column.")'
+                ),
                 (
                     f"{prefix}{collisions} = sorted((set({base}.columns) & set({names})) | "
                     f"{{name for name, count in Counter({names}).items() if count > 1}})"
@@ -1019,7 +1034,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}    df = {base}",
             ]
         if kind == "multiLabelBinarize":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             delimiter = params["delimiter"]
             eager = f"_eager_{index}"
             labels = f"_labels_{index}"
@@ -1027,6 +1042,7 @@ class PolarsEngine(DataFrameEngine):
             base = f"_base_{index}"
             names = f"_generated_names_{index}"
             collisions = f"_collisions_{index}"
+            reserved = f"_reserved_{index}"
             return [
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
                 f"{prefix}{labels} = {eager}.select(",
@@ -1036,6 +1052,15 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}{labels} = sorted(str(label) for label in {labels} if str(label))",
                 f"{prefix}{base} = {eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} else {eager}",
                 f"{prefix}{names} = [{params.get('prefix', f'{column}_')!r} + label for label in {labels}]",
+                (
+                    f"{prefix}{reserved} = [name for name in {names} "
+                    f"if name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}if {reserved}:",
+                (
+                    f"{prefix}    raise ValueError("
+                    f'"Multi-label binarization would create Open Wrangler\'s reserved private row-identity column.")'
+                ),
                 (
                     f"{prefix}{collisions} = sorted((set({base}.columns) & set({names})) | "
                     f"{{name for name, count in Counter({names}).items() if count > 1}})"
@@ -1057,7 +1082,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}    df = {base}",
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             base = f"pl.col({column!r}).cast(pl.String)"
             if kind == "findReplace":
@@ -1066,7 +1091,7 @@ class PolarsEngine(DataFrameEngine):
                     f"literal={not params.get('regex', False)!r})"
                 )
             elif kind == "stripText":
-                expression = f"{base}.str.strip_chars({params.get('characters')!r})"
+                expression = f"{base}.str.strip_chars({params.get('characters') or DEFAULT_STRIP_CHARACTERS!r})"
             elif kind == "splitText":
                 expression = (
                     f"{base}.str.split({params['delimiter']!r}).list.get({params['index']!r}, null_on_oob=True)"
@@ -1079,7 +1104,7 @@ class PolarsEngine(DataFrameEngine):
                 expression = f"{base}.str.to_uppercase()"
             return [f"{prefix}df = df.with_columns({expression}.alias({target!r}))"]
         if kind == "minMaxScale":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             name = f"_value_{index}"
             valid = f"_valid_{index}"
@@ -1094,7 +1119,7 @@ class PolarsEngine(DataFrameEngine):
                 ),
             ]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             method = (
                 f"round({params.get('decimals', 0)!r})"
@@ -1110,7 +1135,7 @@ class PolarsEngine(DataFrameEngine):
                 )
             ]
         if kind == "formatDatetime":
-            column = params["column"]
+            column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             return [
                 (
