@@ -695,7 +695,7 @@ def test_pandas_value_transforms_target_duplicate_and_non_string_labels_position
             ["élan", "red|blue", 1.2, "2024-01-02"],
             [None, "blue", 2.8, "2024-02-03"],
         ],
-        columns=["duplicate", "duplicate", 7, "when"],
+        columns=cast(Any, ["duplicate", "duplicate", 7, "when"]),
     )
     operations = [
         bound_step("upperText", column=bound_ref("c:source:0", "duplicate", 0)),

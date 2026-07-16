@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -438,7 +438,7 @@ def test_duplicate_encoder_edit_replay_and_undo_preserve_the_exact_surviving_ide
 
     source = pd.DataFrame(
         [["left-a", "right-u", 1.2], ["left-b", "right-v", 2.8]],
-        columns=["duplicate", "duplicate", 7],
+        columns=cast(Any, ["duplicate", "duplicate", 7]),
     )
     monkeypatch.setattr(__main__, "stable_value_duplicate_frame", source, raising=False)
     manager = SessionManager()
@@ -500,7 +500,7 @@ def test_duplicate_encoder_edit_replay_and_undo_preserve_the_exact_surviving_ide
         source,
         pd.DataFrame(
             [["left-a", "right-u", 1.2], ["left-b", "right-v", 2.8]],
-            columns=["duplicate", "duplicate", 7],
+            columns=cast(Any, ["duplicate", "duplicate", 7]),
         ),
     )
     manager.close_session(session_id, 7)
