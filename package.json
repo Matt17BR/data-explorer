@@ -439,7 +439,7 @@
       "view/item/context": [
         {
           "command": "openWrangler.editLatestStep",
-          "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep",
+          "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
           "group": "inline@10"
         }
       ]

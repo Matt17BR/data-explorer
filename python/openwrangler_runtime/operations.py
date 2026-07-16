@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .by_example import SynthesisError, normalize_by_example
+from .engines.base import is_internal_row_id_label
 
 
 class OperationError(ValueError):
@@ -98,6 +99,17 @@ FILTER_OPERATORS = {
     "isNaN",
     "isNotNaN",
 }
+_COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "renameColumn": ("column",),
+    "cloneColumn": ("column",),
+    "castColumn": ("column",),
+    "formula": ("leftColumn", "rightColumn"),
+    "textLength": ("column",),
+}
+_COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
+    "selectColumns": ("columns",),
+    "dropColumns": ("columns",),
+}
 
 
 def operation_catalog() -> list[dict[str, Any]]:
@@ -139,14 +151,26 @@ def validate_step(value: Mapping[str, Any]) -> dict[str, Any]:
             normalized = normalize_by_example(normalized)
         except SynthesisError as error:
             raise OperationError(str(error)) from error
+    _reject_private_column_namespace(kind, normalized)
     return {"id": step_id, "kind": kind, "params": normalized}
 
 
 def _validate_common(kind: str, params: dict[str, Any]) -> None:
+    reference_fields = _COLUMN_REFERENCE_FIELDS.get(kind, ())
+    for key in reference_fields:
+        if key in params:
+            params[key] = _normalize_column_reference(params[key], f"{kind}.{key}")
+    for key in _COLUMN_REFERENCE_LIST_FIELDS.get(kind, ()):
+        params[key] = _normalize_column_reference_list(params[key], f"{kind}.{key}")
+
     for key in ("column", "newColumn", "newName", "leftColumn", "rightColumn"):
+        if key in reference_fields:
+            continue
         if key in params and (not isinstance(params[key], str) or not params[key]):
             raise OperationError(f"{kind}.{key} must be a non-empty string.")
     for key in ("columns", "keys"):
+        if key in _COLUMN_REFERENCE_LIST_FIELDS.get(kind, ()):
+            continue
         if key in params and not _is_string_list(params[key], allow_empty=kind == "dropMissingRows"):
             raise OperationError(f"{kind}.{key} must be an array of column names.")
     for key in ("dropOriginal", "regex"):
@@ -166,7 +190,7 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     elif kind == "formula":
         if params["operator"] not in FORMULA_OPERATORS:
             raise OperationError("formula.operator is not supported.")
-        has_column = isinstance(params.get("rightColumn"), str)
+        has_column = "rightColumn" in params
         has_value = (
             "value" in params
             and isinstance(params.get("value"), int | float)
@@ -217,6 +241,30 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         raise OperationError("customCode.code must be non-empty Python code assigning a dataframe to result.")
 
 
+def _normalize_column_reference(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise OperationError(f"{label} must be a column reference object containing id and name.")
+    missing = {"id", "name"} - set(value)
+    if missing:
+        raise OperationError(f"{label} is missing required fields: {', '.join(sorted(missing))}.")
+    unexpected = set(value) - {"id", "name"}
+    if unexpected:
+        raise OperationError(f"{label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}.")
+    reference_id = value["id"]
+    name = value["name"]
+    if not isinstance(reference_id, str) or not reference_id:
+        raise OperationError(f"{label}.id must be a non-empty string.")
+    if not isinstance(name, str):
+        raise OperationError(f"{label}.name must be a string.")
+    return {"id": reference_id, "name": name}
+
+
+def _normalize_column_reference_list(value: Any, label: str) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value:
+        raise OperationError(f"{label} must be a non-empty array of column references.")
+    return [_normalize_column_reference(item, f"{label}[{index}]") for index, item in enumerate(value)]
+
+
 def _validate_sort_rules(value: Any, label: str, *, allow_empty: bool) -> None:
     if not isinstance(value, list) or (not allow_empty and not value):
         qualifier = "an array" if allow_empty else "a non-empty array"
@@ -263,6 +311,64 @@ def _validate_filter_model(value: Any) -> None:
             for key in ("includeNulls", "includeNaN"):
                 if key in value_filter and not isinstance(value_filter[key], bool):
                     raise OperationError(f"Column valueFilter.{key} must be a boolean.")
+
+
+def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> None:
+    """Keep every public operation away from the session's hidden row token."""
+
+    references: list[tuple[str, Any]] = []
+    if kind == "sortRows":
+        references.extend(("rules.column", rule.get("column")) for rule in params["rules"])
+    elif kind == "filterRows":
+        model = params["filterModel"]
+        references.extend(("filterModel.filters.column", item.get("column")) for item in model["filters"])
+        references.extend(("filterModel.sort.column", item.get("column")) for item in model.get("sort", []))
+    elif kind in {"dropMissingRows", "dropDuplicates", "oneHotEncode"}:
+        references.extend(("columns", name) for name in params.get("columns", []))
+    elif kind in {"selectColumns", "dropColumns"}:
+        references.extend(("columns.name", item.get("name")) for item in params["columns"])
+    elif kind in {"renameColumn", "cloneColumn", "castColumn", "textLength"}:
+        references.append(("column.name", params["column"].get("name")))
+    elif kind == "formula":
+        references.append(("leftColumn.name", params["leftColumn"].get("name")))
+        if "rightColumn" in params:
+            references.append(("rightColumn.name", params["rightColumn"].get("name")))
+    elif kind in {
+        "multiLabelBinarize",
+        "findReplace",
+        "stripText",
+        "splitText",
+        "capitalizeText",
+        "lowerText",
+        "upperText",
+        "minMaxScale",
+        "roundNumber",
+        "floorNumber",
+        "ceilNumber",
+        "formatDatetime",
+    }:
+        references.append(("column", params["column"]))
+    elif kind == "groupBy":
+        references.extend(("keys", name) for name in params["keys"])
+        for aggregation in params["aggregations"]:
+            references.extend(
+                (
+                    ("aggregations.column", aggregation["column"]),
+                    ("aggregations.alias", aggregation["alias"]),
+                )
+            )
+    elif kind == "byExample":
+        references.extend(("sourceColumns", name) for name in params["sourceColumns"])
+
+    for output_field in ("newName", "newColumn"):
+        if output_field in params:
+            references.append((output_field, params[output_field]))
+    if kind == "multiLabelBinarize" and "prefix" in params:
+        references.append(("prefix", params["prefix"]))
+
+    for label, name in references:
+        if is_internal_row_id_label(name):
+            raise OperationError(f"{kind}.{label} uses Open Wrangler's reserved private row-identity prefix.")
 
 
 def _is_string_list(value: Any, *, allow_empty: bool = False) -> bool:

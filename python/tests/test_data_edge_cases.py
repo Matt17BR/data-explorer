@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -186,6 +187,33 @@ def test_zero_column_frames_remain_pageable() -> None:
     assert polars_engine.schema(polars_frame) == []
     assert polars_engine.summaries(polars_frame) == []
     assert polars_engine.page(polars_frame, 0, 10)["rows"] == []
+
+
+def test_pandas_multiindex_columns_keep_the_private_row_identity_hidden(tmp_path: Path) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        [[1, 2], [3, 4]],
+        columns=pd.MultiIndex.from_tuples([("a", "x"), ("b", "y")]),
+    )
+    identified = engine.ensure_row_ids(frame, "multi-index")
+    internal = engine.internal_row_id_column(identified)
+
+    assert isinstance(internal, tuple)
+    assert str(internal[0]).startswith(INTERNAL_ROW_ID_PREFIX)
+    assert engine.shape(identified) == {"rows": 2, "columns": 2}
+    assert len(engine.schema(identified)) == 2
+    page = engine.page(identified, 0, 10)
+    assert [row["id"] for row in page["rows"]] == ["r:multi-index:0", "r:multi-index:1"]
+    assert [len(row["values"]) for row in page["rows"]] == [2, 2]
+
+    destination = tmp_path / "multi-index.csv"
+    engine.export_data(identified, str(destination), "csv")
+    assert INTERNAL_ROW_ID_PREFIX not in destination.read_text(encoding="utf-8")
+
+    reserved = frame.copy()
+    reserved[(f"{INTERNAL_ROW_ID_PREFIX}user", "value")] = [0, 1]
+    with pytest.raises(EngineError, match="private row-identity prefix"):
+        engine.validate_internal_row_id_namespace(reserved)
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

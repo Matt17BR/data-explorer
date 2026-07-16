@@ -1,7 +1,13 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import type { FilterModel } from "../../shared/filterModel";
-import type { OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
+import type {
+  ColumnReference,
+  ColumnSchema,
+  OperationKind,
+  SessionMetadata,
+  TransformStep
+} from "../../shared/protocol";
 import { operationCatalog, operationGroups, operationByKind } from "../../shared/operations";
 import { isTransformStep } from "../../shared/protocolValidation";
 
@@ -42,13 +48,15 @@ export function OperationBuilder({
       : operationCatalog;
   }, [search]);
   const activeInitial = initialStep?.kind === selectedKind ? initialStep : undefined;
+  const availableColumns =
+    activeInitial && metadata.latestStepInputSchema ? metadata.latestStepInputSchema : metadata.schema;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy || !selectedKind) return;
     try {
       const form = new FormData(event.currentTarget);
-      const params = buildParams(selectedKind, form, filterModel);
+      const params = buildParams(selectedKind, form, filterModel, availableColumns);
       const step = {
         id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
         kind: selectedKind,
@@ -142,6 +150,7 @@ export function OperationBuilder({
                 <OperationFields
                   kind={selectedKind}
                   metadata={metadata}
+                  columns={availableColumns}
                   filterModel={filterModel}
                   initialStep={activeInitial}
                   sortRows={sortRows}
@@ -185,6 +194,7 @@ export function OperationBuilder({
 interface OperationFieldsProps {
   kind: OperationKind;
   metadata: SessionMetadata;
+  columns: ColumnSchema[];
   filterModel: FilterModel;
   initialStep?: TransformStep;
   sortRows: number;
@@ -196,6 +206,7 @@ interface OperationFieldsProps {
 function OperationFields({
   kind,
   metadata,
+  columns,
   filterModel,
   initialStep,
   sortRows,
@@ -206,10 +217,12 @@ function OperationFields({
   const params = initialStep?.params ?? {};
   const [formulaOperandMode, setFormulaOperandMode] = useState(params.rightColumn ? "column" : "value");
   const param = (name: string, fallback = "") => String(params[name] ?? fallback);
-  const columns = (
-    initialStep && metadata.latestStepInputSchema ? metadata.latestStepInputSchema : metadata.schema
-  ).map((column) => column.name);
+  const columnNames = columns.map((column) => column.name);
   const initialColumns = (name: string) => (Array.isArray(params[name]) ? (params[name] as string[]) : []);
+  const initialColumnReference = (name: string, fallback = columns[0]?.id ?? "") =>
+    columnReferenceId(params[name]) ?? fallback;
+  const initialColumnReferences = (name: string) =>
+    Array.isArray(params[name]) ? params[name].map(columnReferenceId).filter(isDefined) : [];
 
   if (kind === "sortRows") {
     const rules = Array.isArray(params.rules) ? (params.rules as Record<string, unknown>[]) : [];
@@ -220,8 +233,8 @@ function OperationFields({
             <ColumnSelect
               name="sortColumn"
               label={`Column ${index + 1}`}
-              columns={columns}
-              defaultValue={String(rules[index]?.column ?? columns[0] ?? "")}
+              columns={columnNames}
+              defaultValue={String(rules[index]?.column ?? columnNames[0] ?? "")}
             />
             <SelectField
               name="sortDirection"
@@ -269,7 +282,7 @@ function OperationFields({
         <ColumnsSelect
           name="columns"
           label="Columns (none means all)"
-          columns={columns}
+          columns={columnNames}
           defaultValue={initialColumns("columns")}
           required={false}
         />
@@ -291,7 +304,7 @@ function OperationFields({
         <ColumnsSelect
           name="columns"
           label="Compare columns (none means all)"
-          columns={columns}
+          columns={columnNames}
           defaultValue={initialColumns("columns")}
           required={false}
         />
@@ -308,43 +321,49 @@ function OperationFields({
       </>
     );
   }
-  if (kind === "selectColumns" || kind === "dropColumns" || kind === "oneHotEncode") {
+  if (kind === "selectColumns" || kind === "dropColumns") {
+    return (
+      <ColumnReferencesSelect
+        name="columns"
+        label={kind === "selectColumns" ? "Columns to keep" : "Columns to drop"}
+        columns={columns}
+        defaultValue={initialColumnReferences("columns")}
+        preserveSelectionOrder={kind === "selectColumns"}
+      />
+    );
+  }
+  if (kind === "oneHotEncode") {
     return (
       <>
         <ColumnsSelect
           name="columns"
-          label={
-            kind === "selectColumns"
-              ? "Columns to keep"
-              : kind === "dropColumns"
-                ? "Columns to drop"
-                : "Categorical columns"
-          }
-          columns={columns}
+          label="Categorical columns"
+          columns={columnNames}
           defaultValue={initialColumns("columns")}
         />
-        {kind === "oneHotEncode" && (
-          <>
-            <TextField
-              name="prefixSeparator"
-              label="Prefix separator"
-              defaultValue={param("prefixSeparator", "_")}
-              required
-            />
-            <CheckboxField
-              name="dropOriginal"
-              label="Drop original columns"
-              defaultChecked={params.dropOriginal !== false}
-            />
-          </>
-        )}
+        <TextField
+          name="prefixSeparator"
+          label="Prefix separator"
+          defaultValue={param("prefixSeparator", "_")}
+          required
+        />
+        <CheckboxField
+          name="dropOriginal"
+          label="Drop original columns"
+          defaultChecked={params.dropOriginal !== false}
+        />
       </>
     );
   }
   if (kind === "renameColumn" || kind === "cloneColumn") {
     return (
       <>
-        <ColumnSelect name="column" label="Column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnReferenceSelect
+          name="column"
+          label="Column"
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
+        />
         <TextField name="newName" label="New name" defaultValue={param("newName")} required />
       </>
     );
@@ -352,7 +371,12 @@ function OperationFields({
   if (kind === "castColumn") {
     return (
       <>
-        <ColumnSelect name="column" label="Column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnReferenceSelect
+          name="column"
+          label="Column"
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
+        />
         <SelectField
           name="dtype"
           label="Target type"
@@ -365,11 +389,11 @@ function OperationFields({
   if (kind === "formula") {
     return (
       <>
-        <ColumnSelect
+        <ColumnReferenceSelect
           name="leftColumn"
           label="Left column"
           columns={columns}
-          defaultValue={param("leftColumn", columns[0])}
+          defaultValue={initialColumnReference("leftColumn")}
         />
         <SelectField
           name="operator"
@@ -391,11 +415,11 @@ function OperationFields({
         {formulaOperandMode === "value" ? (
           <TextField name="value" label="Numeric value" type="number" defaultValue={param("value", "0")} />
         ) : (
-          <ColumnSelect
+          <ColumnReferenceSelect
             name="rightColumn"
             label="Right column"
             columns={columns}
-            defaultValue={param("rightColumn", columns[0])}
+            defaultValue={initialColumnReference("rightColumn")}
           />
         )}
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn")} required />
@@ -405,7 +429,12 @@ function OperationFields({
   if (kind === "textLength") {
     return (
       <>
-        <ColumnSelect name="column" label="Text column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnReferenceSelect
+          name="column"
+          label="Text column"
+          columns={columns}
+          defaultValue={initialColumnReference("column")}
+        />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "text_length")} required />
       </>
     );
@@ -416,8 +445,8 @@ function OperationFields({
         <ColumnSelect
           name="column"
           label="Labels column"
-          columns={columns}
-          defaultValue={param("column", columns[0])}
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
         <TextField name="prefix" label="Output prefix" defaultValue={param("prefix")} />
@@ -428,7 +457,12 @@ function OperationFields({
   if (kind === "findReplace") {
     return (
       <>
-        <ColumnSelect name="column" label="Text column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnSelect
+          name="column"
+          label="Text column"
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
+        />
         <TextField name="find" label="Find" defaultValue={param("find")} required />
         <TextField name="replacement" label="Replace with" defaultValue={param("replacement")} />
         <CheckboxField name="regex" label="Use regular expression" defaultChecked={params.regex === true} />
@@ -439,7 +473,12 @@ function OperationFields({
   if (kind === "stripText") {
     return (
       <>
-        <ColumnSelect name="column" label="Text column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnSelect
+          name="column"
+          label="Text column"
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
+        />
         <TextField name="characters" label="Characters (blank means whitespace)" defaultValue={param("characters")} />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
       </>
@@ -448,7 +487,12 @@ function OperationFields({
   if (kind === "splitText") {
     return (
       <>
-        <ColumnSelect name="column" label="Text column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnSelect
+          name="column"
+          label="Text column"
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
+        />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
         <TextField name="index" label="Part index" type="number" min={0} defaultValue={param("index", "0")} required />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "split_value")} required />
@@ -458,7 +502,12 @@ function OperationFields({
   if (["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
     return (
       <>
-        <ColumnSelect name="column" label="Column" columns={columns} defaultValue={param("column", columns[0])} />
+        <ColumnSelect
+          name="column"
+          label="Column"
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
+        />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
       </>
     );
@@ -469,8 +518,8 @@ function OperationFields({
         <ColumnSelect
           name="column"
           label="Numeric column"
-          columns={columns}
-          defaultValue={param("column", columns[0])}
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
         />
         <TextField
           name="decimals"
@@ -489,8 +538,8 @@ function OperationFields({
         <ColumnSelect
           name="column"
           label="Date or datetime column"
-          columns={columns}
-          defaultValue={param("column", columns[0])}
+          columns={columnNames}
+          defaultValue={param("column", columnNames[0])}
         />
         <TextField name="format" label="strftime format" defaultValue={param("format", "%Y-%m-%d")} required />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
@@ -501,15 +550,15 @@ function OperationFields({
     const aggregations = Array.isArray(params.aggregations) ? (params.aggregations as Record<string, unknown>[]) : [];
     return (
       <>
-        <ColumnsSelect name="keys" label="Group keys" columns={columns} defaultValue={initialColumns("keys")} />
+        <ColumnsSelect name="keys" label="Group keys" columns={columnNames} defaultValue={initialColumns("keys")} />
         <Fieldset legend="Aggregations">
           {Array.from({ length: Math.max(aggregationRows, aggregations.length) }, (_, index) => (
             <div className="compoundRow aggregationRow" key={index}>
               <ColumnSelect
                 name="aggregationColumn"
                 label={`Value ${index + 1}`}
-                columns={columns}
-                defaultValue={String(aggregations[index]?.column ?? columns[0] ?? "")}
+                columns={columnNames}
+                defaultValue={String(aggregations[index]?.column ?? columnNames[0] ?? "")}
               />
               <SelectField
                 name="aggregationOperation"
@@ -537,8 +586,8 @@ function OperationFields({
       ? JSON.stringify(params.examples, null, 2)
       : JSON.stringify(
           [
-            { inputs: { [columns[0] ?? "value"]: "example one" }, output: "EXAMPLE ONE" },
-            { inputs: { [columns[0] ?? "value"]: "example two" }, output: "EXAMPLE TWO" }
+            { inputs: { [columnNames[0] ?? "value"]: "example one" }, output: "EXAMPLE ONE" },
+            { inputs: { [columnNames[0] ?? "value"]: "example two" }, output: "EXAMPLE TWO" }
           ],
           null,
           2
@@ -548,8 +597,10 @@ function OperationFields({
         <ColumnsSelect
           name="sourceColumns"
           label="Source columns"
-          columns={columns}
-          defaultValue={initialColumns("sourceColumns").length ? initialColumns("sourceColumns") : columns.slice(0, 1)}
+          columns={columnNames}
+          defaultValue={
+            initialColumns("sourceColumns").length ? initialColumns("sourceColumns") : columnNames.slice(0, 1)
+          }
         />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "example_result")} required />
         <label className="formField codeField">
@@ -584,11 +635,22 @@ function OperationFields({
   return null;
 }
 
-function buildParams(kind: OperationKind, form: FormData, filterModel: FilterModel): Record<string, unknown> {
+function buildParams(
+  kind: OperationKind,
+  form: FormData,
+  filterModel: FilterModel,
+  availableColumns: ColumnSchema[]
+): Record<string, unknown> {
   const value = (name: string) => String(form.get(name) ?? "");
   const optional = (target: Record<string, unknown>, name: string, transformed = value(name)) => {
     if (transformed !== "") target[name] = transformed;
   };
+  const columnReference = (name: string) => referenceForId(value(name), availableColumns);
+  const columnReferences = (name: string) =>
+    form
+      .getAll(name)
+      .map(String)
+      .map((id) => referenceForId(id, availableColumns));
   if (kind === "sortRows") {
     const columns = form.getAll("sortColumn").map(String);
     const directions = form.getAll("sortDirection").map(String);
@@ -603,23 +665,27 @@ function buildParams(kind: OperationKind, form: FormData, filterModel: FilterMod
     if (columns.length) params.columns = columns;
     return params;
   }
-  if (kind === "selectColumns" || kind === "dropColumns") return { columns: form.getAll("columns").map(String) };
+  if (kind === "selectColumns" || kind === "dropColumns") return { columns: columnReferences("columns") };
   if (kind === "oneHotEncode")
     return {
       columns: form.getAll("columns").map(String),
       prefixSeparator: value("prefixSeparator"),
       dropOriginal: form.has("dropOriginal")
     };
-  if (kind === "renameColumn" || kind === "cloneColumn") return { column: value("column"), newName: value("newName") };
-  if (kind === "castColumn") return { column: value("column"), dtype: value("dtype") };
+  if (kind === "renameColumn" || kind === "cloneColumn") {
+    return { column: columnReference("column"), newName: value("newName") };
+  }
+  if (kind === "castColumn") return { column: columnReference("column"), dtype: value("dtype") };
   if (kind === "formula")
     return {
-      leftColumn: value("leftColumn"),
+      leftColumn: columnReference("leftColumn"),
       operator: value("operator"),
       newColumn: value("newColumn"),
-      ...(value("operandMode") === "column" ? { rightColumn: value("rightColumn") } : { value: Number(value("value")) })
+      ...(value("operandMode") === "column"
+        ? { rightColumn: columnReference("rightColumn") }
+        : { value: Number(value("value")) })
     };
-  if (kind === "textLength") return { column: value("column"), newColumn: value("newColumn") };
+  if (kind === "textLength") return { column: columnReference("column"), newColumn: value("newColumn") };
   if (kind === "multiLabelBinarize") {
     const params: Record<string, unknown> = {
       column: value("column"),
@@ -693,6 +759,22 @@ function buildParams(kind: OperationKind, form: FormData, filterModel: FilterMod
   return { code: value("code") };
 }
 
+function columnReferenceId(value: unknown): string | undefined {
+  return typeof value === "object" && value !== null && "id" in value && typeof value.id === "string"
+    ? value.id
+    : undefined;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
+function referenceForId(id: string, columns: ColumnSchema[]): ColumnReference {
+  const column = columns.find((candidate) => candidate.id === id);
+  if (!column) throw new Error("The selected column is no longer available.");
+  return { id: column.id, name: column.name };
+}
+
 function Fieldset({ legend, children }: { legend: string; children: ReactNode }) {
   return (
     <fieldset className="formFieldset">
@@ -700,6 +782,102 @@ function Fieldset({ legend, children }: { legend: string; children: ReactNode })
       {children}
     </fieldset>
   );
+}
+
+function ColumnReferenceSelect({
+  name,
+  label,
+  columns,
+  defaultValue
+}: {
+  name: string;
+  label: string;
+  columns: ColumnSchema[];
+  defaultValue?: string;
+}) {
+  return (
+    <label className="formField">
+      <span>{label}</span>
+      <select name={name} defaultValue={defaultValue ?? columns[0]?.id} required>
+        {columns.map((column) => (
+          <option key={column.id} value={column.id}>
+            {columnOptionLabel(column)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ColumnReferencesSelect({
+  name,
+  label,
+  columns,
+  defaultValue,
+  required = true,
+  preserveSelectionOrder = false
+}: {
+  name: string;
+  label: string;
+  columns: ColumnSchema[];
+  defaultValue: string[];
+  required?: boolean;
+  preserveSelectionOrder?: boolean;
+}) {
+  const selectId = useId();
+  const helpId = `${selectId}-help`;
+  const orderId = `${selectId}-order`;
+  const validColumnIds = new Set(columns.map((column) => column.id));
+  const [selectedIds, setSelectedIds] = useState(defaultValue.filter((id) => validColumnIds.has(id)));
+  const selectedLabels = selectedIds.map((id) => {
+    const column = columns.find((candidate) => candidate.id === id);
+    return column ? columnOptionLabel(column) : id;
+  });
+  return (
+    <div className="formField">
+      <label htmlFor={selectId}>{label}</label>
+      {selectedIds.map((id) => (
+        <input key={id} type="hidden" name={name} value={id} />
+      ))}
+      <select
+        id={selectId}
+        multiple
+        size={Math.min(6, Math.max(3, columns.length))}
+        value={selectedIds}
+        required={required}
+        aria-describedby={preserveSelectionOrder && selectedLabels.length > 0 ? `${helpId} ${orderId}` : helpId}
+        onChange={(event) => {
+          const selectedInSchemaOrder = Array.from(event.currentTarget.selectedOptions, (option) => option.value);
+          const selected = new Set(selectedInSchemaOrder);
+          setSelectedIds((current) => [
+            ...current.filter((id) => selected.has(id)),
+            ...selectedInSchemaOrder.filter((id) => !current.includes(id))
+          ]);
+        }}
+      >
+        {columns.map((column) => (
+          <option key={column.id} value={column.id}>
+            {columnOptionLabel(column)}
+          </option>
+        ))}
+      </select>
+      <small id={helpId}>
+        {preserveSelectionOrder
+          ? "Use Ctrl/Cmd or Shift to select more than one column. Selection order becomes output order."
+          : "Use Ctrl/Cmd or Shift to select more than one column."}
+      </small>
+      {preserveSelectionOrder && selectedLabels.length > 0 && (
+        <small id={orderId} aria-live="polite">
+          Output order: {selectedLabels.join(" → ")}
+        </small>
+      )}
+    </div>
+  );
+}
+
+function columnOptionLabel(column: ColumnSchema): string {
+  const displayName = column.name === "" ? "(empty name)" : column.name;
+  return `${displayName} — column ${column.position + 1}`;
 }
 
 function ColumnSelect({

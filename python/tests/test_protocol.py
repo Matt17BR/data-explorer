@@ -107,7 +107,7 @@ def test_protocol_v2_validates_transformation_steps() -> None:
                 "step": {
                     "id": "rename-1",
                     "kind": "renameColumn",
-                    "params": {"column": "old", "newName": "new"},
+                    "params": {"column": {"id": "column:0", "name": "old"}, "newName": "new"},
                 },
                 "offset": 0,
                 "limit": 200,
@@ -116,6 +116,184 @@ def test_protocol_v2_validates_transformation_steps() -> None:
     )
 
     assert request["step"]["kind"] == "renameColumn"
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {
+            "id": "select",
+            "kind": "selectColumns",
+            "params": {"columns": [{"id": "column:0", "name": "value"}]},
+        },
+        {
+            "id": "drop",
+            "kind": "dropColumns",
+            "params": {"columns": [{"id": "column:0", "name": "value"}]},
+        },
+        {
+            "id": "rename",
+            "kind": "renameColumn",
+            "params": {"column": {"id": "column:0", "name": "value"}, "newName": "amount"},
+        },
+        {
+            "id": "clone",
+            "kind": "cloneColumn",
+            "params": {"column": {"id": "column:0", "name": "value"}, "newName": "copy"},
+        },
+        {
+            "id": "cast",
+            "kind": "castColumn",
+            "params": {"column": {"id": "column:0", "name": "value"}, "dtype": "float"},
+        },
+        {
+            "id": "formula-value",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": "column:0", "name": "value"},
+                "operator": "multiply",
+                "value": 2,
+                "newColumn": "doubled",
+            },
+        },
+        {
+            "id": "formula-column",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": "column:0", "name": "value"},
+                "operator": "add",
+                "rightColumn": {"id": "column:1", "name": "other"},
+                "newColumn": "total",
+            },
+        },
+        {
+            "id": "length-empty-name",
+            "kind": "textLength",
+            "params": {"column": {"id": "column:2", "name": ""}, "newColumn": "length"},
+        },
+    ],
+    ids=lambda step: str(step["id"]),
+)
+def test_protocol_v2_accepts_canonical_column_references(step: dict) -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": f"preview-{step['id']}",
+        "priority": "interactive",
+        "request": {
+            "kind": "previewStep",
+            "sessionId": "session-1",
+            "revision": 0,
+            "step": step,
+            "offset": 0,
+            "limit": 200,
+        },
+    }
+
+    assert decode_envelope(envelope)[2]["step"] == step
+
+
+@pytest.mark.parametrize(
+    ("step", "message"),
+    [
+        (
+            {"id": "select-string", "kind": "selectColumns", "params": {"columns": ["value"]}},
+            "column reference object",
+        ),
+        (
+            {"id": "drop-empty", "kind": "dropColumns", "params": {"columns": []}},
+            "non-empty array of column references",
+        ),
+        (
+            {
+                "id": "rename-string",
+                "kind": "renameColumn",
+                "params": {"column": "value", "newName": "amount"},
+            },
+            "column reference object",
+        ),
+        (
+            {
+                "id": "clone-name-only",
+                "kind": "cloneColumn",
+                "params": {"column": {"name": "value"}, "newName": "copy"},
+            },
+            "missing required fields: id",
+        ),
+        (
+            {
+                "id": "cast-id-only",
+                "kind": "castColumn",
+                "params": {"column": {"id": "column:0"}, "dtype": "float"},
+            },
+            "missing required fields: name",
+        ),
+        (
+            {
+                "id": "formula-string",
+                "kind": "formula",
+                "params": {
+                    "leftColumn": "value",
+                    "operator": "add",
+                    "rightColumn": "other",
+                    "newColumn": "total",
+                },
+            },
+            "column reference object",
+        ),
+        (
+            {
+                "id": "length-extra",
+                "kind": "textLength",
+                "params": {
+                    "column": {"id": "column:0", "name": "value", "position": 0},
+                    "newColumn": "length",
+                },
+            },
+            "unknown fields: position",
+        ),
+        (
+            {
+                "id": "length-empty-id",
+                "kind": "textLength",
+                "params": {"column": {"id": "", "name": "value"}, "newColumn": "length"},
+            },
+            "id must be a non-empty string",
+        ),
+        (
+            {
+                "id": "length-non-string-name",
+                "kind": "textLength",
+                "params": {"column": {"id": "column:0", "name": 42}, "newColumn": "length"},
+            },
+            "name must be a string",
+        ),
+        (
+            {
+                "id": "rename-name-field",
+                "kind": "renameColumn",
+                "params": {"columnName": "value", "newName": "amount"},
+            },
+            "missing required parameters: column",
+        ),
+    ],
+)
+def test_protocol_v2_rejects_legacy_or_malformed_column_references(step: dict, message: str) -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": f"preview-{step['id']}",
+        "priority": "interactive",
+        "request": {
+            "kind": "previewStep",
+            "sessionId": "session-1",
+            "revision": 0,
+            "step": step,
+            "offset": 0,
+            "limit": 200,
+        },
+    }
+
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(envelope)
 
 
 def test_protocol_v2_validates_applied_step_inspection() -> None:
@@ -163,7 +341,11 @@ def test_protocol_v2_rejects_malformed_transformation_steps() -> None:
                     "kind": "previewStep",
                     "sessionId": "session-1",
                     "revision": 0,
-                    "step": {"id": "rename-1", "kind": "renameColumn", "params": {"column": "old"}},
+                    "step": {
+                        "id": "rename-1",
+                        "kind": "renameColumn",
+                        "params": {"column": {"id": "column:0", "name": "old"}},
+                    },
                     "offset": 0,
                     "limit": 200,
                 },

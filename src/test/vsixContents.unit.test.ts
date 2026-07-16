@@ -24,4 +24,15 @@ describe("VSIX production entry allowlist", () => {
     expect(result.forbidden).toEqual(["extension/media/unexpected.js", "extension/scratch.txt"]);
     expect(result.missing).toEqual([]);
   });
+
+  it("requires the compiled webview host and bundled Codicon font", () => {
+    const entries = requiredVsixEntries.filter(
+      (entry) => entry !== "extension/dist/extension/webviewPanel.js" && entry !== "extension/media/codicon.ttf"
+    );
+
+    expect(inspectVsixEntries(entries).missing).toEqual([
+      "extension/dist/extension/webviewPanel.js",
+      "extension/media/codicon.ttf"
+    ]);
+  });
 });

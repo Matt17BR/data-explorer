@@ -29,8 +29,18 @@ const metadata: SessionMetadata = {
     filters: [],
     sort: [{ column: "value", direction: "desc", nulls: "last" }]
   },
-  steps: [{ id: "rename", kind: "renameColumn", params: { column: "old", newName: "new" } }],
-  draftStep: { id: "drop", kind: "dropColumns", params: { columns: ["unused"] } }
+  steps: [
+    {
+      id: "rename",
+      kind: "renameColumn",
+      params: { column: { id: "c:source:0", name: "old" }, newName: "new" }
+    }
+  ],
+  draftStep: {
+    id: "drop",
+    kind: "dropColumns",
+    params: { columns: [{ id: "c:source:1", name: "unused" }] }
+  }
 };
 
 describe("session persistence", () => {

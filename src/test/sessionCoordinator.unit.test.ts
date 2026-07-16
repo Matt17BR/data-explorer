@@ -230,7 +230,11 @@ describe("SessionCoordinator", () => {
   });
 
   it("ignores a superseded inspection and clears selection before a mutation is dispatched", async () => {
-    const secondStep: TransformStep = { id: "drop-city", kind: "dropColumns", params: { columns: ["city"] } };
+    const secondStep: TransformStep = {
+      id: "drop-city",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:source:0", name: "city" }] }
+    };
     const previewStep: TransformStep = { id: "upper-city", kind: "upperText", params: { column: "city" } };
     const firstInspection = deferred<OpenWranglerResponse>();
     const pendingPreview = deferred<OpenWranglerResponse>();
@@ -369,7 +373,7 @@ describe("SessionCoordinator", () => {
     const appliedStep: TransformStep = {
       id: "persisted-drop",
       kind: "dropColumns",
-      params: { columns: ["unused"] }
+      params: { columns: [{ id: "c:source:0", name: "unused" }] }
     };
     const draftStep: TransformStep = {
       id: "persisted-round",
@@ -498,7 +502,7 @@ describe("SessionCoordinator", () => {
     const savedStep: TransformStep = {
       id: "invalid-for-source",
       kind: "dropColumns",
-      params: { columns: ["missing"] }
+      params: { columns: [{ id: "c:source:0", name: "missing" }] }
     };
     const key = persistenceKey(openRequest.source, "polars");
     const stored = {
@@ -868,7 +872,11 @@ describe("SessionCoordinator", () => {
   it("rejects queued mutations and pages when an earlier mutation advances the public revision", async () => {
     const activeMutation = deferred<OpenWranglerResponse>();
     const dispatched: string[] = [];
-    const step: TransformStep = { id: "queued-revision", kind: "dropColumns", params: { columns: ["sales"] } };
+    const step: TransformStep = {
+      id: "queued-revision",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:source:0", name: "sales" }] }
+    };
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") return openedResponse();
       if (request.kind === "previewStep") {
@@ -1122,11 +1130,15 @@ describe("SessionCoordinator", () => {
   });
 
   it("closes a failed replay candidate without corrupting the live coordinated state", async () => {
-    const firstStep: TransformStep = { id: "replay-first", kind: "dropColumns", params: { columns: ["first"] } };
+    const firstStep: TransformStep = {
+      id: "replay-first",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:source:0", name: "first" }] }
+    };
     const secondStep: TransformStep = {
       id: "replay-second",
       kind: "renameColumn",
-      params: { column: "second", newName: "renamed" }
+      params: { column: { id: "c:source:1", name: "second" }, newName: "renamed" }
     };
     const liveOpened = openedResponse("runtime-live");
     liveOpened.metadata = {

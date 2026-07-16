@@ -13,10 +13,13 @@ from .base import (
     EngineCapabilities,
     EngineError,
     boolean_visualization,
+    bound_column_name,
+    bound_column_position,
     categorical_visualization,
     datetime_visualization,
     ensure_output_columns_available,
     infer_semantic_type,
+    is_internal_row_id_label,
     normalize_cell,
     numeric_visualization,
 )
@@ -321,34 +324,49 @@ class PandasEngine(DataFrameEngine):
                 subset=params.get("columns") or self._visible_columns(df), keep=False if keep == "none" else keep
             )
         if kind == "selectColumns":
-            row_id = self._row_id_column(df)
-            return df.loc[:, [*([row_id] if row_id else []), *params["columns"]]]
+            selected = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
+            row_id_position = self._row_id_position(df)
+            positions = [*([row_id_position] if row_id_position is not None else []), *selected]
+            return df.iloc[:, positions].copy()
         if kind == "dropColumns":
-            return df.drop(columns=params["columns"])
+            removed = {self._bound_frame_position(df, column, kind) for column in params["columns"]}
+            return df.iloc[:, [position for position in range(df.shape[1]) if position not in removed]].copy()
         if kind == "renameColumn":
-            return df.rename(columns={params["column"]: params["newName"]})
-        if kind == "cloneColumn":
-            df[params["newName"]] = df[params["column"]]
+            position = self._bound_frame_position(df, params["column"], kind)
+            columns = list(df.columns)
+            columns[position] = params["newName"]
+            df.columns = columns
             return df
+        if kind == "cloneColumn":
+            position = self._bound_frame_position(df, params["column"], kind)
+            return pd.concat([df, df.iloc[:, position].rename(params["newName"])], axis=1)
         if kind == "castColumn":
-            column = params["column"]
+            position = self._bound_frame_position(df, params["column"], kind)
+            series = df.iloc[:, position]
             dtype = params["dtype"]
             if dtype == "date":
-                df[column] = pd.to_datetime(df[column], errors="coerce").dt.date
+                result = pd.to_datetime(series, errors="coerce").dt.date
             elif dtype == "datetime":
-                df[column] = pd.to_datetime(df[column], errors="coerce")
+                result = pd.to_datetime(series, errors="coerce")
             else:
-                df[column] = df[column].astype(
+                result = series.astype(
                     {"string": "string", "integer": "Int64", "float": "Float64", "boolean": "boolean"}[dtype]
                 )
+            df.isetitem(position, result)
             return df
         if kind == "formula":
-            right = df[params["rightColumn"]] if params.get("rightColumn") else params["value"]
-            df[params["newColumn"]] = _pandas_formula(df[params["leftColumn"]], right, params["operator"])
-            return df
+            left = df.iloc[:, self._bound_frame_position(df, params["leftColumn"], kind)]
+            right = (
+                df.iloc[:, self._bound_frame_position(df, params["rightColumn"], kind)]
+                if params.get("rightColumn")
+                else params["value"]
+            )
+            result = _pandas_formula(left, right, params["operator"])
+            return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "textLength":
-            df[params["newColumn"]] = df[params["column"]].astype("string").str.len()
-            return df
+            position = self._bound_frame_position(df, params["column"], kind)
+            result = df.iloc[:, position].astype("string").str.len()
+            return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "oneHotEncode":
             columns = params["columns"]
             encoded = pd.get_dummies(df[columns], prefix_sep=params.get("prefixSeparator", "_"), dtype="int8")
@@ -437,24 +455,16 @@ class PandasEngine(DataFrameEngine):
         raise EngineError(f"Pandas does not implement transformation: {kind}")
 
     def _row_id_column(self, frame: Any) -> Any | None:
-        return next((column for column in frame.columns if str(column).startswith(INTERNAL_ROW_ID_PREFIX)), None)
+        return next((column for column in frame.columns if is_internal_row_id_label(column)), None)
 
     def _row_id_position(self, frame: Any) -> int | None:
         return next(
-            (
-                position
-                for position, column in enumerate(frame.columns)
-                if str(column).startswith(INTERNAL_ROW_ID_PREFIX)
-            ),
+            (position for position, column in enumerate(frame.columns) if is_internal_row_id_label(column)),
             None,
         )
 
     def _visible_positions(self, frame: Any) -> list[int]:
-        return [
-            position
-            for position, column in enumerate(frame.columns)
-            if not str(column).startswith(INTERNAL_ROW_ID_PREFIX)
-        ]
+        return [position for position, column in enumerate(frame.columns) if not is_internal_row_id_label(column)]
 
     def _visible_columns(self, frame: Any) -> list[Any]:
         return [frame.columns[position] for position in self._visible_positions(frame)]
@@ -462,6 +472,17 @@ class PandasEngine(DataFrameEngine):
     def _visible_frame(self, frame: Any) -> Any:
         row_id = self._row_id_column(frame)
         return frame.drop(columns=[row_id]) if row_id is not None else frame
+
+    def _bound_frame_position(self, frame: Any, reference: Any, operation: str) -> int:
+        visible_position = bound_column_position(reference, operation)
+        visible_positions = self._visible_positions(frame)
+        if visible_position >= len(visible_positions):
+            raise EngineError(f"{operation} references a column outside its input schema.")
+        frame_position = visible_positions[visible_position]
+        expected_name = bound_column_name(reference, operation)
+        if str(frame.columns[frame_position]) != expected_name:
+            raise EngineError(f"{operation} column binding no longer matches its input schema.")
+        return frame_position
 
     def _resolve_visible_position(self, frame: Any, requested: Any) -> int | None:
         requested_name = str(requested)
@@ -570,30 +591,56 @@ class PandasEngine(DataFrameEngine):
                 f"keep={False if keep == 'none' else keep!r})"
             ]
         if kind == "selectColumns":
-            return [f"{prefix}df = df.loc[:, {params['columns']!r}]"]
+            positions = [bound_column_position(column, kind) for column in params["columns"]]
+            return [f"{prefix}df = df.iloc[:, {positions!r}].copy()"]
         if kind == "dropColumns":
-            return [f"{prefix}df = df.drop(columns={params['columns']!r})"]
+            positions = sorted({bound_column_position(column, kind) for column in params["columns"]})
+            return [
+                f"{prefix}df = df.iloc[:, [position for position in range(df.shape[1]) "
+                f"if position not in {positions!r}]].copy()"
+            ]
         if kind == "renameColumn":
-            return [f"{prefix}df = df.rename(columns={{{params['column']!r}: {params['newName']!r}}})"]
+            position = bound_column_position(params["column"], kind)
+            columns = f"_columns_{index}"
+            return [
+                f"{prefix}{columns} = list(df.columns)",
+                f"{prefix}{columns}[{position}] = {params['newName']!r}",
+                f"{prefix}df.columns = {columns}",
+            ]
         if kind == "cloneColumn":
-            return [f"{prefix}df[{params['newName']!r}] = df[{params['column']!r}]"]
+            position = bound_column_position(params["column"], kind)
+            return [f"{prefix}df = pd.concat([df, df.iloc[:, {position}].rename({params['newName']!r})], axis=1)"]
         if kind == "castColumn":
-            column = params["column"]
+            position = bound_column_position(params["column"], kind)
             dtype = params["dtype"]
             if dtype == "date":
-                return [f"{prefix}df[{column!r}] = pd.to_datetime(df[{column!r}], errors='coerce').dt.date"]
+                expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce').dt.date"
+                return [f"{prefix}df.isetitem({position}, {expression})"]
             if dtype == "datetime":
-                return [f"{prefix}df[{column!r}] = pd.to_datetime(df[{column!r}], errors='coerce')"]
+                expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce')"
+                return [f"{prefix}df.isetitem({position}, {expression})"]
             target = {"string": "string", "integer": "Int64", "float": "Float64", "boolean": "boolean"}[dtype]
-            return [f"{prefix}df[{column!r}] = df[{column!r}].astype({target!r})"]
+            return [f"{prefix}df.isetitem({position}, df.iloc[:, {position}].astype({target!r}))"]
         if kind == "formula":
-            right = f"df[{params['rightColumn']!r}]" if params.get("rightColumn") else repr(params["value"])
+            left_position = bound_column_position(params["leftColumn"], kind)
+            right = (
+                f"df.iloc[:, {bound_column_position(params['rightColumn'], kind)}]"
+                if params.get("rightColumn")
+                else repr(params["value"])
+            )
             symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%", "power": "**"}[
                 params["operator"]
             ]
-            return [f"{prefix}df[{params['newColumn']!r}] = df[{params['leftColumn']!r}] {symbol} {right}"]
+            return [
+                f"{prefix}df = pd.concat([df, "
+                f"(df.iloc[:, {left_position}] {symbol} {right}).rename({params['newColumn']!r})], axis=1)"
+            ]
         if kind == "textLength":
-            return [f"{prefix}df[{params['newColumn']!r}] = df[{params['column']!r}].astype('string').str.len()"]
+            position = bound_column_position(params["column"], kind)
+            return [
+                f"{prefix}df = pd.concat([df, df.iloc[:, {position}].astype('string').str.len()"
+                f".rename({params['newColumn']!r})], axis=1)"
+            ]
         if kind == "oneHotEncode":
             columns = params["columns"]
             name = f"_encoded_{index}"

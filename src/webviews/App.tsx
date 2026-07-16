@@ -14,7 +14,7 @@ import type {
 } from "../shared/protocol";
 import { emptyFilterModel, type FilterModel } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
-import { operationByKind } from "../shared/operations";
+import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
@@ -677,11 +677,13 @@ export function App() {
       }
       if (response.kind === "editorAction") {
         if (response.action === "openOperation") {
+          if (!canStartOperation(metadataRef.current)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
           setEditingStep(undefined);
           setOperationKind(response.operationKind);
           setOperationOpen(true);
         } else if (response.action === "editLatest") {
+          if (!canEditLatestStep(metadataRef.current)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
           setMetadata((current) => {
             const latest = current?.steps.at(-1);
@@ -891,7 +893,10 @@ export function App() {
         setDraftBefore(
           response.kind === "stepPreview" && previous
             ? {
-                schema: response.metadata.latestStepInputSchema ?? previous.metadata.schema,
+                schema:
+                  response.metadata.draftReplacesStepId === undefined
+                    ? previous.metadata.schema
+                    : (response.metadata.latestStepInputSchema ?? previous.metadata.schema),
                 ...(response.metadata.draftReplacesStepId === undefined && previous.page.offset === response.page.offset
                   ? { page: previous.page }
                   : {})
@@ -1182,7 +1187,7 @@ export function App() {
   };
 
   const openNewOperation = (kind?: OperationKind) => {
-    if (foregroundRequest.current) return;
+    if (foregroundRequest.current || !canStartOperation(metadataRef.current)) return;
     if (stepInspectionTargetRef.current) clearStepInspection();
     setEditingStep(undefined);
     setOperationKind(kind);
@@ -1190,7 +1195,7 @@ export function App() {
   };
 
   const editLatestStep = () => {
-    if (foregroundRequest.current) return;
+    if (foregroundRequest.current || !canEditLatestStep(metadataRef.current)) return;
     if (stepInspectionTargetRef.current) clearStepInspection();
     const latest = metadata?.steps.at(-1);
     if (!latest) return;
@@ -1290,7 +1295,14 @@ export function App() {
         {metadata && (
           <div className="toolbarActions">
             {metadata.mode === "editing" && !snapshotMode && (
-              <button type="button" disabled={loading} onClick={() => openNewOperation()}>
+              <button
+                type="button"
+                disabled={loading || !canStartOperation(metadata)}
+                title={
+                  metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined
+                }
+                onClick={() => openNewOperation()}
+              >
                 <span className="codicon codicon-add" aria-hidden="true" /> Add step
               </button>
             )}

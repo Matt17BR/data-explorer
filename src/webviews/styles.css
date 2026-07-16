@@ -1089,6 +1089,7 @@ dd {
 }
 
 .formField > span,
+.formField > label,
 .formFieldset legend {
   font-size: 11px;
   font-weight: 600;

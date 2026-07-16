@@ -30,6 +30,20 @@ EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
+_INTERNAL_ROW_ID_PREFIX_CASEFOLD = INTERNAL_ROW_ID_PREFIX.casefold()
+
+
+def is_internal_row_id_label(value: Any) -> bool:
+    """Recognize the private label on flat and Pandas MultiIndex columns."""
+
+    if isinstance(value, str):
+        return value.casefold().startswith(_INTERNAL_ROW_ID_PREFIX_CASEFOLD)
+    return (
+        isinstance(value, tuple)
+        and bool(value)
+        and isinstance(value[0], str)
+        and value[0].casefold().startswith(_INTERNAL_ROW_ID_PREFIX_CASEFOLD)
+    )
 
 
 class EngineError(RuntimeError):
@@ -67,6 +81,54 @@ class DataFrameEngine(ABC):
     def close(self) -> None:
         """Release resources owned by this engine instance."""
         return None
+
+    def internal_row_id_column(self, frame: Any) -> Any | None:
+        """Return the one private row-identity column, rejecting ambiguous frames."""
+
+        matches = [label for label in self._raw_column_labels(frame) if is_internal_row_id_label(label)]
+        if len(matches) > 1:
+            raise EngineError(
+                "A dataframe contains multiple columns in Open Wrangler's private row-identity namespace."
+            )
+        return matches[0] if matches else None
+
+    def validate_internal_row_id_namespace(self, frame: Any, allowed_internal: Any | None = None) -> None:
+        """Reject user columns that could be mistaken for private row identities."""
+
+        matches = [label for label in self._raw_column_labels(frame) if is_internal_row_id_label(label)]
+        if allowed_internal is None:
+            unexpected = matches
+        else:
+            unexpected = [label for label in matches if label != allowed_internal]
+            if matches.count(allowed_internal) > 1:
+                unexpected.append(allowed_internal)
+        if unexpected:
+            raise EngineError("Column names beginning with Open Wrangler's private row-identity prefix are reserved.")
+
+    def validate_column_addressability(self, frame: Any) -> None:
+        """Reject schemas an adapter cannot target without ambiguity."""
+
+        return None
+
+    def validate_transformation_result(self, frame: Any) -> None:
+        """Require an engine-portable dataframe result with visible data columns."""
+
+        if not any(not is_internal_row_id_label(label) for label in self._raw_column_labels(frame)):
+            raise EngineError("A transformation must leave at least one visible column.")
+
+    @staticmethod
+    def _raw_column_labels(frame: Any) -> list[Any]:
+        collect_schema = getattr(frame, "collect_schema", None)
+        if callable(collect_schema):
+            names = getattr(collect_schema(), "names", None)
+            if callable(names):
+                collected_names = names()
+                if isinstance(collected_names, Iterable):
+                    return list(collected_names)
+        columns = getattr(frame, "columns", None)
+        if not isinstance(columns, Iterable):
+            raise EngineError("The dataframe engine could not inspect the frame's columns.")
+        return list(columns)
 
     @abstractmethod
     def detect(self, value: Any) -> bool:
@@ -325,6 +387,29 @@ def ensure_output_columns_available(existing: Iterable[Any], generated: Iterable
             f"{operation} would create duplicate column names: {', '.join(collisions)}. "
             "Choose a different prefix or separator."
         )
+
+
+def bound_column_name(value: Any, operation: str) -> str:
+    """Return the engine label from a session-bound column reference."""
+    _validate_bound_column_reference(value, operation)
+    return value["name"]
+
+
+def bound_column_position(value: Any, operation: str) -> int:
+    """Return the visible input ordinal from a session-bound column reference."""
+    _validate_bound_column_reference(value, operation)
+    return value["position"]
+
+
+def _validate_bound_column_reference(value: Any, operation: str) -> None:
+    if not isinstance(value, Mapping) or set(value) != {"id", "name", "position"}:
+        raise EngineError(f"{operation} requires a bound column reference.")
+    if not isinstance(value.get("id"), str) or not value["id"]:
+        raise EngineError(f"{operation} requires a bound column reference.")
+    if not isinstance(value.get("name"), str):
+        raise EngineError(f"{operation} requires a bound column reference.")
+    if isinstance(value.get("position"), bool) or not isinstance(value.get("position"), int) or value["position"] < 0:
+        raise EngineError(f"{operation} requires a bound column reference.")
 
 
 def _maybe_float(value: Any) -> float | None:

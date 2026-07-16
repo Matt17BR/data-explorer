@@ -68,6 +68,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(script).not.toBeNull();
     const nonce = script?.[1];
     expect(harness.html).toContain(`script-src mock-webview 'nonce-${nonce}';`);
+    expect(harness.html).toContain("font-src mock-webview;");
     expect(harness.html).not.toContain("script-src 'unsafe-inline'");
     expect(script?.[2].replaceAll("\\", "/")).toBe("file:///extension/media/webview.js");
   });

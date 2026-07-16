@@ -16,6 +16,12 @@ if (!existsSync(vsix)) {
 
 const entries = execFileSync("unzip", ["-Z1", vsix], { encoding: "utf8" }).split(/\r?\n/u).filter(Boolean);
 const { forbidden, missing } = inspectVsixEntries(entries);
+const webviewCss = execFileSync("unzip", ["-p", vsix, "extension/media/webview.css"], { encoding: "utf8" });
+const webviewPanel = execFileSync("unzip", ["-p", vsix, "extension/dist/extension/webviewPanel.js"], {
+  encoding: "utf8"
+});
+const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
+const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
 
 if (forbidden.length > 0 || missing.length > 0) {
   throw new Error(
@@ -27,6 +33,12 @@ if (forbidden.length > 0 || missing.length > 0) {
       .filter(Boolean)
       .join(" ")
   );
+}
+if (!bundleRelativeCodicon.test(webviewCss)) {
+  throw new Error(`Invalid ${basename(vsix)}. webview.css must load codicon.ttf from its own bundle directory.`);
+}
+if (!webviewFontPolicy.test(webviewPanel)) {
+  throw new Error(`Invalid ${basename(vsix)}. The main webview CSP must allow its bundled font origin.`);
 }
 
 console.log(`Verified ${basename(vsix)} (${entries.length} archive entries).`);
