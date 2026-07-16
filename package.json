@@ -124,10 +124,16 @@
     "onNotebook:jupyter-notebook"
   ],
   "contributes": {
+    "configurationDefaults": {
+      "cursor.general.pinnedTitleActions": [
+        "openWrangler.openFile"
+      ]
+    },
     "commands": [
       {
         "command": "openWrangler.openFile",
-        "title": "Open Wrangler: Open Current File"
+        "title": "Open in Open Wrangler",
+        "icon": "$(open-preview)"
       },
       {
         "command": "openWrangler.openPath",
@@ -135,7 +141,7 @@
       },
       {
         "command": "openWrangler.launchDataViewer",
-        "title": "Open in Open Wrangler"
+        "title": "Open Wrangler: Launch Selected Notebook Variable"
       },
       {
         "command": "openWrangler.openNotebookVariable",
@@ -232,24 +238,24 @@
         "command": "openWrangler.applyStep",
         "key": "ctrl+enter",
         "mac": "cmd+enter",
-        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
+        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
         "command": "openWrangler.discardStep",
         "key": "escape",
-        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
+        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
         "command": "openWrangler.editLatestStep",
         "key": "ctrl+shift+e",
         "mac": "cmd+shift+e",
-        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
+        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
       },
       {
         "command": "openWrangler.undoStep",
         "key": "ctrl+alt+z",
         "mac": "cmd+alt+z",
-        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
+        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
       }
     ],
     "viewsContainers": {
@@ -388,8 +394,28 @@
       "explorer/context": [
         {
           "command": "openWrangler.openFile",
-          "when": "resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/",
+          "when": "!explorerResourceIsFolder && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i",
           "group": "navigation@50"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "openWrangler.openFile",
+          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "openWrangler.openFile",
+          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+          "group": "navigation@50"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "openWrangler.launchDataViewer",
+          "when": "false"
         }
       ],
       "notebook/title": [
@@ -498,7 +524,7 @@
             "xlsx",
             "xls"
           ],
-          "description": "File types offered by Open Wrangler file pickers. Explicit custom-editor selection remains available."
+          "description": "File types accepted by Open Wrangler launch commands and offered by its file picker. Explicit Reopen Editor With selection remains available."
         },
         "openWrangler.insightsOnOpen": {
           "type": "boolean",

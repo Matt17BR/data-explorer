@@ -1,14 +1,26 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { describe, expect, it, vi } from "vitest";
+import * as vscode from "vscode";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ErrorResponse,
   OpenWranglerRequest,
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
-  RuntimeResponseEnvelope
+  RuntimeResponseEnvelope,
+  SessionSource
 } from "../shared/protocol";
 import type { CancellationTokenLike } from "../extension/dataBridge";
+import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
+
+vi.mock("../extension/pythonEnvironment", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../extension/pythonEnvironment")>();
+  return {
+    ...actual,
+    probeDependencies: vi.fn(),
+    resolvePythonEnvironment: vi.fn()
+  };
+});
 
 const initializeRequest: OpenWranglerRequest = { kind: "initialize" };
 const initializedResponse: OpenWranglerResponse = {
@@ -158,6 +170,78 @@ describe("PythonBridge transport validation and timeout isolation", () => {
   });
 });
 
+describe("PythonBridge environment resource selection", () => {
+  const environment = {
+    executable: "/env/bin/python",
+    version: "3.12.4",
+    source: "pythonExtension" as const
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+    vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+  });
+
+  it("passes the exact remote source URI to dependency preparation without rebuilding it as file://", async () => {
+    const source = remoteFileSource();
+    const { context, internals } = createEnvironmentHarness();
+    const parse = vi.spyOn(vscode.Uri, "parse");
+    const file = vi.spyOn(vscode.Uri, "file");
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+
+    expect(parse).toHaveBeenCalledWith(source.uri, true);
+    expect(file).not.toHaveBeenCalled();
+    const resource = vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.[1];
+    expect(resource?.scheme).toBe("vscode-remote");
+    expect(resource?.authority).toBe("ssh-remote+example");
+    expect(resource?.toString()).toBe(source.uri);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource);
+  });
+
+  it("passes the exact remote source URI to process startup without rebuilding it as file://", async () => {
+    const source = remoteFileSource();
+    const { context, internals } = createEnvironmentHarness({ disposed: true });
+    const parse = vi.spyOn(vscode.Uri, "parse");
+    const file = vi.spyOn(vscode.Uri, "file");
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+
+    await expect(internals.startProcess(openSessionRequest(source), 0)).rejects.toThrow("runtime start was cancelled");
+
+    expect(parse).toHaveBeenCalledWith(source.uri, true);
+    expect(file).not.toHaveBeenCalled();
+    const resource = vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.[1];
+    expect(resource?.scheme).toBe("vscode-remote");
+    expect(resource?.authority).toBe("ssh-remote+example");
+    expect(resource?.toString()).toBe(source.uri);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource);
+  });
+
+  it("falls back to the concrete path when a persisted source URI is malformed", async () => {
+    const source = remoteFileSource();
+    const { internals } = createEnvironmentHarness();
+    const malformed = { ...source, uri: "missing-scheme" };
+    const parse = vi.spyOn(vscode.Uri, "parse");
+    const file = vi.spyOn(vscode.Uri, "file");
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    await internals.prepareRequest(openSessionRequest(malformed));
+
+    expect(parse).toHaveBeenCalledWith(malformed.uri, true);
+    expect(file).toHaveBeenCalledWith(malformed.path);
+    const resource = vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.[1];
+    expect(resource?.scheme).toBe("file");
+    expect(resource?.fsPath).toBe(malformed.path);
+  });
+});
+
 class ManualCancellation implements CancellationTokenLike {
   isCancellationRequested = false;
   private listener: (() => void) | undefined;
@@ -185,6 +269,45 @@ interface BridgeInternals {
   prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
   ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
   handleRuntimeLine(line: string): void;
+}
+
+interface EnvironmentBridgeInternals {
+  prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
+  startProcess(request: OpenWranglerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams>;
+}
+
+function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
+  context: vscode.ExtensionContext;
+  internals: EnvironmentBridgeInternals;
+} {
+  const context = { extensionPath: "/extension" } as vscode.ExtensionContext;
+  const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
+  Object.assign(bridge as object, {
+    context,
+    process: undefined,
+    processStart: undefined,
+    runtimeExitError: undefined,
+    stderrBuffer: "",
+    runtimeEpoch: 0,
+    disposed: options.disposed ?? false,
+    environmentPromise: undefined,
+    dependencyCache: new Map<string, string[]>(),
+    output: { appendLine: vi.fn() }
+  });
+  return { context, internals: bridge as unknown as EnvironmentBridgeInternals };
+}
+
+function remoteFileSource(): SessionSource {
+  return {
+    kind: "file",
+    label: "data.csv",
+    path: "/workspace/data.csv",
+    uri: "vscode-remote://ssh-remote+example/workspace/data.csv"
+  };
+}
+
+function openSessionRequest(source: SessionSource): OpenWranglerRequest {
+  return { kind: "openSession", source, backend: "polars", mode: "editing", pageSize: 100 };
 }
 
 function createHarness(

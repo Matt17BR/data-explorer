@@ -34,7 +34,17 @@ export function writeEditorAcceptanceHarness(directory) {
       publisher: "openwrangler-tests",
       engines: { vscode: "^1.105.0" },
       main: "./extension.js",
-      activationEvents: ["*"]
+      activationEvents: ["*"],
+      contributes: {
+        customEditors: [
+          {
+            viewType: "openwrangler-tests.csvEditor",
+            displayName: "Acceptance CSV Editor",
+            selector: [{ filenamePattern: "*.csv" }],
+            priority: "option"
+          }
+        ]
+      }
     })
   );
   writeFileSync(
@@ -42,7 +52,15 @@ export function writeEditorAcceptanceHarness(directory) {
     `const fs = require("node:fs");
 const vscode = require("vscode");
 
-exports.activate = async function () {
+exports.activate = async function (context) {
+  context.subscriptions.push(vscode.window.registerCustomEditorProvider("openwrangler-tests.csvEditor", {
+    openCustomDocument(uri) {
+      return { uri, dispose() {} };
+    },
+    resolveCustomEditor(document, panel) {
+      panel.webview.html = '<!doctype html><html><body><main aria-label="Acceptance CSV Editor">Third-party CSV editor acceptance double</main></body></html>';
+    }
+  }));
   let outcome;
   try {
     await require(process.env.OPEN_WRANGLER_TEST_MODULE).run();
@@ -279,7 +297,8 @@ export async function runEditorAcceptancePhase({
   resultPath
 }) {
   rmSync(resultPath, { force: true });
-  const cdpPort = process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ? await reservePort() : undefined;
+  const cdpPort =
+    phase === "verify" || process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ? await reservePort() : undefined;
   const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
   const sharedDataArgs = editor.sharedDataDir ? ["--shared-data-dir", resolve(userData, "shared-data")] : [];
   const child = spawn(

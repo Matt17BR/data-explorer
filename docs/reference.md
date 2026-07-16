@@ -6,9 +6,9 @@
 
 | Command                                   | Title                                                    |
 | ----------------------------------------- | -------------------------------------------------------- |
-| `openWrangler.openFile`                   | Open Wrangler: Open Current File                         |
+| `openWrangler.openFile`                   | Open in Open Wrangler                                    |
 | `openWrangler.openPath`                   | Open Wrangler: Open File Path                            |
-| `openWrangler.launchDataViewer`           | Open in Open Wrangler                                    |
+| `openWrangler.launchDataViewer`           | Open Wrangler: Launch Selected Notebook Variable         |
 | `openWrangler.openNotebookVariable`       | Open Wrangler: Open Notebook Variable                    |
 | `openWrangler.checkJupyterIntegration`    | Open Wrangler: Check Jupyter Integration                 |
 | `openWrangler.changeRuntime`              | Open Wrangler: Change Runtime                            |
@@ -31,12 +31,12 @@
 
 ## Keyboard shortcuts
 
-| Command                       | Windows / Linux | macOS         | Context                                                                   |
-| ----------------------------- | --------------- | ------------- | ------------------------------------------------------------------------- |
-| `openWrangler.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft`      |
-| `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft`      |
-| `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan` |
-| `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan` |
+| Command                       | Windows / Linux | macOS         | Context                                                                     |
+| ----------------------------- | --------------- | ------------- | --------------------------------------------------------------------------- |
+| `openWrangler.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
+| `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
+| `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
+| `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
 
 ## Settings
 
@@ -45,7 +45,7 @@
 | `openWrangler.defaultBackend`      | `string`  | `"auto"`                                       | `"auto"`, `"polars"`, `"duckdb"`, `"pandas"` | Default backend for file-backed sessions. Auto prefers Polars, then DuckDB, and falls back to Pandas when required.                                 |
 | `openWrangler.fileStartMode`       | `string`  | `"editing"`                                    | `"editing"`, `"viewing"`                     | Initial mode for file-backed sessions. Editing remains non-destructive until an explicit export.                                                    |
 | `openWrangler.notebookStartMode`   | `string`  | `"viewing"`                                    | `"viewing"`, `"editing"`                     | Initial mode for notebook dataframe sessions.                                                                                                       |
-| `openWrangler.enabledFileTypes`    | `array`   | `["csv","tsv","parquet","jsonl","xlsx","xls"]` | —                                            | File types offered by Open Wrangler file pickers. Explicit custom-editor selection remains available.                                               |
+| `openWrangler.enabledFileTypes`    | `array`   | `["csv","tsv","parquet","jsonl","xlsx","xls"]` | —                                            | File types accepted by Open Wrangler launch commands and offered by its file picker. Explicit Reopen Editor With selection remains available.       |
 | `openWrangler.insightsOnOpen`      | `boolean` | `true`                                         | —                                            | Show progressive per-column insights when a grid opens.                                                                                             |
 | `openWrangler.filterMode`          | `string`  | `"basic"`                                      | `"basic"`, `"advanced"`                      | Default filter builder. Advanced mode exposes AND/OR condition composition.                                                                         |
 | `openWrangler.defaultColumnWidth`  | `number`  | `190`                                          | —                                            | Initial grid column width in CSS pixels.                                                                                                            |
