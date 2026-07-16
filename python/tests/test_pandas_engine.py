@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -406,7 +406,7 @@ def test_pandas_integer_group_sum_treats_decimal_nan_as_missing_live_and_generat
     ],
 )
 def test_pandas_numpy_duration_group_keys_and_extrema_remain_durations_live_and_generated(
-    unit: str,
+    unit: Literal["D", "ns"],
     expected: list[float],
 ) -> None:
     frame = pd.DataFrame(

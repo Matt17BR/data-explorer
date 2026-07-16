@@ -662,14 +662,20 @@ def test_grouping_treats_nan_as_missing_for_keys_and_every_aggregate(engine) -> 
 
 
 def test_grouping_emits_typed_nulls_without_erasing_a_computed_nan(engine) -> None:
+    text_values = ["x", None, None, "z"]
     frame = frame_for(
         engine,
         {
             "group": ["a", "a", "b", None],
             "number": [float("inf"), float("-inf"), None, 2.0],
-            "text": ["x", None, None, "z"],
+            "text": text_values,
         },
     )
+    if isinstance(engine, PandasEngine):
+        # Pandas 2.x inferred object here and failed native string min/max when
+        # the group contained a missing value. Keep that boundary exercised
+        # after Pandas 3 switched its default inference to StringDtype.
+        frame.isetitem(2, pd.Series(text_values, dtype=object))
     number = bound_ref("c:source:1", "number", 1)
     text = bound_ref("c:source:2", "text", 2)
     operation = bound_step(

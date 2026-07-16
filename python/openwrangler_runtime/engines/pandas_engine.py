@@ -731,6 +731,17 @@ class PandasEngine(DataFrameEngine):
                     "    return series",
                     "",
                     "",
+                    "def _open_wrangler_ordered_aggregate_input(series):",
+                    "    if isinstance(series.dtype, (pd.StringDtype, pd.CategoricalDtype)):",
+                    "        return series.astype('string')",
+                    "    if (",
+                    "        pd.api.types.is_object_dtype(series.dtype)",
+                    "        and pd.api.types.infer_dtype(series, skipna=True) in {'string', 'unicode', 'empty'}",
+                    "    ):",
+                    "        return series.astype('string')",
+                    "    return series",
+                    "",
+                    "",
                     "def _open_wrangler_group_nulls(series, null_mask):",
                     "    mask = np.asarray(null_mask, dtype=bool)",
                     "    if not mask.any():",
@@ -1236,6 +1247,11 @@ class PandasEngine(DataFrameEngine):
             decimal_average_flags: dict[int, str] = {}
             for aggregation_index, (_position, operation, _alias) in enumerate(aggregations):
                 value_name = value_names[aggregation_index]
+                if operation in {"min", "max"}:
+                    lines.append(
+                        f"{prefix}{source}.isetitem({value_name!r}, "
+                        f"_open_wrangler_ordered_aggregate_input({source}[{value_name!r}]))"
+                    )
                 if operation == "sum":
                     flag = f"_group_integer_sum_{index}_{aggregation_index}"
                     integer_sum_flags[aggregation_index] = flag
@@ -1413,6 +1429,8 @@ def _pandas_group_by_positions(
     decimal_average_indexes: list[int] = []
     for aggregation_index, (_source_position, operation, _alias) in enumerate(aggregations):
         value_name = value_names[aggregation_index]
+        if operation in {"min", "max"}:
+            source.isetitem(value_name, _pandas_ordered_aggregate_input(source[value_name]))
         semantic_type = _pandas_semantic_type(source[value_name])
         if operation == "sum" and semantic_type == "integer":
             integer_sum_indexes.append(aggregation_index)
@@ -1621,6 +1639,20 @@ def _pandas_nullable_string_copy(series: Any) -> Any:
             result = series.astype(object)
             result.loc[null_mask] = pd.NA
             return result
+    return series
+
+
+def _pandas_ordered_aggregate_input(series: Any) -> Any:
+    import pandas as pd
+
+    if isinstance(series.dtype, (pd.StringDtype, pd.CategoricalDtype)):
+        return series.astype("string")
+    if pd.api.types.is_object_dtype(series.dtype) and pd.api.types.infer_dtype(series, skipna=True) in {
+        "string",
+        "unicode",
+        "empty",
+    }:
+        return series.astype("string")
     return series
 
 
