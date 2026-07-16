@@ -251,8 +251,8 @@ This makes notebook variable launch, inline v2 rendering and full-view expansion
 
 Open Wrangler rename and packaged-editor visual acceptance refresh, 2026-07-16:
 
-- The renamed `matt17br.openwrangler@0.2.0-alpha.2` VSIX contains 56 allowlisted entries and is installed into disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Open Wrangler Activity Bar container, and captures the actual window rather than a reconstructed browser shell.
-- Both editors record dark and light themes at normal zoom plus a high-contrast theme at VS Code zoom level 5 (200%). The harness temporarily disables OS theme auto-detection, waits for the public active-theme kind to change, captures the workbench, and restores every setting. Cursor's isolated first-run login overlay is bypassed with its documented `--skip-onboarding` test-process flag; no normal editor profile is read or changed.
+- The renamed `matt17br.openwrangler@0.2.0-alpha.2` VSIX contains 55 allowlisted entries and has SHA-256 `24095102798b47b2ed5017fd8e143caf4d0baa3817b85cc70121221c34d501b9`. It is installed into disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Open Wrangler Activity Bar container, and captures the real workbench below the native test-host title strip rather than reconstructing it in a browser shell.
+- Both editors record dark and light themes at normal zoom plus a high-contrast theme at VS Code zoom level 4 (approximately 200%). The harness temporarily disables OS theme auto-detection, waits for the public active-theme kind to change, captures the workbench, and restores every setting. Cursor's isolated first-run login overlay is bypassed with its documented `--skip-onboarding` test-process flag; no normal editor profile is read or changed.
 - The six checked-in captures under `docs/images/editor-acceptance/` visibly include the original faceted-table Activity Bar mark, native Operations, Summary, Filters/Sorts, and Cleaning Steps views, the custom grid, and the Code Preview panel. Extension-host assertions independently verify that the 128/256px gallery PNG and monochrome `currentColor` SVG are present in the installed package.
 - The production-bundle matrix remains the exhaustive UI gate: 22 Playwright/axe harnesses cover dark, light, high-contrast dark/light, 800/1280/1920px widths, 80–200% zoom, interaction/state fixtures, keyboard paths, and WCAG 2.0/2.1/2.2 A/AA rules. The editor screenshots prove those token-driven surfaces integrate into both real workbench chromes.
 
@@ -265,7 +265,7 @@ Final release-gate correction slice, 2026-07-15:
 - Focused snapshot-model and filter/summary interaction tests raised TypeScript/webview coverage to 69.70% statements, 68.15% branches, 71.90% functions, and 72.61% lines; Python remains at 80.37%. The combined suite now contains 51 TypeScript and 113 Python tests.
 - Those tests exposed and fixed saved-notebook snapshot semantics: null numeric cells no longer compare as zero, and multi-column sorts honor the requested null placement independently of ascending/descending direction.
 - Visual and axe acceptance now use the Chromium revision pinned by `playwright-core` and the lockfile. CI installs that exact browser instead of inheriting a moving system Chrome, retaining the 1% visual threshold while eliminating browser-version drift.
-- The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.0 and Cursor 3.11.19 after these corrections.
+- The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.1 and Cursor 3.11.19 after these corrections.
 
 ## Explicitly deferred from 1.0
 

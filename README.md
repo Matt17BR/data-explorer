@@ -8,7 +8,7 @@ The extension package identity is `Matt17BR.openwrangler`. Commands, settings, e
 
 ## Screenshots
 
-The full-workbench screenshots come from the real packaged VSIX installed into isolated VS Code and Cursor profiles. The focused UI screenshots are generated from the same production webview/notebook bundles using `npm run capture:screenshots`; the capture loads `fixtures/sample.csv` through Polars and executes `fixtures/example.ipynb` with `nbclient`.
+The workbench screenshots come from the real packaged VSIX installed into isolated VS Code and Cursor profiles; only the native test-host title strip is omitted. The focused UI screenshots are generated from the same production webview/notebook bundles using `npm run capture:screenshots`; the capture loads `fixtures/sample.csv` through Polars and executes `fixtures/example.ipynb` with `nbclient`.
 
 ![Packaged Open Wrangler in VS Code](docs/images/editor-acceptance/vscode-dark.png)
 

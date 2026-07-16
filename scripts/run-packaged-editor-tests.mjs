@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,7 +73,10 @@ for (const editor of candidates) {
   const profile = mkdtempSync(join(tmpdir(), `openwrangler-packaged-${editor.key}-`));
   const userData = resolve(profile, "user-data");
   const extensions = resolve(profile, "extensions");
+  const workspace = resolve(profile, "Open Wrangler Demo");
   try {
+    mkdirSync(workspace, { recursive: true });
+    cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
     writeEditorAcceptanceHarness(profile);
     const fakeJupyter = resolve(profile, "fake-jupyter");
     writeFakeJupyterExtension(fakeJupyter);
@@ -114,7 +117,7 @@ for (const editor of candidates) {
     for (const phase of ["seed", "verify"]) {
       await runEditorAcceptancePhase({
         editor,
-        workspace: root,
+        workspace,
         userData,
         extensions,
         developmentPaths: [profile, fakeJupyter],

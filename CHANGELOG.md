@@ -8,6 +8,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Established the Open Wrangler identity across the VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts.
 - Consolidated commands, settings, custom-editor state, and notebook rendering on the canonical `openWrangler.*` namespace and MIME v2 identifier.
+- Removed the unused pre-release identity and compatibility paths instead of carrying aliases or migrations into the experimental package.
+- Refreshed real installed-VSIX evidence from fixture-only VS Code and Cursor profiles without development-workspace diagnostics or test-host title chrome.
 - Refreshed the product description to state the open-source dataframe-wrangling purpose directly and documented the project's independent inspiration from Microsoft Data Wrangler.
 
 ## [0.2.0-alpha.1] - 2026-07-15

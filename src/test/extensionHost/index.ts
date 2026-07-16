@@ -279,7 +279,7 @@ async function capturePackagedEditorScreenshots(
     await captureTheme(
       highContrastTheme,
       vscode.ColorThemeKind.HighContrast,
-      5,
+      4,
       `${editor}-high-contrast-zoom-200.png`
     );
   } finally {
@@ -322,12 +322,63 @@ async function capturePackagedEditorScreenshots(
       10_000,
       `${theme} to activate before screenshot capture`
     );
+    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
     await clearNotifications();
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     await new Promise((resolve) => setTimeout(resolve, 800));
     const destination = path.resolve(outputDirectory, fileName);
     await capturePage.bringToFront();
-    await capturePage.screenshot({ path: destination, animations: "disabled" });
+    const viewport = await capturePage.evaluate(() => {
+      const pageWindow = globalThis as unknown as {
+        innerWidth: number;
+        innerHeight: number;
+        devicePixelRatio: number;
+      };
+      return {
+        width: pageWindow.innerWidth,
+        height: pageWindow.innerHeight,
+        scale: Math.max(1, pageWindow.devicePixelRatio)
+      };
+    });
+    await capturePage.mouse.move(Math.max(1, viewport.width - 8), Math.max(1, viewport.height - 8));
+    await capturePage
+      .locator(".monaco-hover")
+      .waitFor({ state: "hidden", timeout: 2_000 })
+      .catch(() => {});
+    const workbenchOffsets: number[] = [];
+    for (const selector of [".monaco-workbench", ".part.sidebar", ".part.editor", ".part.activitybar"]) {
+      const locator = capturePage.locator(selector).first();
+      if ((await locator.count()) === 0) continue;
+      const bounds = await locator.boundingBox({ timeout: 2_000 }).catch(() => null);
+      if (bounds && bounds.y > 0) workbenchOffsets.push(bounds.y);
+    }
+    const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY) * viewport.scale);
+    const screenshotOptions = {
+      path: destination,
+      animations: "disabled" as const,
+      timeout: 60_000,
+      ...(viewport && Number.isFinite(titleBarHeight) && titleBarHeight > 0 && titleBarHeight < viewport.height
+        ? {
+            clip: {
+              x: 0,
+              y: titleBarHeight,
+              width: viewport.width,
+              height: viewport.height - titleBarHeight
+            }
+          }
+        : {})
+    };
+    try {
+      await capturePage.screenshot(screenshotOptions);
+    } catch (error) {
+      await capturePage.bringToFront();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        await capturePage.screenshot(screenshotOptions);
+      } catch {
+        throw error;
+      }
+    }
     const image = readFileSync(destination);
     assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   }
