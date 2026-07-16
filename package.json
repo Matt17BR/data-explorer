@@ -559,6 +559,120 @@
           "minimum": 1000,
           "maximum": 600000,
           "description": "Maximum runtime request duration before recovery restarts and replays the session."
+        },
+        "dataExplorer.defaultBackend": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "polars",
+            "pandas"
+          ],
+          "default": "auto",
+          "markdownDeprecationMessage": "Use `openWrangler.defaultBackend`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.fileStartMode": {
+          "type": "string",
+          "enum": [
+            "editing",
+            "viewing"
+          ],
+          "default": "editing",
+          "markdownDeprecationMessage": "Use `openWrangler.fileStartMode`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.notebookStartMode": {
+          "type": "string",
+          "enum": [
+            "viewing",
+            "editing"
+          ],
+          "default": "viewing",
+          "markdownDeprecationMessage": "Use `openWrangler.notebookStartMode`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.enabledFileTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "csv",
+              "tsv",
+              "parquet",
+              "jsonl",
+              "xlsx",
+              "xls"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [
+            "csv",
+            "tsv",
+            "parquet",
+            "jsonl",
+            "xlsx",
+            "xls"
+          ],
+          "markdownDeprecationMessage": "Use `openWrangler.enabledFileTypes`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.insightsOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "markdownDeprecationMessage": "Use `openWrangler.insightsOnOpen`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.filterMode": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "advanced"
+          ],
+          "default": "basic",
+          "markdownDeprecationMessage": "Use `openWrangler.filterMode`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.defaultColumnWidth": {
+          "type": "number",
+          "default": 190,
+          "minimum": 80,
+          "maximum": 640,
+          "markdownDeprecationMessage": "Use `openWrangler.defaultColumnWidth`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.fetchBlockSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 25,
+          "maximum": 2000,
+          "markdownDeprecationMessage": "Use `openWrangler.fetchBlockSize`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.pageSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 25,
+          "maximum": 2000,
+          "markdownDeprecationMessage": "Use `openWrangler.fetchBlockSize`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.panelRevealBehavior": {
+          "type": "string",
+          "enum": [
+            "onDraft",
+            "always",
+            "never"
+          ],
+          "default": "onDraft",
+          "markdownDeprecationMessage": "Use `openWrangler.panelRevealBehavior`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.renderer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDeprecationMessage": "Use `openWrangler.renderer.enabled`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.pythonPath": {
+          "type": "string",
+          "default": "",
+          "markdownDeprecationMessage": "Use `openWrangler.pythonPath`. This key remains registered only to migrate settings from Data Explorer."
+        },
+        "dataExplorer.requestTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "markdownDeprecationMessage": "Use `openWrangler.requestTimeoutMs`. This key remains registered only to migrate settings from Data Explorer."
         }
       }
     }

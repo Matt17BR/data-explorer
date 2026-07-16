@@ -249,12 +249,14 @@ Packaged notebook and remote-kernel slice, 2026-07-15:
 
 This makes notebook variable launch, inline v1/v2 rendering and full-view expansion, and clipboard/script/originating-notebook code export **Done**.
 
-Packaged editor visual acceptance slice, 2026-07-15:
+Open Wrangler rename and packaged-editor visual acceptance refresh, 2026-07-16:
 
-- The exact allowlisted VSIX is installed into disposable VS Code 1.128.0 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Open Wrangler Activity Bar container, and captures the actual window rather than a reconstructed browser shell.
+- The renamed `matt17br.openwrangler@0.2.0-alpha.2` VSIX contains 56 allowlisted entries and is installed into disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Open Wrangler Activity Bar container, and captures the actual window rather than a reconstructed browser shell.
 - Both editors record dark and light themes at normal zoom plus a high-contrast theme at VS Code zoom level 5 (200%). The harness temporarily disables OS theme auto-detection, waits for the public active-theme kind to change, captures the workbench, and restores every setting. Cursor's isolated first-run login overlay is bypassed with its documented `--skip-onboarding` test-process flag; no normal editor profile is read or changed.
 - The six checked-in captures under `docs/images/editor-acceptance/` visibly include the original faceted-table Activity Bar mark, native Operations, Summary, Filters/Sorts, and Cleaning Steps views, the custom grid, and the Code Preview panel. Extension-host assertions independently verify that the 128/256px gallery PNG and monochrome `currentColor` SVG are present in the installed package.
 - The production-bundle matrix remains the exhaustive UI gate: 23 Playwright/axe harnesses cover dark, light, high-contrast dark/light, 800/1280/1920px widths, 80–200% zoom, interaction/state fixtures, keyboard paths, and WCAG 2.0/2.1/2.2 A/AA rules. The editor screenshots prove those token-driven surfaces integrate into both real workbench chromes.
+
+- The packaged runtime-selection path is exercised with only the legacy `dataExplorer.pythonPath` value configured, proving the renamed resolver honors existing user configuration. The package-ID change is handled explicitly: commands, settings, custom-editor opens, and saved MIME output remain compatible, while old private workspace-state plans cannot be transferred by the VS Code API.
 
 This makes original icons, native views, themes, and accessibility **Done**. Every in-scope row in the Open Wrangler 1.0 clean-room parity matrix is now **Done**; `1.0.0` remains gated on the release workflow and cross-platform tag validation rather than an unfinished feature row.
 

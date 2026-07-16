@@ -31,7 +31,7 @@ INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 
 
 class EngineError(RuntimeError):
-    """Raised when a backend cannot satisfy a Open Wrangler request."""
+    """Raised when a backend cannot satisfy an Open Wrangler request."""
 
 
 @dataclass(frozen=True)

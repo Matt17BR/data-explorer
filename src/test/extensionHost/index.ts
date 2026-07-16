@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { chromium } from "playwright-core";
+import { getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V1, OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type {
@@ -19,7 +20,7 @@ import type {
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
   setActiveSession(sessionId: string | undefined): void;
-  activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
+  activeSession(): { sessionId: string; metadata: SessionMetadata; code?: string } | undefined;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
@@ -63,6 +64,9 @@ export async function run(): Promise<void> {
   if (testPython) {
     await vscode.workspace
       .getConfiguration("openWrangler")
+      .update("pythonPath", undefined, vscode.ConfigurationTarget.Global);
+    await vscode.workspace
+      .getConfiguration("dataExplorer")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   }
 
@@ -233,10 +237,19 @@ async function capturePackagedEditorScreenshots(
 
   const workbench = vscode.workspace.getConfiguration("workbench");
   const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const scm = vscode.workspace.getConfiguration("scm");
+  const typescript = vscode.workspace.getConfiguration("typescript");
+  const javascript = vscode.workspace.getConfiguration("javascript");
   const originalTheme = workbench.get<string>("colorTheme");
+  const originalStatusBarVisible = workbench.get<boolean>("statusBar.visible");
   const originalZoom = windowConfiguration.get<number>("zoomLevel");
+  const originalTitle = windowConfiguration.get<string>("title");
+  const originalCommandCenter = windowConfiguration.get<boolean>("commandCenter");
   const originalAutoDetectColorScheme = windowConfiguration.get<boolean>("autoDetectColorScheme");
   const originalAutoDetectHighContrast = windowConfiguration.get<boolean>("autoDetectHighContrast");
+  const originalScmCountBadge = scm.get<string>("countBadge");
+  const originalTypescriptValidation = typescript.get<boolean>("validate.enable");
+  const originalJavascriptValidation = javascript.get<boolean>("validate.enable");
   const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
   const cdpPort = Number(process.env.OPEN_WRANGLER_EDITOR_CDP_PORT);
   assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Editor screenshot capture requires a CDP port.");
@@ -255,8 +268,20 @@ async function capturePackagedEditorScreenshots(
   const lightTheme = contributedTheme("vs", "Default Light Modern");
   const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
   try {
+    await workbench.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await scm.update("countBadge", "off", vscode.ConfigurationTarget.Global);
+    await typescript.update("validate.enable", false, vscode.ConfigurationTarget.Global);
+    await javascript.update("validate.enable", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await prepareWorkbenchForEvidence();
+    await new Promise((resolve) => setTimeout(resolve, 800));
     await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, `${editor}-dark.png`);
     await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, `${editor}-light.png`);
     await captureTheme(
@@ -267,7 +292,13 @@ async function capturePackagedEditorScreenshots(
     );
   } finally {
     await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
+    await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("title", originalTitle, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", originalCommandCenter, vscode.ConfigurationTarget.Global);
+    await scm.update("countBadge", originalScmCountBadge, vscode.ConfigurationTarget.Global);
+    await typescript.update("validate.enable", originalTypescriptValidation, vscode.ConfigurationTarget.Global);
+    await javascript.update("validate.enable", originalJavascriptValidation, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update(
       "autoDetectColorScheme",
       originalAutoDetectColorScheme,
@@ -299,6 +330,7 @@ async function capturePackagedEditorScreenshots(
       10_000,
       `${theme} to activate before screenshot capture`
     );
+    await clearNotifications();
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     await new Promise((resolve) => setTimeout(resolve, 800));
     const destination = path.resolve(outputDirectory, fileName);
@@ -306,6 +338,37 @@ async function capturePackagedEditorScreenshots(
     await capturePage.screenshot({ path: destination, animations: "disabled" });
     const image = readFileSync(destination);
     assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  }
+
+  async function prepareWorkbenchForEvidence(): Promise<void> {
+    const commands = new Set(await vscode.commands.getCommands(true));
+    const auxiliaryBar = capturePage.locator(".part.auxiliarybar");
+    if ((await auxiliaryBar.count()) > 0 && (await auxiliaryBar.isVisible())) {
+      const closeCommand = commands.has("workbench.action.closeAuxiliaryBar")
+        ? "workbench.action.closeAuxiliaryBar"
+        : commands.has("workbench.action.toggleAuxiliaryBar")
+          ? "workbench.action.toggleAuxiliaryBar"
+          : undefined;
+      if (closeCommand) {
+        await vscode.commands.executeCommand(closeCommand);
+        await auxiliaryBar.waitFor({ state: "hidden", timeout: 10_000 });
+      }
+    }
+    await clearNotifications(commands);
+  }
+
+  async function clearNotifications(commands?: Set<string>): Promise<void> {
+    const availableCommands = commands ?? new Set(await vscode.commands.getCommands(true));
+    if (availableCommands.has("notifications.clearAll")) {
+      await vscode.commands.executeCommand("notifications.clearAll");
+    }
+    if (availableCommands.has("notifications.hideList")) {
+      await vscode.commands.executeCommand("notifications.hideList");
+    }
+    await capturePage
+      .locator(".notifications-toasts")
+      .waitFor({ state: "hidden", timeout: 10_000 })
+      .catch(() => {});
   }
 
   function contributedTheme(uiTheme: string, fallback: string): string {
@@ -932,11 +995,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
 
     assert.equal(await vscode.commands.executeCommand("openWrangler.clearRuntime"), true);
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, undefined);
-    assert.equal(
-      vscode.workspace.getConfiguration("openWrangler").get<string>("pythonPath"),
-      python,
-      "Clearing the workspace override must reveal the fallback."
-    );
+    assert.equal(getSetting("pythonPath", ""), python, "Clearing the workspace override must reveal the fallback.");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1181,11 +1240,22 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         active?.metadata.schema.map((column) => column.name),
         ["active", "total_sales"]
       );
+      assert.match(active?.code ?? "", /def clean_data/u, `${backend} must retain executable generated code.`);
 
       const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
+      const priorClipboard = await vscode.env.clipboard.readText();
       testing.setCodeForExport(editedCode);
       await vscode.commands.executeCommand("openWrangler.copyCode");
-      assert.equal(await vscode.env.clipboard.readText(), editedCode, `${backend} must copy the edited code buffer.`);
+      let copied = false;
+      const clipboardDeadline = Date.now() + 5_000;
+      while (!copied && Date.now() < clipboardDeadline) {
+        copied = (await vscode.env.clipboard.readText()) === editedCode;
+        if (!copied) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.ok(copied, `${backend} must copy the edited code buffer.`);
+      if ((await vscode.env.clipboard.readText()) === editedCode) {
+        await vscode.env.clipboard.writeText(priorClipboard);
+      }
       const scriptPath = path.join(directory, `${backend}.clean.py`);
       await vscode.commands.executeCommand("openWrangler.exportCode", vscode.Uri.file(scriptPath));
       assert.equal(readFileSync(scriptPath, "utf8"), editedCode, `${backend} must export the edited code buffer.`);

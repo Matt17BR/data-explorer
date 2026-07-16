@@ -1,18 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const requested = process.argv[2];
-const candidates = requested
-  ? [resolve(root, requested)]
-  : readdirSync(root)
-      .filter((file) => file.endsWith(".vsix"))
-      .map((file) => resolve(root, file));
-const vsix = candidates.find(existsSync);
+if (!requested) {
+  throw new Error("Pass the exact VSIX path to verify; implicit artifact selection is intentionally disabled.");
+}
+const vsix = resolve(root, requested);
 
-if (!vsix) {
-  throw new Error("No VSIX found. Pass its path or run npm run package first.");
+if (!existsSync(vsix)) {
+  throw new Error(`VSIX not found: ${requested}`);
 }
 
 const entries = execFileSync("unzip", ["-Z1", vsix], { encoding: "utf8" }).split(/\r?\n/u).filter(Boolean);

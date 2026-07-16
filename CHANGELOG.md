@@ -7,7 +7,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Changed
 
 - Renamed the product, VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts from Data Explorer to Open Wrangler.
-- Added canonical `openWrangler.*` commands and settings while retaining `dataExplorer.*`, the prior custom-editor ID, persisted workspace plans, and both existing notebook MIME identifiers as compatibility interfaces.
+- Added canonical `openWrangler.*` commands and settings while retaining `dataExplorer.*`, the prior custom-editor ID, and both existing notebook MIME identifiers as compatibility interfaces. Documented that VS Code does not expose the old package's private workspace state to the renamed extension ID.
 - Refreshed the product description to state the open-source dataframe-wrangling purpose directly and documented the project's independent inspiration from Microsoft Data Wrangler.
 
 ## [0.2.0-alpha.1] - 2026-07-15

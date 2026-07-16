@@ -195,7 +195,7 @@ for cell in notebook.cells:
     if mime_payload:
         break
 if mime_payload is None:
-    raise RuntimeError("Notebook did not emit a Open Wrangler MIME payload")
+    raise RuntimeError("Notebook did not emit an Open Wrangler MIME payload")
 legacy_mime_payload = dict(mime_payload)
 legacy_mime_payload.pop("mimeVersion", None)
 legacy_mime_payload["metadata"] = {

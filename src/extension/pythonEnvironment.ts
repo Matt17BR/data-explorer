@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { getSetting } from "./configuration";
 import { resolvePythonExecutable } from "./pythonPath";
 import { isSupportedPythonVersion } from "./pythonEnvironmentModel";
 
@@ -34,7 +35,7 @@ export async function resolvePythonEnvironment(
   context: vscode.ExtensionContext,
   resource?: vscode.Uri
 ): Promise<PythonEnvironment> {
-  const configured = vscode.workspace.getConfiguration("openWrangler", resource).get<string>("pythonPath", "").trim();
+  const configured = getSetting("pythonPath", "", resource).trim();
   if (configured) {
     const executable = resolvePythonExecutable(
       configured,

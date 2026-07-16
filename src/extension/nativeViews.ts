@@ -117,6 +117,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   setCodeForExportForTests(code: string): void {
+    this.generatedCode = code;
     this.displayedCode = code;
     this.render();
   }

@@ -8,6 +8,7 @@
   },
   "include": [
     "src/test/extensionHost/**/*.ts",
+    "src/extension/configuration.ts",
     "src/extension/notebooks/notebookInsertion.ts",
     "src/shared/protocol.ts",
     "src/shared/protocol.generated.ts"
