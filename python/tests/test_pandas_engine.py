@@ -141,6 +141,23 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
     ]
 
 
+def test_pandas_page_projection_addresses_duplicate_columns_by_position() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame([[1, 2, 3]], columns=pd.Index(["duplicate", "duplicate", 7], dtype="object"))
+    frame = engine.ensure_row_ids(frame, "projected-duplicates")
+
+    page = engine.page(
+        frame,
+        0,
+        1,
+        total_rows=1,
+        column_projection=[(1, "stable:second-duplicate"), (2, "stable:integer-label")],
+    )
+
+    assert page["columnIds"] == ["stable:second-duplicate", "stable:integer-label"]
+    assert [cell["display"] for cell in page["rows"][0]["values"]] == ["2", "3"]
+
+
 def test_pandas_summaries_separate_nan_from_other_missing_values():
     frame = pd.DataFrame(
         {

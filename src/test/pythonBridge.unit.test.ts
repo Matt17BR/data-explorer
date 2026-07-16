@@ -307,7 +307,15 @@ function remoteFileSource(): SessionSource {
 }
 
 function openSessionRequest(source: SessionSource): OpenWranglerRequest {
-  return { kind: "openSession", source, backend: "polars", mode: "editing", pageSize: 100 };
+  return {
+    kind: "openSession",
+    source,
+    backend: "polars",
+    mode: "editing",
+    pageSize: 100,
+    columnOffset: 0,
+    columnLimit: 16
+  };
 }
 
 function createHarness(

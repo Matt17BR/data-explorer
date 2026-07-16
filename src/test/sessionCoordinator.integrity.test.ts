@@ -16,8 +16,12 @@ const openRequest = {
   source: { kind: "file", label: "integrity.csv", path: "/workspace/integrity.csv" },
   backend: "polars",
   mode: "editing",
-  pageSize: 100
+  pageSize: 100,
+  columnOffset: 0,
+  columnLimit: 16
 } as const;
+
+const columnWindow = { columnOffset: 0, columnLimit: 16 } as const;
 
 const step: TransformStep = {
   id: "integrity-step",
@@ -82,6 +86,7 @@ describe("SessionCoordinator response integrity", () => {
         viewRequestId: "wrong-kind-page",
         offset: 0,
         limit: 100,
+        ...columnWindow,
         filterModel: opened.metadata.filterModel
       },
       {
@@ -105,7 +110,8 @@ describe("SessionCoordinator response integrity", () => {
         sessionId: opened.metadata.sessionId,
         revision: 0,
         offset: 0,
-        limit: 100
+        limit: 100,
+        ...columnWindow
       }
     ];
 
@@ -276,7 +282,8 @@ describe("SessionCoordinator recovery boundaries", () => {
         revision: opened.metadata.revision,
         step,
         offset: 0,
-        limit: 100
+        limit: 100,
+        ...columnWindow
       })
     ).rejects.toThrow("preview result was lost after dispatch");
     expect(previewCount).toBe(1);
@@ -290,6 +297,7 @@ describe("SessionCoordinator recovery boundaries", () => {
         viewRequestId: "after-ambiguous-preview",
         offset: 0,
         limit: 100,
+        ...columnWindow,
         filterModel: opened.metadata.filterModel
       })
     ).resolves.toMatchObject({ kind: "page", viewRequestId: "after-ambiguous-preview" });
@@ -342,6 +350,7 @@ describe("SessionCoordinator recovery boundaries", () => {
         viewRequestId: "recoverable-page",
         offset: 100,
         limit: 100,
+        ...columnWindow,
         filterModel: opened.metadata.filterModel
       })
     ).resolves.toMatchObject({ kind: "page", viewRequestId: "recoverable-page" });
@@ -463,7 +472,7 @@ function openedResponse(sessionId = "runtime-session"): SessionOpenedResponse {
   return {
     kind: "sessionOpened",
     metadata,
-    page: { offset: 0, limit: openRequest.pageSize, totalRows: 1, rows: [] },
+    page: { offset: 0, limit: openRequest.pageSize, totalRows: 1, columnIds: ["sales-column"], rows: [] },
     summaries: []
   };
 }
@@ -513,7 +522,15 @@ function pageResponse(
       ...metadataFor(runtimeSessionId, request.revision),
       filterModel: request.filterModel
     },
-    page: { offset: request.offset, limit: request.limit, totalRows: 1, rows: [] }
+    page: {
+      offset: request.offset,
+      limit: request.limit,
+      totalRows: 1,
+      columnIds: metadataFor(runtimeSessionId)
+        .schema.slice(request.columnOffset, request.columnOffset + request.columnLimit)
+        .map((column) => column.id),
+      rows: []
+    }
   };
 }
 
@@ -527,7 +544,7 @@ function planResponse(
     action,
     revision,
     metadata: metadataFor(runtimeSessionId, revision),
-    page: { offset: 0, limit: 100, totalRows: 1, rows: [] },
+    page: { offset: 0, limit: 100, totalRows: 1, columnIds: ["sales-column"], rows: [] },
     code: "# updated"
   };
 }
@@ -539,9 +556,9 @@ function mutationOrExportRequest(
   const base = { sessionId: metadata.sessionId, revision: metadata.revision };
   switch (kind) {
     case "previewStep":
-      return { kind, ...base, step, offset: 0, limit: 100 };
+      return { kind, ...base, step, offset: 0, limit: 100, ...columnWindow };
     case "applyDraft":
-      return { kind, ...base, offset: 0, limit: 100 };
+      return { kind, ...base, offset: 0, limit: 100, ...columnWindow };
     case "exportData":
       return { kind, ...base, path: "/workspace/clean.csv", format: "csv" };
   }

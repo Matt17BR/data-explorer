@@ -130,11 +130,17 @@
     "GridPage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["offset", "limit", "totalRows", "rows"],
+      "required": ["offset", "limit", "totalRows", "columnIds", "rows"],
       "properties": {
         "offset": { "type": "integer", "minimum": 0 },
         "limit": { "type": "integer", "minimum": 1 },
         "totalRows": { "type": "integer", "minimum": 0 },
+        "columnIds": {
+          "description": "Ordered stable identities for projected row values.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
         "rows": { "type": "array", "items": { "$ref": "#/definitions/DataRow" } }
       }
     },
@@ -1018,9 +1024,10 @@
     "CellDiff": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rowNumber", "column", "before", "after"],
+      "required": ["rowNumber", "columnId", "column", "before", "after"],
       "properties": {
         "rowNumber": { "type": "integer", "minimum": 0 },
+        "columnId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
         "before": { "oneOf": [{ "$ref": "#/definitions/CellValue" }, { "type": "null" }] },
         "after": { "oneOf": [{ "$ref": "#/definitions/CellValue" }, { "type": "null" }] }
@@ -1085,14 +1092,20 @@
     "OpenSessionRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "source", "pageSize"],
+      "required": ["kind", "source", "pageSize", "columnOffset", "columnLimit"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
       "properties": {
         "kind": { "const": "openSession" },
         "source": { "$ref": "#/definitions/SessionSource" },
         "requestedSessionId": { "type": "string", "minLength": 1 },
         "backend": { "$ref": "#/definitions/DataBackend" },
         "mode": { "$ref": "#/definitions/SessionMode" },
-        "pageSize": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        "pageSize": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
     "SessionRequestBase": {
@@ -1109,7 +1122,21 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "sessionId", "revision", "viewRequestId", "offset", "limit", "filterModel"],
+          "required": [
+            "kind",
+            "sessionId",
+            "revision",
+            "viewRequestId",
+            "offset",
+            "limit",
+            "columnOffset",
+            "columnLimit",
+            "filterModel"
+          ],
+          "dependencies": {
+            "columnOffset": ["columnLimit"],
+            "columnLimit": ["columnOffset"]
+          },
           "properties": {
             "kind": { "const": "getPage" },
             "sessionId": { "type": "string" },
@@ -1117,6 +1144,8 @@
             "viewRequestId": { "type": "string", "minLength": 1 },
             "offset": { "type": "integer", "minimum": 0 },
             "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "columnOffset": { "type": "integer", "minimum": 0 },
+            "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 },
             "filterModel": { "$ref": "#/definitions/FilterModel" }
           }
         }
@@ -1165,7 +1194,11 @@
     "PreviewStepRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "step", "offset", "limit"],
+      "required": ["kind", "sessionId", "revision", "step", "offset", "limit", "columnOffset", "columnLimit"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
       "properties": {
         "kind": { "const": "previewStep" },
         "sessionId": { "type": "string" },
@@ -1173,56 +1206,82 @@
         "step": { "$ref": "#/definitions/TransformStep" },
         "replaceStepId": { "type": "string" },
         "offset": { "type": "integer", "minimum": 0 },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
     "InspectStepRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "stepId", "offset", "limit"],
+      "required": ["kind", "sessionId", "revision", "stepId", "offset", "limit", "columnOffset", "columnLimit"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
       "properties": {
         "kind": { "const": "inspectStep" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "stepId": { "type": "string", "minLength": 1 },
         "offset": { "type": "integer", "minimum": 0 },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
     "ApplyDraftRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "offset", "limit"],
+      "required": ["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
       "properties": {
         "kind": { "const": "applyDraft" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "offset": { "type": "integer", "minimum": 0 },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
     "DiscardDraftRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "offset", "limit"],
+      "required": ["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
       "properties": {
         "kind": { "const": "discardDraft" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "offset": { "type": "integer", "minimum": 0 },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
     "UndoStepRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "offset", "limit"],
+      "required": ["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
       "properties": {
         "kind": { "const": "undoStep" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "offset": { "type": "integer", "minimum": 0 },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
     "ExportDataRequest": {

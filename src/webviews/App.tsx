@@ -16,7 +16,7 @@ import { emptyFilterModel, type FilterModel } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
-import { DataGrid } from "./grid/DataGrid";
+import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
 import { OperationBuilder } from "./operations/OperationBuilder";
 import { applySnapshotFilters, snapshotColumnValues, snapshotSummaries } from "./snapshotModel";
@@ -41,6 +41,7 @@ export function App() {
   );
   const [failedPageRequest, setFailedPageRequest] = useState<PendingPageRequest | undefined>();
   const [loading, setLoading] = useState(true);
+  const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
   const [goToColumn, setGoToColumn] = useState("");
   const [filterColumn, setFilterColumn] = useState("");
@@ -86,6 +87,9 @@ export function App() {
   const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
+  const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
+  const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
+  const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
@@ -504,6 +508,7 @@ export function App() {
       view: { ...currentView },
       metadata: currentMetadata,
       page: currentPage,
+      columnWindow: { ...confirmedColumnWindow.current },
       summaries: [...summariesRef.current],
       columnValues: new Map(columnValuesRef.current),
       backgroundDiagnostics: cloneBackgroundDiagnostics(backgroundDiagnosticsRef.current)
@@ -517,6 +522,8 @@ export function App() {
       storeSummaries(previous.summaries);
       storeColumnValues(previous.columnValues);
       storeBackgroundDiagnostics(previous.backgroundDiagnostics);
+      confirmedColumnWindow.current = { ...previous.columnWindow };
+      desiredColumnWindow.current = { ...previous.columnWindow };
       confirmView(previous.metadata, previous.view.viewContextId);
       restartProfilingForConfirmedView();
     },
@@ -536,6 +543,8 @@ export function App() {
       storePendingStepInspection(undefined);
       storeStepInspection(undefined);
       storeStepInspectionTarget(undefined);
+      inspectionColumnWindow.current = { ...confirmedColumnWindow.current };
+      setProjectionLoading(false);
       setStepInspectionError(undefined);
       if (notifyHost) vscode.postMessage({ kind: "clearStepInspection" });
       if (resumeProfiling) restartProfilingForConfirmedView();
@@ -544,14 +553,34 @@ export function App() {
   );
 
   const requestStepInspection = useCallback(
-    (stepId: string, offset = 0) => {
+    (
+      stepId: string,
+      offset = 0,
+      columnWindow = inspectionColumnWindow.current,
+      reason: PendingStepInspection["reason"] = "selection"
+    ) => {
       const currentMetadata = metadataRef.current;
-      if (foregroundRequest.current === "mutation" || !currentMetadata?.steps.some((step) => step.id === stepId)) {
+      if (foregroundRequest.current) {
+        if (latestPageRequest.current?.reason === "projection") {
+          setForegroundError("Wait for the visible columns to finish loading before inspecting a cleaning step.");
+        }
         return;
       }
-      const pending = { stepId, offset };
+      if (!currentMetadata?.steps.some((step) => step.id === stepId)) {
+        return;
+      }
+      const previousTarget = stepInspectionTargetRef.current;
+      const requestedWindow =
+        previousTarget?.stepId !== stepId && reason === "selection" ? confirmedColumnWindow.current : columnWindow;
+      const normalizedWindow = {
+        offset: Math.max(0, Math.floor(requestedWindow.offset)),
+        limit: Math.max(1, Math.min(256, Math.floor(requestedWindow.limit)))
+      };
+      inspectionColumnWindow.current = normalizedWindow;
+      const pending: PendingStepInspection = { stepId, offset, columnWindow: normalizedWindow, reason };
       storeStepInspectionTarget(pending);
       storePendingStepInspection(pending);
+      setProjectionLoading(reason === "projection");
       if (stepInspectionRef.current?.stepId !== stepId) storeStepInspection(undefined);
       setStepInspectionError(undefined);
       cancelBackgroundRequests();
@@ -560,7 +589,14 @@ export function App() {
       setSidePanelOpen(false);
       vscode.postMessage({
         kind: "runtimeRequest",
-        request: { kind: "inspectStep", stepId, offset, limit: pageSize }
+        request: {
+          kind: "inspectStep",
+          stepId,
+          offset,
+          limit: pageSize,
+          columnOffset: normalizedWindow.offset,
+          columnLimit: normalizedWindow.limit
+        }
       });
     },
     [
@@ -573,7 +609,12 @@ export function App() {
   );
 
   const beginMutation = useCallback((): boolean => {
-    if (foregroundRequest.current) return false;
+    if (foregroundRequest.current) {
+      if (latestPageRequest.current?.reason === "projection") {
+        setForegroundError("Wait for the visible columns to finish loading before changing the cleaning plan.");
+      }
+      return false;
+    }
     const previous = captureConfirmedViewState();
     if (!previous) return false;
     clearStepInspection(false, false);
@@ -585,6 +626,7 @@ export function App() {
     setMutationPending(true);
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
+    setProjectionLoading(false);
     setLoading(true);
     return true;
   }, [
@@ -637,8 +679,18 @@ export function App() {
       }
       if (response.kind === "stepInspectionResult") {
         const pending = pendingStepInspectionRef.current;
-        if (!pending || pending.stepId !== response.stepId || pending.offset !== response.offset) return;
+        if (
+          !pending ||
+          pending.stepId !== response.stepId ||
+          pending.offset !== response.offset ||
+          pageSize !== response.limit ||
+          pending.columnWindow.offset !== response.columnOffset ||
+          pending.columnWindow.limit !== response.columnLimit
+        ) {
+          return;
+        }
         storePendingStepInspection(undefined);
+        setProjectionLoading(false);
         const result = response.response;
         if (result.kind === "error") {
           setStepInspectionError(result.message);
@@ -659,6 +711,11 @@ export function App() {
           setStepInspectionError("Ignored an invalid applied-step inspection response.");
           return;
         }
+        inspectionColumnWindow.current = columnWindowFromPage(
+          { ...currentMetadata, schema: result.outputSchema },
+          result.outputPage,
+          pending.columnWindow
+        );
         storeStepInspection(result);
         setStepInspectionError(undefined);
         return;
@@ -677,12 +734,20 @@ export function App() {
       }
       if (response.kind === "editorAction") {
         if (response.action === "openOperation") {
+          if (latestPageRequest.current?.reason === "projection") {
+            setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
+            return;
+          }
           if (!canStartOperation(metadataRef.current)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
           setEditingStep(undefined);
           setOperationKind(response.operationKind);
           setOperationOpen(true);
         } else if (response.action === "editLatest") {
+          if (latestPageRequest.current?.reason === "projection") {
+            setForegroundError("Wait for the visible columns to finish loading before editing a cleaning step.");
+            return;
+          }
           if (!canEditLatestStep(metadataRef.current)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
           setMetadata((current) => {
@@ -699,9 +764,16 @@ export function App() {
           else clearStepInspection();
         } else {
           if (!beginMutation()) return;
+          const columnWindow = desiredColumnWindow.current;
           vscode.postMessage({
             kind: "runtimeRequest",
-            request: { kind: response.action, offset: 0, limit: pageSize }
+            request: {
+              kind: response.action,
+              offset: 0,
+              limit: pageSize,
+              columnOffset: columnWindow.offset,
+              columnLimit: columnWindow.limit
+            }
           });
         }
         return;
@@ -717,7 +789,8 @@ export function App() {
               foregroundRequest.current.viewRequestId === response.viewRequestId
             ) {
               foregroundRequest.current = undefined;
-              setLoading(false);
+              if (pendingPage.reason === "projection") setProjectionLoading(false);
+              else setLoading(false);
             }
             restoreViewAfterPageFailure(pendingPage);
             storeFailedPageRequest(pendingPage);
@@ -749,9 +822,11 @@ export function App() {
           mutationSnapshot.current = undefined;
           setMutationPending(false);
           setLoading(false);
+          setProjectionLoading(false);
           if (previous) restoreConfirmedViewState(previous);
         } else if (!metadataRef.current) {
           setLoading(false);
+          setProjectionLoading(false);
         }
         setForegroundError(response.message);
         return;
@@ -766,10 +841,12 @@ export function App() {
             mutationSnapshot.current = undefined;
             setMutationPending(false);
             setLoading(false);
+            setProjectionLoading(false);
             if (previous) restoreConfirmedViewState(previous);
             setForegroundError("The cleaning operation was cancelled.");
           } else if (!metadataRef.current) {
             setLoading(false);
+            setProjectionLoading(false);
             setForegroundError("Opening the dataframe was cancelled.");
           }
           return;
@@ -782,7 +859,8 @@ export function App() {
             foregroundRequest.current.viewRequestId === response.viewRequestId
           ) {
             foregroundRequest.current = undefined;
-            setLoading(false);
+            if (pendingPage.reason === "projection") setProjectionLoading(false);
+            else setLoading(false);
           }
           restoreViewAfterPageFailure(pendingPage);
           storeFailedPageRequest(pendingPage);
@@ -805,6 +883,7 @@ export function App() {
         mutationSnapshot.current = undefined;
         setMutationPending(false);
         setLoading(false);
+        setProjectionLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
         storeGridViewState(emptyGridViewState());
@@ -820,8 +899,15 @@ export function App() {
         storeMetadata(response.metadata);
         storeFilterModel(response.metadata.filterModel);
         storePage(response.page);
+        const openedWindow = columnWindowFromPage(response.metadata, response.page);
+        confirmedColumnWindow.current = openedWindow;
+        desiredColumnWindow.current = openedWindow;
+        inspectionColumnWindow.current = openedWindow;
         storeSummaries(response.summaries);
-        const rows = response.metadata.source.kind === "notebookOutput" ? response.page.rows : undefined;
+        const rows =
+          response.metadata.source.kind === "notebookOutput" && isFullWidthPage(response.metadata, response.page)
+            ? response.page.rows
+            : undefined;
         snapshotRowsRef.current = rows;
         setSnapshotRows(rows);
         return;
@@ -836,7 +922,8 @@ export function App() {
           foregroundRequest.current.viewRequestId === response.viewRequestId
         ) {
           foregroundRequest.current = undefined;
-          setLoading(false);
+          if (pendingPage.reason === "projection") setProjectionLoading(false);
+          else setLoading(false);
         }
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
@@ -858,6 +945,7 @@ export function App() {
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
         storePage(response.page);
+        confirmedColumnWindow.current = columnWindowFromPage(nextMetadata, response.page, pendingPage.columnWindow);
         snapshotRowsRef.current = undefined;
         setSnapshotRows(undefined);
         restartProfilingForConfirmedView();
@@ -877,6 +965,7 @@ export function App() {
         mutationSnapshot.current = undefined;
         setMutationPending(false);
         setLoading(false);
+        setProjectionLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
         resetViewProfiling();
@@ -886,6 +975,10 @@ export function App() {
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
         storePage(response.page);
+        const mutationWindow = columnWindowFromPage(nextMetadata, response.page, desiredColumnWindow.current);
+        confirmedColumnWindow.current = mutationWindow;
+        desiredColumnWindow.current = mutationWindow;
+        inspectionColumnWindow.current = mutationWindow;
         snapshotRowsRef.current = undefined;
         setSnapshotRows(undefined);
         setGeneratedCode(response.code);
@@ -1021,7 +1114,11 @@ export function App() {
       schema: stepInspection.outputSchema
     };
   }, [metadata, stepInspection]);
-  const displayPage = inspectionMode ? (pendingStepInspection ? undefined : stepInspection?.outputPage) : page;
+  const displayPage = inspectionMode
+    ? pendingStepInspection?.reason === "selection" || pendingStepInspection?.reason === "row"
+      ? undefined
+      : stepInspection?.outputPage
+    : page;
   const selectedInspectionStep = metadata?.steps.find((step) => step.id === stepInspectionTarget?.stepId);
   const inspectionGridViewState = useMemo<GridViewState>(() => {
     const columnIds = new Set(stepInspection?.outputSchema.map((column) => column.id) ?? []);
@@ -1055,13 +1152,31 @@ export function App() {
     const viewRequestId = nextViewRequestId();
     const previousContextId = confirmedView.current?.viewContextId;
     const changesView = options.changesView ?? !previousContextId;
+    const reason = options.reason ?? (changesView ? "view" : "row");
     const viewContextId = options.viewContextId ?? (changesView ? viewRequestId : (previousContextId ?? viewRequestId));
+    const requestedWindow = options.columnWindow ?? desiredColumnWindow.current;
+    const columnWindow: ColumnWindow = currentMetadata?.schema.length
+      ? {
+          offset: Math.max(0, Math.min(Math.floor(requestedWindow.offset), currentMetadata.schema.length - 1)),
+          limit: Math.max(1, Math.min(256, Math.floor(requestedWindow.limit)))
+        }
+      : { offset: 0, limit: Math.max(1, Math.min(256, Math.floor(requestedWindow.limit))) };
     const previousConfirmedState = changesView
       ? (latestPageRequest.current?.previousConfirmedState ?? captureConfirmedViewState())
       : undefined;
-    const pendingPage = { viewRequestId, viewContextId, changesView, offset, model, previousConfirmedState };
+    const pendingPage: PendingPageRequest = {
+      viewRequestId,
+      viewContextId,
+      changesView,
+      offset,
+      model,
+      columnWindow,
+      reason,
+      previousConfirmedState
+    };
     latestPageRequest.current = pendingPage;
     foregroundRequest.current = { kind: "page", viewRequestId };
+    desiredColumnWindow.current = columnWindow;
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
     if (changesView) {
@@ -1069,7 +1184,11 @@ export function App() {
       if (currentMetadata) storeMetadata(withoutDatasetStats(currentMetadata));
     }
     storeFilterModel(model);
-    setLoading(true);
+    if (reason === "projection") setProjectionLoading(true);
+    else {
+      setProjectionLoading(false);
+      setLoading(true);
+    }
     vscode.postMessage({
       kind: "runtimeRequest",
       viewContextId,
@@ -1078,6 +1197,8 @@ export function App() {
         viewRequestId,
         offset,
         limit: pageSize,
+        columnOffset: columnWindow.offset,
+        columnLimit: columnWindow.limit,
         filterModel: model
       }
     });
@@ -1132,6 +1253,45 @@ export function App() {
     });
   };
 
+  const handleVisibleColumnRange = (range: VisibleColumnRange): void => {
+    if (snapshotMode) return;
+    if (stepInspectionTargetRef.current) {
+      const currentInspection = stepInspectionRef.current;
+      const currentMetadata = metadataRef.current;
+      if (!currentInspection || !currentMetadata) return;
+      const inspectionMetadata: SessionMetadata = {
+        ...currentMetadata,
+        schema: currentInspection.outputSchema
+      };
+      const window = alignedColumnWindow(
+        range,
+        currentInspection.outputSchema.length,
+        webviewConfig.fetchColumnBlockSize
+      );
+      inspectionColumnWindow.current = window;
+      if (pageCoversColumnWindow(inspectionMetadata, currentInspection.outputPage, window)) return;
+      const pending = pendingStepInspectionRef.current;
+      if (pending) return;
+      requestStepInspection(currentInspection.stepId, currentInspection.outputPage.offset, window, "projection");
+      return;
+    }
+
+    const currentMetadata = metadataRef.current;
+    const currentPage = pageRef.current;
+    if (!currentMetadata || !currentPage) return;
+    const window = alignedColumnWindow(range, currentMetadata.schema.length, webviewConfig.fetchColumnBlockSize);
+    desiredColumnWindow.current = window;
+    if (pageCoversColumnWindow(currentMetadata, currentPage, window)) return;
+    const pending = latestPageRequest.current;
+    if (pending) return;
+    requestPage(currentPage.offset, currentMetadata.filterModel, {
+      changesView: false,
+      viewContextId: confirmedView.current?.viewContextId,
+      columnWindow: window,
+      reason: "projection"
+    });
+  };
+
   const applyFilters = (model: FilterModel) => {
     if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
       return;
@@ -1153,7 +1313,9 @@ export function App() {
     if (sameDesiredModel && failed && sameFilterModel(model, failed.model)) {
       requestPage(failed.offset, failed.model, {
         changesView: failed.changesView,
-        viewContextId: failed.viewContextId
+        viewContextId: failed.viewContextId,
+        columnWindow: failed.columnWindow,
+        reason: failed.reason
       });
       return;
     }
@@ -1172,22 +1334,44 @@ export function App() {
 
   const previewStep = (step: TransformStep, replaceStepId?: string) => {
     if (!beginMutation()) return;
+    const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
       kind: "runtimeRequest",
-      request: { kind: "previewStep", step, replaceStepId, offset: 0, limit: pageSize }
+      request: {
+        kind: "previewStep",
+        step,
+        replaceStepId,
+        offset: 0,
+        limit: pageSize,
+        columnOffset: columnWindow.offset,
+        columnLimit: columnWindow.limit
+      }
     });
   };
 
   const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep") => {
     if (!beginMutation()) return;
+    const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
       kind: "runtimeRequest",
-      request: { kind: action, offset: 0, limit: pageSize }
+      request: {
+        kind: action,
+        offset: 0,
+        limit: pageSize,
+        columnOffset: columnWindow.offset,
+        columnLimit: columnWindow.limit
+      }
     });
   };
 
   const openNewOperation = (kind?: OperationKind) => {
-    if (foregroundRequest.current || !canStartOperation(metadataRef.current)) return;
+    if (foregroundRequest.current) {
+      if (latestPageRequest.current?.reason === "projection") {
+        setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
+      }
+      return;
+    }
+    if (!canStartOperation(metadataRef.current)) return;
     if (stepInspectionTargetRef.current) clearStepInspection();
     setEditingStep(undefined);
     setOperationKind(kind);
@@ -1195,7 +1379,13 @@ export function App() {
   };
 
   const editLatestStep = () => {
-    if (foregroundRequest.current || !canEditLatestStep(metadataRef.current)) return;
+    if (foregroundRequest.current) {
+      if (latestPageRequest.current?.reason === "projection") {
+        setForegroundError("Wait for the visible columns to finish loading before editing a cleaning step.");
+      }
+      return;
+    }
+    if (!canEditLatestStep(metadataRef.current)) return;
     if (stepInspectionTargetRef.current) clearStepInspection();
     const latest = metadata?.steps.at(-1);
     if (!latest) return;
@@ -1220,19 +1410,28 @@ export function App() {
         clearStepInspection();
         handled = true;
       } else if (metadata?.draftStep) {
-        sendPlanAction("discardDraft");
-        handled = true;
+        if (!projectionLoading) {
+          sendPlanAction("discardDraft");
+          handled = true;
+        }
       }
-    } else if (modifier && !event.altKey && !event.shiftKey && event.key === "Enter" && metadata?.draftStep) {
+    } else if (
+      modifier &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key === "Enter" &&
+      metadata?.draftStep &&
+      !projectionLoading
+    ) {
       sendPlanAction("applyDraft");
       handled = true;
     } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
-      if (!metadata?.draftStep && metadata?.steps.length) {
+      if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
         sendPlanAction("undoStep");
         handled = true;
       }
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
-      if (!metadata?.draftStep && metadata?.steps.length) {
+      if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
         editLatestStep();
         handled = true;
       }
@@ -1249,7 +1448,9 @@ export function App() {
     if (!failed) return;
     restoreGridFocusForPage.current = requestPage(failed.offset, failed.model, {
       changesView: failed.changesView,
-      viewContextId: failed.viewContextId
+      viewContextId: failed.viewContextId,
+      columnWindow: failed.columnWindow,
+      reason: failed.reason
     });
   };
 
@@ -1271,6 +1472,8 @@ export function App() {
   };
 
   const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
+  const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
+  const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
 
   if (foregroundError && !metadata) {
     return (
@@ -1297,9 +1500,11 @@ export function App() {
             {metadata.mode === "editing" && !snapshotMode && (
               <button
                 type="button"
-                disabled={loading || !canStartOperation(metadata)}
+                disabled={loading || projectionLoading || !canStartOperation(metadata)}
+                aria-describedby={projectionStatusId}
                 title={
-                  metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined
+                  projectionActionTitle ??
+                  (metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined)
                 }
                 onClick={() => openNewOperation()}
               >
@@ -1362,18 +1567,20 @@ export function App() {
                 <button
                   type="button"
                   className="secondaryButton"
-                  disabled={loading}
+                  disabled={loading || projectionLoading}
+                  aria-describedby={projectionStatusId}
                   aria-keyshortcuts="Escape"
-                  title="Discard draft (Escape)"
+                  title={projectionActionTitle ?? "Discard draft (Escape)"}
                   onClick={() => sendPlanAction("discardDraft")}
                 >
                   Discard
                 </button>
                 <button
                   type="button"
-                  disabled={loading}
+                  disabled={loading || projectionLoading}
+                  aria-describedby={projectionStatusId}
                   aria-keyshortcuts="Control+Enter Meta+Enter"
-                  title="Apply draft (Ctrl/Cmd+Enter)"
+                  title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
                   onClick={() => sendPlanAction("applyDraft")}
                 >
                   Apply step
@@ -1384,9 +1591,10 @@ export function App() {
                 <button
                   type="button"
                   className="secondaryButton"
-                  disabled={loading || metadata.steps.length === 0}
+                  disabled={loading || projectionLoading || metadata.steps.length === 0}
+                  aria-describedby={projectionStatusId}
                   aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                  title="Edit latest step (Ctrl/Cmd+Shift+E)"
+                  title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
                   onClick={editLatestStep}
                 >
                   Edit latest
@@ -1394,9 +1602,10 @@ export function App() {
                 <button
                   type="button"
                   className="secondaryButton"
-                  disabled={loading || metadata.steps.length === 0}
+                  disabled={loading || projectionLoading || metadata.steps.length === 0}
+                  aria-describedby={projectionStatusId}
                   aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                  title="Undo latest step (Ctrl/Cmd+Alt+Z)"
+                  title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
                   onClick={() => sendPlanAction("undoStep")}
                 >
                   <span className="codicon codicon-discard" aria-hidden="true" /> Undo
@@ -1479,6 +1688,11 @@ export function App() {
               Loading...
             </div>
           )}
+          {projectionLoading && (
+            <div id="column-projection-status" className="loading" role="status" aria-live="polite">
+              Loading visible columns… Cleaning actions are temporarily unavailable.
+            </div>
+          )}
           {displayMetadata && displayPage ? (
             <DataGrid
               key={
@@ -1491,13 +1705,18 @@ export function App() {
               summaries={inspectionMode ? [] : summaries}
               onPage={(offset) => {
                 const stepId = stepInspectionTarget?.stepId;
-                if (stepId) requestStepInspection(stepId, offset);
-                else requestPage(offset);
+                if (stepId) requestStepInspection(stepId, offset, inspectionColumnWindow.current, "row");
+                else
+                  requestPage(offset, filterModelRef.current, {
+                    columnWindow: desiredColumnWindow.current,
+                    reason: "row"
+                  });
               }}
               pageSize={pageSize}
               defaultColumnWidth={webviewConfig.defaultColumnWidth}
               insightsOnOpen={inspectionMode ? false : webviewConfig.insightsOnOpen}
-              busy={loading || Boolean(pendingStepInspection)}
+              busy={loading || Boolean(pendingStepInspection && pendingStepInspection.reason !== "projection")}
+              projecting={projectionLoading || pendingStepInspection?.reason === "projection"}
               viewContextId={
                 inspectionMode ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}` : activeViewContextId
               }
@@ -1531,6 +1750,7 @@ export function App() {
                 requestValues(column);
               }}
               onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
+              onVisibleColumnRangeChange={handleVisibleColumnRange}
               onViewStateChange={inspectionMode ? () => undefined : publishGridViewState}
             />
           ) : (
@@ -1611,7 +1831,7 @@ export function App() {
           filterModel={filterModel}
           initialKind={operationKind}
           initialStep={editingStep}
-          busy={mutationPending}
+          busy={mutationPending || projectionLoading}
           onClose={() => {
             if (foregroundRequest.current !== "mutation") setOperationOpen(false);
           }}
@@ -1641,13 +1861,21 @@ export function App() {
       offset,
       limit: pageSize,
       totalRows: filteredRows.length,
+      columnIds: nextMetadata.schema.map((column) => column.id),
       rows: filteredRows.slice(offset, offset + pageSize)
     });
+    const snapshotWindow = {
+      offset: 0,
+      limit: Math.max(1, Math.min(256, nextMetadata.schema.length || webviewConfig.fetchColumnBlockSize))
+    };
+    confirmedColumnWindow.current = snapshotWindow;
+    desiredColumnWindow.current = snapshotWindow;
     const nextSummaries = snapshotSummaries(nextMetadata, filteredRows);
     summariesRef.current = nextSummaries;
     setSummaries(nextSummaries);
     confirmView(nextMetadata, nextViewRequestId());
     setLoading(false);
+    setProjectionLoading(false);
     setForegroundError(undefined);
     storeFailedPageRequest(undefined);
   }
@@ -1669,6 +1897,9 @@ interface StepInspectionResultMessage {
   kind: "stepInspectionResult";
   stepId: string;
   offset: number;
+  limit: number;
+  columnOffset: number;
+  columnLimit: number;
   response: OpenWranglerResponse;
 }
 
@@ -1687,6 +1918,7 @@ interface ConfirmedViewState {
   view: ConfirmedView;
   metadata: SessionMetadata;
   page: GridPage;
+  columnWindow: ColumnWindow;
   summaries: ColumnSummary[];
   columnValues: ReadonlyMap<string, ValuesResponse>;
   backgroundDiagnostics: ReadonlyMap<string, BackgroundDiagnostic>;
@@ -1695,6 +1927,8 @@ interface ConfirmedViewState {
 interface PendingStepInspection {
   stepId: string;
   offset: number;
+  columnWindow: ColumnWindow;
+  reason: "selection" | "row" | "projection";
 }
 
 interface DiffBeforeState {
@@ -1708,8 +1942,17 @@ interface PendingPageRequest {
   changesView: boolean;
   offset: number;
   model: FilterModel;
+  columnWindow: ColumnWindow;
+  reason: PageRequestReason;
   previousConfirmedState?: ConfirmedViewState;
 }
+
+export interface ColumnWindow {
+  offset: number;
+  limit: number;
+}
+
+type PageRequestReason = "view" | "row" | "projection";
 
 type SummaryRequestOwner = "grid" | "drawer";
 
@@ -1732,6 +1975,8 @@ interface BackgroundDiagnostic {
 interface PageRequestOptions {
   changesView?: boolean;
   viewContextId?: string;
+  columnWindow?: ColumnWindow;
+  reason?: PageRequestReason;
 }
 
 function backgroundDiagnosticKey(pending: PendingBackgroundRequest): string {
@@ -1783,16 +2028,76 @@ function filterModelScope(model: FilterModel): string {
   return JSON.stringify({ logic: model.logic ?? "and", filters: model.filters, sort: model.sort });
 }
 
+function initialColumnWindow(): ColumnWindow {
+  return { offset: 0, limit: webviewConfig.fetchColumnBlockSize };
+}
+
+export function alignedColumnWindow(range: VisibleColumnRange, totalColumns: number, blockSize: number): ColumnWindow {
+  const boundedBlockSize = Math.max(1, Math.min(256, Math.floor(blockSize)));
+  if (totalColumns <= 0) return { offset: 0, limit: boundedBlockSize };
+  const start = Math.max(0, Math.min(Math.floor(range.start), totalColumns - 1));
+  const end = Math.max(start + 1, Math.min(Math.ceil(range.end), totalColumns));
+  const offset = Math.floor(start / boundedBlockSize) * boundedBlockSize;
+  const alignedEnd = Math.min(totalColumns, Math.ceil(end / boundedBlockSize) * boundedBlockSize);
+  if (alignedEnd - offset <= 256) return { offset, limit: Math.max(1, alignedEnd - offset) };
+
+  const shiftedOffset = Math.min(start, Math.max(0, totalColumns - 256));
+  return { offset: shiftedOffset, limit: Math.max(1, Math.min(256, totalColumns - shiftedOffset)) };
+}
+
+function columnWindowFromPage(
+  metadata: SessionMetadata,
+  page: GridPage,
+  fallback: ColumnWindow = initialColumnWindow()
+): ColumnWindow {
+  if (!metadata.schema.length) return { offset: 0, limit: Math.max(1, fallback.limit) };
+  const firstId = page.columnIds[0];
+  const firstPosition = firstId === undefined ? -1 : metadata.schema.findIndex((column) => column.id === firstId);
+  if (firstPosition < 0 || page.columnIds.length === 0) {
+    return {
+      offset: Math.max(0, Math.min(fallback.offset, metadata.schema.length - 1)),
+      limit: Math.max(1, Math.min(256, fallback.limit))
+    };
+  }
+  return { offset: firstPosition, limit: Math.max(1, Math.min(256, page.columnIds.length)) };
+}
+
+function pageCoversColumnWindow(metadata: SessionMetadata, page: GridPage, window: ColumnWindow): boolean {
+  if (!metadata.schema.length) return page.columnIds.length === 0;
+  const expectedIds = metadata.schema
+    .slice(window.offset, Math.min(metadata.schema.length, window.offset + window.limit))
+    .map((column) => column.id);
+  if (!expectedIds.length) return false;
+  const first = page.columnIds.indexOf(expectedIds[0]);
+  return (
+    first >= 0 &&
+    first + expectedIds.length <= page.columnIds.length &&
+    expectedIds.every((columnId, index) => page.columnIds[first + index] === columnId)
+  );
+}
+
+function isFullWidthPage(metadata: SessionMetadata, page: GridPage): boolean {
+  return (
+    page.columnIds.length === metadata.schema.length &&
+    page.columnIds.every((columnId, index) => columnId === metadata.schema[index]?.id)
+  );
+}
+
 function readWebviewConfig(): {
   fetchBlockSize: number;
+  fetchColumnBlockSize: number;
   defaultColumnWidth: number;
   insightsOnOpen: boolean;
   filterMode: "basic" | "advanced";
 } {
   const fetchBlockSize = Number(document.body.dataset.fetchBlockSize ?? 200);
+  const fetchColumnBlockSize = Number(document.body.dataset.fetchColumnBlockSize ?? 16);
   const defaultColumnWidth = Number(document.body.dataset.defaultColumnWidth ?? 190);
   return {
     fetchBlockSize: Number.isFinite(fetchBlockSize) ? Math.max(25, Math.min(2000, fetchBlockSize)) : 200,
+    fetchColumnBlockSize: Number.isFinite(fetchColumnBlockSize)
+      ? Math.max(1, Math.min(256, Math.floor(fetchColumnBlockSize)))
+      : 16,
     defaultColumnWidth: Number.isFinite(defaultColumnWidth) ? Math.max(80, Math.min(640, defaultColumnWidth)) : 190,
     insightsOnOpen: document.body.dataset.insightsOnOpen !== "false",
     filterMode: document.body.dataset.filterMode === "advanced" ? "advanced" : "basic"

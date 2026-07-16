@@ -12,6 +12,7 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    PageColumnProjection,
     boolean_visualization,
     bound_column_name,
     bound_column_position,
@@ -21,6 +22,7 @@ from .base import (
     infer_semantic_type,
     is_internal_row_id_label,
     normalize_cell,
+    normalize_page_projection,
     numeric_visualization,
 )
 
@@ -174,24 +176,31 @@ class PandasEngine(DataFrameEngine):
         limit: int,
         *,
         total_rows: int | None = None,
+        column_projection: PageColumnProjection | None = None,
     ) -> dict[str, Any]:
         df = self.normalize(frame)
-        sliced = df.iloc[offset : offset + limit]
-        positions = self._visible_positions(df)
+        visible_positions = self._visible_positions(df)
+        projection = normalize_page_projection(len(visible_positions), column_projection)
+        positions = [visible_positions[position] for position, _identifier in projection]
+        column_ids = [identifier for _position, identifier in projection]
         row_id_position = self._row_id_position(df)
+        selected_positions = [*([row_id_position] if row_id_position is not None else []), *positions]
+        sliced = df.iloc[offset : offset + limit, selected_positions]
+        value_offset = 1 if row_id_position is not None else 0
         rows = []
         for row_number, (_, row) in enumerate(sliced.iterrows(), start=offset):
             rows.append(
                 {
-                    "id": str(row.iloc[row_id_position]) if row_id_position is not None else f"r:{row_number}",
+                    "id": str(row.iloc[0]) if row_id_position is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(row.iloc[position]) for position in positions],
+                    "values": [normalize_cell(row.iloc[value_offset + index]) for index in range(len(positions))],
                 }
             )
         return {
             "offset": offset,
             "limit": limit,
             "totalRows": int(df.shape[0]) if total_rows is None else int(total_rows),
+            "columnIds": column_ids,
             "rows": rows,
         }
 

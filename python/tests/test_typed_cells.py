@@ -7,6 +7,7 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 
+from openwrangler_runtime.engines import PandasEngine
 from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell
 
 
@@ -53,6 +54,33 @@ def test_nested_typed_cells_are_strict_json_safe() -> None:
         "missing": None,
     }
     json.dumps(cell, allow_nan=False)
+
+
+def test_projected_page_retains_typed_cell_encodings_and_strict_json() -> None:
+    engine = PandasEngine()
+    frame = engine.ensure_row_ids(
+        pd.DataFrame(
+            {
+                "omitted": ["wide payload"],
+                "huge": [2**80],
+                "missing": [float("nan")],
+            }
+        ),
+        "typed-projection",
+    )
+
+    page = engine.page(
+        frame,
+        0,
+        1,
+        total_rows=1,
+        column_projection=[(1, "stable:huge"), (2, "stable:missing")],
+    )
+
+    assert page["columnIds"] == ["stable:huge", "stable:missing"]
+    assert page["rows"][0]["values"][0]["raw"] == str(2**80)
+    assert page["rows"][0]["values"][1]["kind"] == "nan"
+    json.dumps(page, allow_nan=False)
 
 
 def test_semantic_type_inference_covers_duckdb_scalar_and_nested_types() -> None:

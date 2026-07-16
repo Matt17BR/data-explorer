@@ -6,27 +6,57 @@ from typing import Any
 from .operations import OperationError, validate_step
 
 PROTOCOL_VERSION = 2
+MAX_PAGE_LIMIT = 10_000
+MAX_COLUMN_LIMIT = 256
 REQUEST_PRIORITIES = {"interactive", "background"}
 REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "initialize": (),
-    "openSession": ("source", "pageSize"),
-    "getPage": ("sessionId", "revision", "viewRequestId", "offset", "limit", "filterModel"),
+    "openSession": ("source", "pageSize", "columnOffset", "columnLimit"),
+    "getPage": (
+        "sessionId",
+        "revision",
+        "viewRequestId",
+        "offset",
+        "limit",
+        "columnOffset",
+        "columnLimit",
+        "filterModel",
+    ),
     "getSummary": ("sessionId", "revision", "viewRequestId", "filterModel"),
     "getDatasetStats": ("sessionId", "revision", "viewRequestId", "filterModel"),
     "getColumnValues": ("sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"),
-    "previewStep": ("sessionId", "revision", "step", "offset", "limit"),
-    "inspectStep": ("sessionId", "revision", "stepId", "offset", "limit"),
-    "applyDraft": ("sessionId", "revision", "offset", "limit"),
-    "discardDraft": ("sessionId", "revision", "offset", "limit"),
-    "undoStep": ("sessionId", "revision", "offset", "limit"),
+    "previewStep": ("sessionId", "revision", "step", "offset", "limit", "columnOffset", "columnLimit"),
+    "inspectStep": ("sessionId", "revision", "stepId", "offset", "limit", "columnOffset", "columnLimit"),
+    "applyDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
+    "discardDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
+    "undoStep": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
     "exportData": ("sessionId", "revision", "path", "format"),
     "closeSession": ("sessionId", "revision"),
     "cancelRequest": ("targetRequestId",),
 }
 REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
     "initialize": {"kind"},
-    "openSession": {"kind", "source", "requestedSessionId", "backend", "mode", "pageSize"},
-    "getPage": {"kind", "sessionId", "revision", "viewRequestId", "offset", "limit", "filterModel"},
+    "openSession": {
+        "kind",
+        "source",
+        "requestedSessionId",
+        "backend",
+        "mode",
+        "pageSize",
+        "columnOffset",
+        "columnLimit",
+    },
+    "getPage": {
+        "kind",
+        "sessionId",
+        "revision",
+        "viewRequestId",
+        "offset",
+        "limit",
+        "columnOffset",
+        "columnLimit",
+        "filterModel",
+    },
     "getSummary": {"kind", "sessionId", "revision", "viewRequestId", "filterModel", "columns"},
     "getDatasetStats": {"kind", "sessionId", "revision", "viewRequestId", "filterModel"},
     "getColumnValues": {
@@ -39,11 +69,30 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "search",
         "limit",
     },
-    "previewStep": {"kind", "sessionId", "revision", "step", "replaceStepId", "offset", "limit"},
-    "inspectStep": {"kind", "sessionId", "revision", "stepId", "offset", "limit"},
-    "applyDraft": {"kind", "sessionId", "revision", "offset", "limit"},
-    "discardDraft": {"kind", "sessionId", "revision", "offset", "limit"},
-    "undoStep": {"kind", "sessionId", "revision", "offset", "limit"},
+    "previewStep": {
+        "kind",
+        "sessionId",
+        "revision",
+        "step",
+        "replaceStepId",
+        "offset",
+        "limit",
+        "columnOffset",
+        "columnLimit",
+    },
+    "inspectStep": {
+        "kind",
+        "sessionId",
+        "revision",
+        "stepId",
+        "offset",
+        "limit",
+        "columnOffset",
+        "columnLimit",
+    },
+    "applyDraft": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
+    "discardDraft": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
+    "undoStep": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
     "exportData": {"kind", "sessionId", "revision", "path", "format"},
     "closeSession": {"kind", "sessionId", "revision"},
     "cancelRequest": {"kind", "targetRequestId"},
@@ -77,8 +126,18 @@ def decode_request(value: Any) -> dict[str, Any]:
     for field in ("pageSize", "limit"):
         if field in request and (not _is_non_negative_integer(request[field]) or request[field] < 1):
             raise ProtocolError(f"{field} must be a positive integer.")
-    if kind == "inspectStep" and request["limit"] > 10_000:
-        raise ProtocolError("inspectStep limit must not exceed 10000.")
+        if field in request and request[field] > MAX_PAGE_LIMIT:
+            if kind == "inspectStep":
+                raise ProtocolError(f"inspectStep limit must not exceed {MAX_PAGE_LIMIT}.")
+            raise ProtocolError(f"{field} must not exceed {MAX_PAGE_LIMIT}.")
+    if "columnOffset" in request and not _is_non_negative_integer(request["columnOffset"]):
+        raise ProtocolError("columnOffset must be a non-negative integer.")
+    if "columnLimit" in request and (
+        not _is_non_negative_integer(request["columnLimit"])
+        or request["columnLimit"] < 1
+        or request["columnLimit"] > MAX_COLUMN_LIMIT
+    ):
+        raise ProtocolError(f"columnLimit must be an integer between 1 and {MAX_COLUMN_LIMIT}.")
     if "offset" in request and not _is_non_negative_integer(request["offset"]):
         raise ProtocolError("offset must be a non-negative integer.")
     if "filterModel" in request:

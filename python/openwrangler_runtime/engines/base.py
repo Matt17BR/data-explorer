@@ -4,7 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from base64 import b64encode
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -28,6 +28,7 @@ ColumnType = Literal[
 ]
 EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
+PageColumnProjection = Sequence[tuple[int, str]]
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 _INTERNAL_ROW_ID_PREFIX_CASEFOLD = INTERNAL_ROW_ID_PREFIX.casefold()
@@ -163,6 +164,7 @@ class DataFrameEngine(ABC):
         limit: int,
         *,
         total_rows: int | None = None,
+        column_projection: PageColumnProjection | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -191,6 +193,36 @@ class DataFrameEngine(ABC):
     @abstractmethod
     def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
         raise NotImplementedError
+
+
+def normalize_page_projection(
+    column_count: int,
+    projection: PageColumnProjection | None,
+) -> list[tuple[int, str]]:
+    """Validate a private visible-position to public-column-ID page projection."""
+
+    if not isinstance(column_count, int) or isinstance(column_count, bool) or column_count < 0:
+        raise EngineError("Page projection requires a non-negative visible column count.")
+    if projection is None:
+        return [(position, f"c:{position}") for position in range(column_count)]
+
+    normalized: list[tuple[int, str]] = []
+    positions: set[int] = set()
+    identifiers: set[str] = set()
+    for item in projection:
+        if not isinstance(item, tuple | list) or len(item) != 2:
+            raise EngineError("Page projection entries must contain one visible position and column identity.")
+        position, identifier = item
+        if not isinstance(position, int) or isinstance(position, bool) or position < 0 or position >= column_count:
+            raise EngineError("Page projection references a column outside the dataframe schema.")
+        if not isinstance(identifier, str) or not identifier:
+            raise EngineError("Page projection column identities must be non-empty strings.")
+        if position in positions or identifier in identifiers:
+            raise EngineError("Page projection positions and column identities must be unique.")
+        positions.add(position)
+        identifiers.add(identifier)
+        normalized.append((position, identifier))
+    return normalized
 
 
 def normalize_cell(value: Any) -> dict[str, Any]:

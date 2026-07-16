@@ -554,6 +554,13 @@
           "maximum": 2000,
           "description": "Number of rows fetched for each virtual grid block."
         },
+        "openWrangler.fetchColumnBlockSize": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "maximum": 256,
+          "description": "Number of dataframe columns fetched for each horizontal grid block."
+        },
         "openWrangler.panelRevealBehavior": {
           "type": "string",
           "enum": [

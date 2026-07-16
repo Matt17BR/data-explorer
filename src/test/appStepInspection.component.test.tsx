@@ -71,6 +71,7 @@ const confirmedPage: GridPage = {
   offset: 0,
   limit: 200,
   totalRows: 400,
+  columnIds: metadata.schema.map((column) => column.id),
   rows: [{ id: "r:0", rowNumber: 0, values: [stringCell("Milan"), numberCell(10.5)] }]
 };
 
@@ -99,7 +100,15 @@ function inspection(offset = 0): StepInspectionResponse {
       addedColumns: [],
       removedColumns: [],
       changedCells: 1,
-      cells: [{ rowNumber: offset, column: "sales", before: numberCell(10.5), after: numberCell(11) }],
+      cells: [
+        {
+          rowNumber: offset,
+          columnId: "c:sales",
+          column: "sales",
+          before: numberCell(10.5),
+          after: numberCell(11)
+        }
+      ],
       truncated: true
     },
     code: "# code through round-sales"
@@ -117,12 +126,18 @@ describe("App applied-step inspection", () => {
 
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
 
-    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: step.id, offset: 0, limit: 200 });
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({
+      stepId: step.id,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2
+    });
     expect(screen.getByText("Loading selected-step inspection…")).toBeVisible();
     expect(screen.getByRole("button", { name: "Filters paused during inspection" })).toBeDisabled();
     expect(screen.queryByRole("cell", { name: "10.5" })).toBeNull();
 
-    dispatch({ kind: "stepInspectionResult", stepId: step.id, offset: 0, response: inspection() });
+    dispatch(inspectionResult(step.id, 0, inspection()));
 
     expect(await screen.findByLabelText("Selected applied-step inspection")).toBeVisible();
     expect(screen.getByRole("cell", { name: "sales, row 1: changed from 10.5 to 11" })).toHaveAttribute(
@@ -137,9 +152,15 @@ describe("App applied-step inspection", () => {
 
     postMessage.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
-    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: step.id, offset: 200, limit: 200 });
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({
+      stepId: step.id,
+      offset: 200,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2
+    });
     expect(screen.getByText("Loading selected-step inspection…")).toBeVisible();
-    dispatch({ kind: "stepInspectionResult", stepId: step.id, offset: 200, response: inspection(200) });
+    dispatch(inspectionResult(step.id, 200, inspection(200)));
     expect(await screen.findByRole("cell", { name: "sales, row 201: changed from 10.5 to 11" })).toBeVisible();
 
     postMessage.mockClear();
@@ -164,7 +185,7 @@ describe("App applied-step inspection", () => {
 
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
     dispatch({ kind: "editorAction", action: "selectStep", stepId: secondStep.id });
-    dispatch({ kind: "stepInspectionResult", stepId: step.id, offset: 0, response: inspection() });
+    dispatch(inspectionResult(step.id, 0, inspection()));
     expect(screen.getByText(/Loading Drop columns/u)).toBeVisible();
 
     const failure: OpenWranglerResponse = {
@@ -173,7 +194,7 @@ describe("App applied-step inspection", () => {
       message: "Could not inspect this step.",
       recoverable: true
     };
-    dispatch({ kind: "stepInspectionResult", stepId: secondStep.id, offset: 0, response: failure });
+    dispatch(inspectionResult(secondStep.id, 0, failure));
 
     expect(screen.getByRole("alert")).toHaveTextContent("Could not inspect this step.");
     expect(screen.queryByText("Opening session...")).toBeNull();
@@ -188,7 +209,27 @@ describe("App applied-step inspection", () => {
 type HostMessage =
   | OpenWranglerResponse
   | { kind: "editorAction"; action: "selectStep"; stepId?: string }
-  | { kind: "stepInspectionResult"; stepId: string; offset: number; response: OpenWranglerResponse };
+  | {
+      kind: "stepInspectionResult";
+      stepId: string;
+      offset: number;
+      limit: number;
+      columnOffset: number;
+      columnLimit: number;
+      response: OpenWranglerResponse;
+    };
+
+function inspectionResult(stepId: string, offset: number, response: OpenWranglerResponse): HostMessage {
+  return {
+    kind: "stepInspectionResult",
+    stepId,
+    offset,
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 2,
+    response
+  };
+}
 
 function dispatch(data: HostMessage): void {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));

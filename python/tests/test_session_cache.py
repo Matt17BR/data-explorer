@@ -17,6 +17,7 @@ class CountingPandasEngine(PandasEngine):
     def __init__(self) -> None:
         self.filter_calls = 0
         self.page_calls: list[tuple[int, int, int | None]] = []
+        self.page_projections: list[list[tuple[int, str]] | None] = []
         self.shape_calls = 0
         self.schema_calls = 0
         self.summary_calls = 0
@@ -40,9 +41,17 @@ class CountingPandasEngine(PandasEngine):
         limit: int,
         *,
         total_rows: int | None = None,
+        column_projection=None,
     ) -> dict[str, Any]:
         self.page_calls.append((offset, limit, total_rows))
-        return super().page(frame, offset, limit, total_rows=total_rows)
+        self.page_projections.append(None if column_projection is None else list(column_projection))
+        return super().page(
+            frame,
+            offset,
+            limit,
+            total_rows=total_rows,
+            column_projection=column_projection,
+        )
 
     def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
         self.summary_calls += 1
@@ -175,6 +184,147 @@ def test_page_cache_is_bounded_lru_and_never_shared_between_sessions(tmp_path) -
     assert second_session.page_cache is not first_session.page_cache
     assert len(second_session.page_cache) == 1
     assert len(first_session.page_cache) == PAGE_CACHE_LIMIT
+
+
+def test_page_cache_keys_and_rows_are_scoped_to_the_stable_column_projection(tmp_path) -> None:
+    manager, created = counting_manager()
+    opened = manager.open_session(source(write_values(tmp_path, 4)), backend="pandas", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    engine = created[0]
+
+    names = manager.get_page(
+        session_id,
+        0,
+        0,
+        2,
+        {"filters": [], "sort": []},
+        column_offset=0,
+        column_limit=1,
+    )["page"]
+    values = manager.get_page(
+        session_id,
+        0,
+        0,
+        2,
+        {"filters": [], "sort": []},
+        column_offset=1,
+        column_limit=1,
+    )["page"]
+    repeated_names = manager.get_page(
+        session_id,
+        0,
+        0,
+        2,
+        {"filters": [], "sort": []},
+        column_offset=0,
+        column_limit=1,
+    )["page"]
+
+    assert names["columnIds"] == ["c:source:0"]
+    assert values["columnIds"] == ["c:source:1"]
+    assert [cell["display"] for cell in names["rows"][0]["values"]] == ["row-0"]
+    assert [cell["display"] for cell in values["rows"][0]["values"]] == ["0"]
+    assert repeated_names is names
+    assert engine.page_projections == [
+        [(0, "c:source:0"), (1, "c:source:1")],
+        [(0, "c:source:0")],
+        [(1, "c:source:1")],
+    ]
+    assert {key[4] for key in session.page_cache} == {
+        ("c:source:0", "c:source:1"),
+        ("c:source:0",),
+        ("c:source:1",),
+    }
+
+
+def test_projected_page_filters_and_sorts_by_an_omitted_column(tmp_path) -> None:
+    manager, _ = counting_manager()
+    opened = manager.open_session(source(write_values(tmp_path, 5)), backend="pandas", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+    model = {
+        **greater_than(1),
+        "sort": [{"column": "value", "direction": "desc", "nulls": "last"}],
+    }
+
+    response = manager.get_page(
+        session_id,
+        0,
+        0,
+        2,
+        model,
+        column_offset=0,
+        column_limit=1,
+    )
+
+    assert response["page"]["columnIds"] == ["c:source:0"]
+    assert response["page"]["totalRows"] == 3
+    assert [[cell["display"] for cell in row["values"]] for row in response["page"]["rows"]] == [
+        ["row-4"],
+        ["row-3"],
+    ]
+
+
+def test_empty_and_invalid_column_windows_fail_closed(tmp_path) -> None:
+    manager, _ = counting_manager()
+    opened = manager.open_session(source(write_values(tmp_path, 2)), backend="pandas", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+
+    empty = manager.get_page(
+        session_id,
+        0,
+        0,
+        2,
+        {"filters": [], "sort": []},
+        column_offset=20,
+        column_limit=1,
+    )["page"]
+    assert empty["columnIds"] == []
+    assert [row["values"] for row in empty["rows"]] == [[], []]
+
+    for column_offset, column_limit in ((-1, 1), (True, 1), (0, 0), (0, 257), (0, True)):
+        with pytest.raises(EngineError, match="columnOffset|columnLimit"):
+            manager.get_page(
+                session_id,
+                0,
+                0,
+                2,
+                {"filters": [], "sort": []},
+                column_offset=column_offset,
+                column_limit=column_limit,
+            )
+
+
+def test_session_rejects_malformed_adapter_row_width_before_caching(tmp_path) -> None:
+    class WrongWidthPandasEngine(PandasEngine):
+        corrupt = False
+
+        def page(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            page = super().page(*args, **kwargs)
+            if self.corrupt and page["rows"]:
+                page["rows"][0]["values"].append({"kind": "string", "display": "unexpected"})
+            return page
+
+    engine = WrongWidthPandasEngine()
+    manager = SessionManager(EngineRegistry((("pandas", lambda: engine),)))
+    opened = manager.open_session(source(write_values(tmp_path, 2)), backend="pandas", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    cached_keys = list(session.page_cache)
+    engine.corrupt = True
+
+    with pytest.raises(EngineError, match="wrong projected width"):
+        manager.get_page(
+            session_id,
+            0,
+            0,
+            2,
+            {"filters": [], "sort": []},
+            column_offset=0,
+            column_limit=1,
+        )
+
+    assert list(session.page_cache) == cached_keys
 
 
 def test_page_cache_byte_accounting_evicts_wide_utf8_blocks(tmp_path, monkeypatch) -> None:
@@ -351,8 +501,8 @@ def test_polars_known_total_avoids_lazy_count_and_stays_native(monkeypatch) -> N
         raising=False,
     )
     monkeypatch.setattr(
-        pl.LazyFrame,
-        "select",
+        pl,
+        "len",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("known totals must skip a count query")),
     )
 
@@ -496,8 +646,15 @@ def test_open_rejects_a_source_replaced_during_initial_page_materialization(tmp_
             limit: int,
             *,
             total_rows: int | None = None,
+            column_projection=None,
         ) -> dict[str, Any]:
-            page = super().page(frame, offset, limit, total_rows=total_rows)
+            page = super().page(
+                frame,
+                offset,
+                limit,
+                total_rows=total_rows,
+                column_projection=column_projection,
+            )
             replace_source_atomically(path, "city,value\nrow-0,0\nrow-1,1\nrow-2,2\n")
             return page
 
@@ -520,12 +677,19 @@ def test_lazy_read_failure_rechecks_source_and_clears_cached_pages(tmp_path) -> 
             limit: int,
             *,
             total_rows: int | None = None,
+            column_projection=None,
         ) -> dict[str, Any]:
             self.page_calls += 1
             if self.page_calls == 2:
                 replace_source_atomically(path, "city,value\nrow-0,0\nrow-1,1\n")
                 raise RuntimeError("backend scan failed after replacement")
-            return super().page(frame, offset, limit, total_rows=total_rows)
+            return super().page(
+                frame,
+                offset,
+                limit,
+                total_rows=total_rows,
+                column_projection=column_projection,
+            )
 
     manager = SessionManager(EngineRegistry((("polars", FailingAfterReplacementEngine),)))
     opened = manager.open_session(source(path), backend="polars", page_size=2)

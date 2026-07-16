@@ -16,8 +16,10 @@ from typing import Any, Literal
 
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, default_engine_registry
+from .engines.base import PageColumnProjection
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
+from .protocol import MAX_COLUMN_LIMIT
 from .version import __version__
 
 PAGE_CACHE_LIMIT = 8
@@ -73,7 +75,7 @@ class Session:
     source_shape: dict[str, int]
     source_schema: list[dict[str, Any]]
     source_fingerprint: _SourceFingerprint | None
-    page_cache: OrderedDict[tuple[int, int, int, int], _CachedPage]
+    page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
     revision: int
@@ -145,7 +147,7 @@ class _SessionMutationSnapshot:
     draft_shape: dict[str, int] | None
     draft_schema: list[dict[str, Any]] | None
     replace_step_id: str | None
-    page_cache: OrderedDict[tuple[int, int, int, int], _CachedPage]
+    page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
     revision: int
@@ -241,6 +243,8 @@ class SessionManager:
         page_size: int = 200,
         mode: str | None = None,
         requested_session_id: str | None = None,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
     ) -> dict[str, Any]:
         if requested_session_id is not None and (not isinstance(requested_session_id, str) or not requested_session_id):
             raise EngineError("requestedSessionId must be a non-empty string.")
@@ -314,7 +318,7 @@ class SessionManager:
                 active_profiles=0,
                 waiting_writers=0,
             )
-            initial_page = self._page(session, 0, page_size)
+            initial_page = self._page(session, 0, page_size, column_offset, column_limit)
             response = {
                 "kind": "sessionOpened",
                 "metadata": self._metadata(session),
@@ -349,6 +353,8 @@ class SessionManager:
         offset: int,
         limit: int,
         filter_model: Mapping[str, Any],
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._shared_session_read(session), self._validated_source_read(session):
@@ -357,7 +363,7 @@ class SessionManager:
             return {
                 "kind": "page",
                 "revision": session.revision,
-                "page": self._page(session, offset, limit),
+                "page": self._page(session, offset, limit, column_offset, column_limit),
                 "metadata": self._metadata(session),
             }
 
@@ -421,6 +427,8 @@ class SessionManager:
         offset: int,
         limit: int,
         replace_step_id: str | None = None,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_access(session), self._validated_source_read(session):
@@ -442,6 +450,8 @@ class SessionManager:
             diff_base_lineage = session.committed_lineage
             diff_base_shape = session.committed_shape
             diff_base_schema = session.committed_schema
+            diff_base_view = session.filtered
+            diff_base_view_shape = session.filtered_shape
             base = session.committed
             base_lineage = session.committed_lineage
             base_schema = session.committed_schema
@@ -474,11 +484,26 @@ class SessionManager:
             session.replace_step_id = replace_step_id
             session.revision += 1
             self._refresh_filtered(session, session.filter_model)
+            preview_page = self._page(session, offset, limit, column_offset, column_limit)
+            before_schema_with_lineage = schema_with_lineage(diff_base_schema, diff_base_lineage)
+            before_projection = self._column_window(
+                before_schema_with_lineage,
+                column_offset,
+                column_limit,
+            )
+            before_page = session.engine.page(
+                diff_base_view,
+                offset,
+                limit,
+                total_rows=diff_base_view_shape["rows"],
+                column_projection=before_projection,
+            )
+            self._validate_page_projection(before_page, before_projection)
             return {
                 "kind": "stepPreview",
                 "revision": session.revision,
                 "metadata": self._metadata(session),
-                "page": self._page(session, offset, limit),
+                "page": preview_page,
                 "diff": self._diff(
                     session,
                     diff_base,
@@ -492,6 +517,10 @@ class SessionManager:
                     normalized,
                     offset,
                     limit,
+                    column_offset,
+                    column_limit,
+                    before_page=before_page,
+                    after_page=preview_page,
                 ),
                 "code": session.engine.compile_plan(candidate_bound_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
@@ -504,6 +533,8 @@ class SessionManager:
         step_id: str,
         offset: int,
         limit: int,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
     ) -> dict[str, Any]:
         """Reconstruct one applied step's boundary without publishing session state."""
         session = self._session(session_id)
@@ -538,8 +569,24 @@ class SessionManager:
                 output_schema = schema_with_lineage(after_raw_schema, after_lineage)
             except ValueError as error:
                 raise EngineError("The applied cleaning-step history is inconsistent.") from error
-            input_page = session.engine.page(before, offset, limit, total_rows=before_shape["rows"])
-            output_page = session.engine.page(after, offset, limit, total_rows=after_shape["rows"])
+            input_projection = self._column_window(input_schema, column_offset, column_limit)
+            output_projection = self._column_window(output_schema, column_offset, column_limit)
+            input_page = session.engine.page(
+                before,
+                offset,
+                limit,
+                total_rows=before_shape["rows"],
+                column_projection=input_projection,
+            )
+            output_page = session.engine.page(
+                after,
+                offset,
+                limit,
+                total_rows=after_shape["rows"],
+                column_projection=output_projection,
+            )
+            self._validate_page_projection(input_page, input_projection)
+            self._validate_page_projection(output_page, output_projection)
 
             return {
                 "kind": "stepInspection",
@@ -563,13 +610,23 @@ class SessionManager:
                     bound_step,
                     offset,
                     limit,
+                    column_offset,
+                    column_limit,
                     before_page=input_page,
                     after_page=output_page,
                 ),
                 "code": session.engine.compile_plan(session.bound_plan[: step_index + 1]),
             }
 
-    def apply_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
+    def apply_draft(
+        self,
+        session_id: str,
+        revision: int,
+        offset: int,
+        limit: int,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
+    ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
             self._assert_revision(session, revision)
@@ -603,18 +660,50 @@ class SessionManager:
             session.committed_shape = session.draft_shape
             session.committed_schema = session.draft_schema
             self._clear_draft(session)
-            return self._finish_plan_change(session, "apply", offset, limit, reset_view=True)
+            return self._finish_plan_change(
+                session,
+                "apply",
+                offset,
+                limit,
+                column_offset,
+                column_limit,
+                reset_view=True,
+            )
 
-    def discard_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
+    def discard_draft(
+        self,
+        session_id: str,
+        revision: int,
+        offset: int,
+        limit: int,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
+    ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
             self._assert_revision(session, revision)
             if session.draft_step is None:
                 raise EngineError("There is no draft step to discard.")
             self._clear_draft(session)
-            return self._finish_plan_change(session, "discard", offset, limit, reset_view=False)
+            return self._finish_plan_change(
+                session,
+                "discard",
+                offset,
+                limit,
+                column_offset,
+                column_limit,
+                reset_view=False,
+            )
 
-    def undo_step(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
+    def undo_step(
+        self,
+        session_id: str,
+        revision: int,
+        offset: int,
+        limit: int,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
+    ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
             self._assert_revision(session, revision)
@@ -633,7 +722,15 @@ class SessionManager:
                 session.committed_shape,
                 session.committed_schema,
             ) = self._replay(session, session.bound_plan)
-            return self._finish_plan_change(session, "undo", offset, limit, reset_view=True)
+            return self._finish_plan_change(
+                session,
+                "undo",
+                offset,
+                limit,
+                column_offset,
+                column_limit,
+                reset_view=True,
+            )
 
     def export_data(
         self,
@@ -806,9 +903,19 @@ class SessionManager:
         model.setdefault("logic", "and")
         return model
 
-    @staticmethod
-    def _page(session: Session, offset: int, limit: int) -> dict[str, Any]:
-        key = (session.view_generation, session.revision, offset, limit)
+    @classmethod
+    def _page(
+        cls,
+        session: Session,
+        offset: int,
+        limit: int,
+        column_offset: int,
+        column_limit: int,
+    ) -> dict[str, Any]:
+        schema = cls._active_schema(session)
+        projection = cls._column_window(schema, column_offset, column_limit)
+        column_ids = tuple(identifier for _position, identifier in projection)
+        key = (session.view_generation, session.revision, offset, limit, column_ids)
         cached = session.page_cache.get(key)
         if cached is not None:
             session.page_cache.move_to_end(key)
@@ -819,7 +926,9 @@ class SessionManager:
             offset,
             limit,
             total_rows=session.filtered_shape["rows"],
+            column_projection=projection,
         )
+        cls._validate_page_projection(page, projection)
         page_size = len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
         if page_size > PAGE_CACHE_BYTE_LIMIT:
             return page
@@ -831,6 +940,54 @@ class SessionManager:
             _, evicted = session.page_cache.popitem(last=False)
             session.page_cache_bytes -= evicted.size_bytes
         return page
+
+    @staticmethod
+    def _active_schema(session: Session) -> list[dict[str, Any]]:
+        lineage = session.draft_lineage if session.draft_frame is not None else session.committed_lineage
+        if lineage is None:
+            raise EngineError("The active dataframe is missing column lineage.")
+        try:
+            return schema_with_lineage(session.display_schema, lineage)
+        except ValueError as error:
+            raise EngineError("The active dataframe schema and column lineage are inconsistent.") from error
+
+    @staticmethod
+    def _column_window(
+        schema: list[dict[str, Any]],
+        column_offset: int,
+        column_limit: int,
+    ) -> list[tuple[int, str]]:
+        if not isinstance(column_offset, int) or isinstance(column_offset, bool) or column_offset < 0:
+            raise EngineError("columnOffset must be a non-negative integer.")
+        if (
+            not isinstance(column_limit, int)
+            or isinstance(column_limit, bool)
+            or column_limit < 1
+            or column_limit > MAX_COLUMN_LIMIT
+        ):
+            raise EngineError(f"columnLimit must be an integer between 1 and {MAX_COLUMN_LIMIT}.")
+        return [
+            (int(column["position"]), str(column["id"]))
+            for column in schema[column_offset : column_offset + column_limit]
+        ]
+
+    @staticmethod
+    def _validate_page_projection(
+        page: Mapping[str, Any],
+        projection: PageColumnProjection,
+    ) -> None:
+        expected_ids = [identifier for _position, identifier in projection]
+        if not isinstance(page, Mapping):
+            raise EngineError("The dataframe engine returned a malformed projected page.")
+        if page.get("columnIds") != expected_ids:
+            raise EngineError("The dataframe engine returned a page for the wrong column projection.")
+        rows = page.get("rows")
+        if not isinstance(rows, list):
+            raise EngineError("The dataframe engine returned a malformed projected page.")
+        for row in rows:
+            values = row.get("values") if isinstance(row, Mapping) else None
+            if not isinstance(values, list) or len(values) != len(expected_ids):
+                raise EngineError("The dataframe engine returned a row with the wrong projected width.")
 
     def _metadata(self, session: Session) -> dict[str, Any]:
         display_lineage = session.draft_lineage if session.draft_frame is not None else session.committed_lineage
@@ -867,6 +1024,8 @@ class SessionManager:
         action: str,
         offset: int,
         limit: int,
+        column_offset: int,
+        column_limit: int,
         *,
         reset_view: bool,
     ) -> dict[str, Any]:
@@ -879,7 +1038,7 @@ class SessionManager:
             "action": action,
             "revision": session.revision,
             "metadata": self._metadata(session),
-            "page": self._page(session, offset, limit),
+            "page": self._page(session, offset, limit, column_offset, column_limit),
             "code": session.engine.compile_plan(session.bound_plan),
         }
 
@@ -933,6 +1092,8 @@ class SessionManager:
         step: Mapping[str, Any],
         offset: int,
         limit: int,
+        column_offset: int,
+        column_limit: int,
         *,
         before_page: Mapping[str, Any] | None = None,
         after_page: Mapping[str, Any] | None = None,
@@ -942,12 +1103,33 @@ class SessionManager:
         before_ids = [column["id"] for column in before_schema]
         after_ids = [column["id"] for column in after_schema]
         common_ids = [identifier for identifier in before_ids if identifier in after_ids]
+        before_projection = self._column_window(before_schema, column_offset, column_limit)
+        after_projection = self._column_window(after_schema, column_offset, column_limit)
         if before_page is None:
-            before_page = session.engine.page(before, offset, limit, total_rows=before_shape["rows"])
+            before_page = session.engine.page(
+                before,
+                offset,
+                limit,
+                total_rows=before_shape["rows"],
+                column_projection=before_projection,
+            )
         if after_page is None:
-            after_page = session.engine.page(after, offset, limit, total_rows=after_shape["rows"])
-        before_positions = {identifier: index for index, identifier in enumerate(before_ids)}
-        after_positions = {identifier: index for index, identifier in enumerate(after_ids)}
+            after_page = session.engine.page(
+                after,
+                offset,
+                limit,
+                total_rows=after_shape["rows"],
+                column_projection=after_projection,
+            )
+        self._validate_page_projection(before_page, before_projection)
+        self._validate_page_projection(after_page, after_projection)
+        before_positions = {identifier: index for index, identifier in enumerate(before_page.get("columnIds", []))}
+        after_positions = {identifier: index for index, identifier in enumerate(after_page.get("columnIds", []))}
+        compared_ids = [
+            identifier
+            for identifier in after_page.get("columnIds", [])
+            if identifier in before_positions and identifier in common_ids
+        ]
         after_names = {column["id"]: column["name"] for column in after_schema}
         before_rows = {row["id"]: row for row in before_page["rows"]}
         cells: list[dict[str, Any]] = []
@@ -956,7 +1138,7 @@ class SessionManager:
             before_row = before_rows.get(after_row["id"])
             if before_row is None:
                 continue
-            for identifier in common_ids:
+            for identifier in compared_ids:
                 old = before_row["values"][before_positions[identifier]]
                 new = after_row["values"][after_positions[identifier]]
                 if old != new:
@@ -965,6 +1147,7 @@ class SessionManager:
                         cells.append(
                             {
                                 "rowNumber": after_row["rowNumber"],
+                                "columnId": identifier,
                                 "column": after_names[identifier],
                                 "before": old,
                                 "after": new,
@@ -983,6 +1166,7 @@ class SessionManager:
             "changedCells": changed_cells,
             "cells": cells,
             "truncated": changed_cells > len(cells)
+            or len(compared_ids) < len(common_ids)
             or before_page["totalRows"] > len(before_page["rows"])
             or after_page["totalRows"] > len(after_page["rows"]),
         }

@@ -170,12 +170,24 @@ wide = manager.open_session(
     {"kind": "file", "label": "wide.csv", "path": str(wide_path)},
     backend="polars",
     page_size=200,
+    column_offset=0,
+    column_limit=16,
 )
 wide_id = wide["metadata"]["sessionId"]
 wide["summaries"] = manager.get_summary(wide_id, 0, {"logic": "and", "filters": [], "sort": []})["summaries"]
+wide_column_windows = ((0, 16), (0, 32), (16, 16), (16, 24), (32, 8), (32, 16))
 wide_pages = {
-    str(offset): manager.get_page(wide_id, 0, offset, 200, {"logic": "and", "filters": [], "sort": []})["page"]
+    f"{offset}:200:{column_offset}:{column_limit}": manager.get_page(
+        wide_id,
+        0,
+        offset,
+        200,
+        {"logic": "and", "filters": [], "sort": []},
+        column_offset=column_offset,
+        column_limit=column_limit,
+    )["page"]
     for offset in range(0, 1000, 200)
+    for column_offset, column_limit in wide_column_windows
 }
 
 empty_path = root / "tmp" / "screenshots" / "empty.csv"
@@ -313,7 +325,10 @@ writeWebviewHarness(
   { openColumnFilter: "city" }
 );
 writeNotebookHarness("notebook-preview.html", payloads.notebook, "notebook-preview.png");
-writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages);
+writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages, {
+  strictProjectedPages: true,
+  fetchColumnBlockSize: 16
+});
 writeWebviewHarness("empty-state.html", payloads.empty, {}, "acceptance/empty-state-dark-1280.png");
 writeWebviewHarness("unicode-state.html", payloads.unicode, {}, "acceptance/unicode-state-dark-1280.png");
 writeWebviewHarness(
@@ -398,6 +413,8 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const editorAction = appearance.editorAction;
   const openColumnFilter = appearance.openColumnFilter;
   const stepInspections = appearance.stepInspections ?? {};
+  const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
+  const strictProjectedPages = appearance.strictProjectedPages === true;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -416,7 +433,11 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     const columnValues = ${JSON.stringify(columnValues)};
     const pages = ${JSON.stringify(suppliedPages)};
     const stepInspections = ${JSON.stringify(stepInspections)};
+    const strictProjectedPages = ${JSON.stringify(strictProjectedPages)};
     window.openWranglerMessages = [];
+    window.openWranglerHarnessErrors = [];
+    window.openWranglerProjectedResponses = [];
+    window.openWranglerColumnBlockSize = ${JSON.stringify(fetchColumnBlockSize)};
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
         window.openWranglerMessages.push(message);
@@ -449,7 +470,45 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getPage") {
           const metadata = { ...sessionPayload.metadata, filterModel: message.request.filterModel };
-          const page = pages[String(message.request.offset)] ?? sessionPayload.page;
+          const request = message.request;
+          const pageKey = [request.offset, request.limit, request.columnOffset, request.columnLimit].join(":");
+          const page = strictProjectedPages ? pages[pageKey] : (pages[String(request.offset)] ?? sessionPayload.page);
+          if (!page) {
+            window.openWranglerHarnessErrors.push(
+              "No projected fixture page exists for row/column window " + pageKey + "."
+            );
+            return;
+          }
+          if (strictProjectedPages) {
+            const validWindow = Number.isInteger(request.columnOffset) && request.columnOffset >= 0 &&
+              Number.isInteger(request.columnLimit) && request.columnLimit >= 1 && request.columnLimit <= 256;
+            const expectedColumnIds = validWindow
+              ? metadata.schema
+                  .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+                  .map((column) => column.id)
+              : [];
+            const exactIds = Array.isArray(page.columnIds) &&
+              page.columnIds.length === expectedColumnIds.length &&
+              page.columnIds.every((columnId, index) => columnId === expectedColumnIds[index]);
+            const exactRows = Array.isArray(page.rows) &&
+              page.rows.every((row) => Array.isArray(row.values) && row.values.length === expectedColumnIds.length);
+            const exactRowWindow = page.offset === request.offset && page.limit === request.limit;
+            if (!validWindow || !exactIds || !exactRows || !exactRowWindow) {
+              window.openWranglerHarnessErrors.push(
+                "Projected fixture page " + pageKey + " did not match its exact requested row/column window."
+              );
+              return;
+            }
+            window.openWranglerProjectedResponses.push({
+              viewRequestId: request.viewRequestId,
+              offset: request.offset,
+              limit: request.limit,
+              columnOffset: request.columnOffset,
+              columnLimit: request.columnLimit,
+              columnIds: [...page.columnIds],
+              rowWidths: page.rows.map((row) => row.values.length)
+            });
+          }
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
             data: { kind: "page", revision: metadata.revision, viewRequestId: message.request.viewRequestId, metadata, page },
             origin: window.location.origin
@@ -463,6 +522,9 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
                 kind: "stepInspectionResult",
                 stepId: message.request.stepId,
                 offset: message.request.offset,
+                limit: message.request.limit,
+                columnOffset: message.request.columnOffset,
+                columnLimit: message.request.columnLimit,
                 response
               },
               origin: window.location.origin
@@ -487,7 +549,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     });
   </script>
 </head>
-<body data-fetch-block-size="200" data-default-column-width="190" data-insights-on-open="true" data-filter-mode="advanced">
+<body data-fetch-block-size="200" data-fetch-column-block-size="${fetchColumnBlockSize}" data-default-column-width="190" data-insights-on-open="true" data-filter-mode="advanced">
   <div id="root"></div>
   <script type="module" src="${mediaDir}/webview.js"></script>
 </body>

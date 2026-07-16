@@ -113,6 +113,7 @@ export class OpenWranglerPanel {
   async open(): Promise<void> {
     if (this.opening) return this.opening;
     const pageSize = getSetting<number>("fetchBlockSize", 200);
+    const columnLimit = fetchColumnBlockSize();
     const isFile = this.source.kind === "file";
     const mode = getSetting<"editing" | "viewing">(
       isFile ? "fileStartMode" : "notebookStartMode",
@@ -123,6 +124,8 @@ export class OpenWranglerPanel {
       source: this.source,
       backend: this.backend,
       pageSize,
+      columnOffset: 0,
+      columnLimit,
       mode
     });
     await this.opening;
@@ -329,6 +332,9 @@ export class OpenWranglerPanel {
         kind: "stepInspectionResult",
         stepId: request.stepId,
         offset: request.offset,
+        limit: request.limit,
+        columnOffset: request.columnOffset,
+        columnLimit: request.columnLimit,
         response
       });
       return;
@@ -400,6 +406,7 @@ export class OpenWranglerPanel {
     );
     const nonce = randomNonce();
     const fetchBlockSize = getSetting<number>("fetchBlockSize", 200);
+    const columnBlockSize = fetchColumnBlockSize();
     const defaultColumnWidth = getSetting<number>("defaultColumnWidth", 190);
     const insightsOnOpen = getSetting<boolean>("insightsOnOpen", true);
     const filterMode = getSetting<"basic" | "advanced">("filterMode", "basic");
@@ -413,12 +420,17 @@ export class OpenWranglerPanel {
   <link rel="stylesheet" href="${styleUri}">
   <title>Open Wrangler</title>
 </head>
-<body data-fetch-block-size="${fetchBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}">
+<body data-fetch-block-size="${fetchBlockSize}" data-fetch-column-block-size="${columnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}">
   <div id="root"></div>
   <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
+}
+
+function fetchColumnBlockSize(): number {
+  const configured = getSetting<number>("fetchColumnBlockSize", 16);
+  return Number.isInteger(configured) ? Math.min(256, Math.max(1, configured)) : 16;
 }
 
 function correlateViewError(request: OpenWranglerRequest, response: OpenWranglerResponse): OpenWranglerResponse {

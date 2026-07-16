@@ -325,6 +325,73 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
     assert grouped["diff"]["removedRows"] == 3
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_projected_preview_diff_samples_the_confirmed_filtered_sorted_lens(tmp_path, backend, monkeypatch):
+    path = tmp_path / f"projected-preview-{backend}.csv"
+    path.write_text("name,value\ndropped,1.2\nbeta,3.4\ngamma,10.4\n", encoding="utf-8")
+    if backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars diffs must stay native")),
+            raising=False,
+        )
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=3,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    view = {
+        "logic": "and",
+        "filters": [
+            {
+                "column": "value",
+                "type": "float",
+                "predicates": [{"kind": "predicate", "operator": "gt", "value": 2}],
+            }
+        ],
+        "sort": [{"column": "value", "direction": "desc", "nulls": "last"}],
+    }
+    confirmed = manager.get_page(
+        session_id,
+        0,
+        0,
+        1,
+        view,
+        column_offset=1,
+        column_limit=1,
+    )["page"]
+
+    preview = manager.preview_step(
+        session_id,
+        0,
+        transform("round-value", "roundNumber", column="value", decimals=0),
+        0,
+        1,
+        column_offset=1,
+        column_limit=1,
+    )
+
+    assert confirmed["columnIds"] == preview["page"]["columnIds"] == ["c:source:1"]
+    assert confirmed["rows"][0]["id"] == preview["page"]["rows"][0]["id"]
+    assert confirmed["rows"][0]["values"][0]["display"] == "10.4"
+    assert preview["page"]["rows"][0]["values"][0]["display"] in {"10", "10.0"}
+    assert preview["diff"]["changedCells"] == 1
+    assert preview["diff"]["cells"] == [
+        {
+            "rowNumber": 0,
+            "columnId": "c:source:1",
+            "column": "value",
+            "before": confirmed["rows"][0]["values"][0],
+            "after": preview["page"]["rows"][0]["values"][0],
+        }
+    ]
+    assert preview["diff"]["truncated"] is True
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
     path = tmp_path / "identity-source.csv"

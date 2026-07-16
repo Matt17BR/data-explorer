@@ -30,6 +30,8 @@ export type PageRequest = SessionRequestBase & {
   viewRequestId: string;
   offset: number;
   limit: number;
+  columnOffset: number;
+  columnLimit: number;
   filterModel: FilterModel;
 };
 export type ColumnType =
@@ -383,6 +385,8 @@ export interface OpenSessionRequest {
   backend?: DataBackend;
   mode?: SessionMode;
   pageSize: number;
+  columnOffset: number;
+  columnLimit: number;
 }
 export interface SessionSource {
   kind: "file" | "notebookVariable" | "notebookOutput";
@@ -479,6 +483,8 @@ export interface PreviewStepRequest {
   replaceStepId?: string;
   offset: number;
   limit: number;
+  columnOffset: number;
+  columnLimit: number;
 }
 export interface TransformStepTemplate {
   id: string;
@@ -605,6 +611,8 @@ export interface InspectStepRequest {
   stepId: string;
   offset: number;
   limit: number;
+  columnOffset: number;
+  columnLimit: number;
 }
 export interface ApplyDraftRequest {
   kind: "applyDraft";
@@ -612,6 +620,8 @@ export interface ApplyDraftRequest {
   revision: number;
   offset: number;
   limit: number;
+  columnOffset: number;
+  columnLimit: number;
 }
 export interface DiscardDraftRequest {
   kind: "discardDraft";
@@ -619,6 +629,8 @@ export interface DiscardDraftRequest {
   revision: number;
   offset: number;
   limit: number;
+  columnOffset: number;
+  columnLimit: number;
 }
 export interface UndoStepRequest {
   kind: "undoStep";
@@ -626,6 +638,8 @@ export interface UndoStepRequest {
   revision: number;
   offset: number;
   limit: number;
+  columnOffset: number;
+  columnLimit: number;
 }
 export interface ExportDataRequest {
   kind: "exportData";
@@ -711,6 +725,10 @@ export interface GridPage {
   offset: number;
   limit: number;
   totalRows: number;
+  /**
+   * Ordered stable identities for projected row values.
+   */
+  columnIds: string[];
   rows: DataRow[];
 }
 export interface DataRow {
@@ -802,6 +820,7 @@ export interface DataDiff {
 }
 export interface CellDiff {
   rowNumber: number;
+  columnId: string;
   column: string;
   before: CellValue | null;
   after: CellValue | null;

@@ -8,6 +8,7 @@ from typing import Any
 import duckdb
 import pytest
 
+import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime.engines.base import EngineError
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.registry import EngineRegistry
@@ -82,6 +83,35 @@ def test_duckdb_rejects_case_fold_ambiguous_source_columns() -> None:
 
     with pytest.raises(EngineError, match="differ only by case"):
         engine.validate_column_addressability(ambiguous)
+
+
+def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = DuckDBEngine()
+    frame = engine.ensure_row_ids(source_relation(), "projected-page")
+    queries: list[str] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+
+    def capture_query(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
+        queries.append(query)
+        return native_execute_rows(connection, source_sql, query)
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_query)
+
+    page = engine.page(
+        frame,
+        0,
+        2,
+        total_rows=4,
+        column_projection=[(1, "stable:text"), (4, "stable:other")],
+    )
+
+    assert len(queries) == 1
+    assert queries[0].startswith("SELECT ")
+    assert "SELECT *" not in queries[0].upper()
+    assert '"text"' in queries[0] and '"other"' in queries[0]
+    assert '"group"' not in queries[0] and '"value"' not in queries[0]
+    assert page["columnIds"] == ["stable:text", "stable:other"]
+    assert [cell["display"] for cell in page["rows"][0]["values"]] == [" alpha-one ", "2"]
 
 
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:

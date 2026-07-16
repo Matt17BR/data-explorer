@@ -21,6 +21,7 @@ interface DataGridProps {
   defaultColumnWidth: number;
   insightsOnOpen: boolean;
   busy?: boolean;
+  projecting?: boolean;
   viewContextId?: string;
   goToColumn?: string;
   viewState?: GridViewState;
@@ -32,16 +33,30 @@ interface DataGridProps {
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onOpenFilter(column: string): void;
+  onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
   onVisibleSummaryColumnsChange(columns: string[]): void;
   onViewStateChange?(state: GridViewState): void;
+}
+
+export interface VisibleColumnRange {
+  start: number;
+  end: number;
+}
+
+interface ProgrammaticViewportTarget {
+  firstVisibleRow: number;
+  scrollTop: number;
+  scrollLeft: number;
 }
 
 const rowHeight = 29;
 const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
+const scrollQuantizationTolerance = 1;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
+const ignoreVisibleColumnRangeChange = (): void => undefined;
 
 export function DataGrid({
   metadata,
@@ -51,6 +66,7 @@ export function DataGrid({
   defaultColumnWidth,
   insightsOnOpen,
   busy = false,
+  projecting = false,
   viewContextId,
   goToColumn,
   viewState = defaultViewState,
@@ -62,6 +78,7 @@ export function DataGrid({
   onPage,
   onSortColumn,
   onOpenFilter,
+  onVisibleColumnRangeChange = ignoreVisibleColumnRangeChange,
   onVisibleSummaryColumnsChange,
   onViewStateChange = ignoreViewStateChange
 }: DataGridProps) {
@@ -71,11 +88,13 @@ export function DataGrid({
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const visibleColumnRangeHandler = useRef(onVisibleColumnRangeChange);
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
   const previousViewContext = useRef(logicalViewContext);
   const focusRequested = useRef(false);
   const preserveGridFocusAfterScroll = useRef(false);
+  const programmaticViewportTarget = useRef<ProgrammaticViewportTarget | undefined>(undefined);
   const viewStateRef = useRef(viewState);
   const restorationRef = useRef({ viewState, metadata, page, pageSize });
   useLayoutEffect(() => {
@@ -91,6 +110,10 @@ export function DataGrid({
   useEffect(() => {
     viewStateRef.current = viewState;
   }, [viewState]);
+
+  useEffect(() => {
+    visibleColumnRangeHandler.current = onVisibleColumnRangeChange;
+  }, [onVisibleColumnRangeChange]);
 
   const reportViewState = useCallback(
     (next: GridViewState): void => {
@@ -111,17 +134,21 @@ export function DataGrid({
     setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column });
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    scroller.scrollTop = page.offset * rowHeight;
+    const scrollTop = page.offset * rowHeight;
+    const scrollLeft = viewStateRef.current.viewport.scrollLeft;
+    programmaticViewportTarget.current = { firstVisibleRow: page.offset, scrollTop, scrollLeft };
+    scroller.scrollTop = scrollTop;
+    scroller.scrollLeft = scrollLeft;
     setViewport({
-      scrollLeft: scroller.scrollLeft,
-      scrollTop: page.offset * rowHeight,
+      scrollLeft,
+      scrollTop,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
     reportViewState({
       ...viewStateRef.current,
       ...(selectedColumnId ? { selectedColumnId } : {}),
-      viewport: { firstVisibleRow: page.offset, scrollLeft: scroller.scrollLeft }
+      viewport: { firstVisibleRow: page.offset, scrollLeft }
     });
   }, [logicalViewContext, metadata.schema, page.offset, page.rows, reportViewState]);
 
@@ -138,11 +165,14 @@ export function DataGrid({
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
     setFocusedCell({ row, column });
-    scroller.scrollTop = row * rowHeight;
-    scroller.scrollLeft = restoration.viewState.viewport.scrollLeft;
+    const scrollTop = row * rowHeight;
+    const scrollLeft = restoration.viewState.viewport.scrollLeft;
+    programmaticViewportTarget.current = { firstVisibleRow: row, scrollTop, scrollLeft };
+    scroller.scrollTop = scrollTop;
+    scroller.scrollLeft = scrollLeft;
     setViewport({
-      scrollLeft: restoration.viewState.viewport.scrollLeft,
-      scrollTop: row * rowHeight,
+      scrollLeft,
+      scrollTop,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
@@ -157,14 +187,24 @@ export function DataGrid({
     if (!scroller) return;
     const update = () => {
       preserveGridFocusAfterScroll.current = !focusRequested.current && scroller.contains(document.activeElement);
+      const target = programmaticViewportTarget.current;
+      const targetStillQuantized =
+        target !== undefined &&
+        Math.abs(scroller.scrollTop - target.scrollTop) <= scrollQuantizationTolerance &&
+        Math.abs(scroller.scrollLeft - target.scrollLeft) <= scrollQuantizationTolerance;
+      if (target && !targetStillQuantized) programmaticViewportTarget.current = undefined;
+      const scrollTop = targetStillQuantized ? target.scrollTop : scroller.scrollTop;
+      const scrollLeft = targetStillQuantized ? target.scrollLeft : scroller.scrollLeft;
       const next = {
-        scrollLeft: scroller.scrollLeft,
-        scrollTop: scroller.scrollTop,
+        scrollLeft,
+        scrollTop,
         width: scroller.clientWidth,
         height: scroller.clientHeight
       };
       setViewport(next);
-      const row = Math.max(0, Math.min(Math.floor(next.scrollTop / rowHeight), Math.max(0, page.totalRows - 1)));
+      const row = targetStillQuantized
+        ? target.firstVisibleRow
+        : firstVisibleRowFromScrollTop(next.scrollTop, page.totalRows);
       const currentViewState = viewStateRef.current;
       if (
         currentViewState.viewport.firstVisibleRow !== row ||
@@ -184,11 +224,20 @@ export function DataGrid({
         onPage(offset);
       }
     };
+    const clearProgrammaticTarget = () => {
+      programmaticViewportTarget.current = undefined;
+    };
     update();
     scroller.addEventListener("scroll", update, { passive: true });
+    scroller.addEventListener("wheel", clearProgrammaticTarget, { passive: true });
+    scroller.addEventListener("pointerdown", clearProgrammaticTarget, { passive: true });
+    scroller.addEventListener("touchstart", clearProgrammaticTarget, { passive: true });
     window.addEventListener("resize", update);
     return () => {
       scroller.removeEventListener("scroll", update);
+      scroller.removeEventListener("wheel", clearProgrammaticTarget);
+      scroller.removeEventListener("pointerdown", clearProgrammaticTarget);
+      scroller.removeEventListener("touchstart", clearProgrammaticTarget);
       window.removeEventListener("resize", update);
     };
   }, [busy, onPage, page.totalRows, pageSize, reportViewState]);
@@ -202,6 +251,11 @@ export function DataGrid({
     () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
     [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
   );
+  const pageColumnPositionById = useMemo(
+    () => new Map(page.columnIds.map((columnId, position) => [columnId, position])),
+    [page.columnIds]
+  );
+  const loadedColumnSignature = page.columnIds.join("\u0000");
   const leftSpacerWidth = sum(widths.slice(0, visibleColumnRange.start));
   const rightSpacerWidth = sum(widths.slice(visibleColumnRange.end));
   const renderedColumnCount = 1 + visibleColumns.length + Number(leftSpacerWidth > 0) + Number(rightSpacerWidth > 0);
@@ -210,7 +264,7 @@ export function DataGrid({
     filters: metadata.filterModel.filters,
     sort: metadata.filterModel.sort
   })}`;
-  const globalFirstRow = Math.max(0, Math.floor(viewport.scrollTop / rowHeight));
+  const globalFirstRow = firstVisibleRowFromScrollTop(viewport.scrollTop, page.totalRows);
   const localStart = Math.max(0, globalFirstRow - page.offset - overscanRows);
   const visibleRowCount = Math.ceil(viewport.height / rowHeight) + overscanRows * 2;
   const localEnd = Math.min(page.rows.length, localStart + visibleRowCount);
@@ -236,6 +290,10 @@ export function DataGrid({
   useEffect(() => {
     onVisibleSummaryColumnsChange(showInsights ? visibleColumns.map((column) => column.name) : []);
   }, [onVisibleSummaryColumnsChange, showInsights, viewScope, visibleColumns]);
+
+  useEffect(() => {
+    visibleColumnRangeHandler.current({ start: visibleColumnRange.start, end: visibleColumnRange.end });
+  }, [busy, loadedColumnSignature, logicalViewContext, page.offset, visibleColumnRange.end, visibleColumnRange.start]);
 
   useEffect(
     () => () => {
@@ -278,6 +336,7 @@ export function DataGrid({
 
   const goToPage = (offset: number, restoreFocus = false) => {
     if (busy) return;
+    programmaticViewportTarget.current = undefined;
     const bounded = Math.max(0, Math.min(offset, Math.max(0, page.totalRows - 1)));
     const block = Math.floor(bounded / pageSize) * pageSize;
     requestedOffset.current = block;
@@ -346,7 +405,7 @@ export function DataGrid({
       <div className="tableScroller" ref={scrollerRef} data-testid="data-grid-scroller">
         <table
           role="grid"
-          aria-busy={busy}
+          aria-busy={busy || projecting}
           aria-label={`Data grid for ${metadata.source.label}`}
           aria-rowcount={page.totalRows + 1}
           aria-colcount={metadata.schema.length + 1}
@@ -403,7 +462,9 @@ export function DataGrid({
                 <td className="rowHeader">{row.rowNumber + 1}</td>
                 {leftSpacerWidth > 0 && <td className="virtualSpacer" aria-hidden="true" />}
                 {visibleColumns.map((column) => {
-                  const cell = row.values[column.position];
+                  const localColumnPosition = pageColumnPositionById.get(column.id);
+                  const cell = localColumnPosition === undefined ? undefined : row.values[localColumnPosition];
+                  const cellUnavailable = localColumnPosition === undefined;
                   const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
                   const diffLabel = cellDiff
@@ -411,6 +472,8 @@ export function DataGrid({
                     : addedColumn
                       ? addedCellLabel(column.name, row.rowNumber, cell)
                       : undefined;
+                  const accessibleLabel =
+                    diffLabel ?? (cellUnavailable ? `Loading ${column.name}, row ${row.rowNumber + 1}` : undefined);
                   return (
                     <td
                       key={`${row.id}-${column.id}`}
@@ -418,7 +481,7 @@ export function DataGrid({
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
                       aria-selected={viewState.selectedColumnId === column.id}
-                      aria-label={diffLabel}
+                      aria-label={accessibleLabel}
                       data-diff-state={cellDiff ? "changed" : addedColumn ? "added" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
                       className={[
@@ -429,7 +492,7 @@ export function DataGrid({
                       ]
                         .filter(Boolean)
                         .join(" ")}
-                      title={diffLabel ?? cell?.display}
+                      title={accessibleLabel ?? cell?.display}
                       onFocus={() => {
                         focusRequested.current = false;
                         setFocusedCell({ row: row.rowNumber, column: column.position });
@@ -477,6 +540,7 @@ export function DataGrid({
     else if (event.key === "PageDown") nextRow += pageRowCount;
     else if (event.key === "PageUp") nextRow -= pageRowCount;
     else return;
+    programmaticViewportTarget.current = undefined;
     nextRow = Math.max(0, Math.min(nextRow, rowCount - 1));
     nextColumn = Math.max(0, Math.min(nextColumn, columnCount - 1));
     const block = Math.floor(nextRow / pageSize) * pageSize;
@@ -495,12 +559,20 @@ export function DataGrid({
       ...currentViewState,
       selectedColumnId: metadata.schema[nextColumn]?.id,
       viewport: {
-        firstVisibleRow: Math.max(0, Math.floor((scroller?.scrollTop ?? 0) / rowHeight)),
+        firstVisibleRow: firstVisibleRowFromScrollTop(scroller?.scrollTop ?? 0, page.totalRows),
         scrollLeft: scroller?.scrollLeft ?? currentViewState.viewport.scrollLeft
       }
     });
     if (block !== page.offset) goToPage(nextRow, true);
   }
+}
+
+function firstVisibleRowFromScrollTop(scrollTop: number, totalRows: number): number {
+  const unboundedRow = scrollTop / rowHeight;
+  const nearestRow = Math.round(unboundedRow);
+  const row =
+    Math.abs(scrollTop - nearestRow * rowHeight) <= scrollQuantizationTolerance ? nearestRow : Math.floor(unboundedRow);
+  return Math.max(0, Math.min(row, Math.max(0, totalRows - 1)));
 }
 
 interface GridDiffPresentation {
@@ -521,64 +593,47 @@ function buildDiffPresentation(
 
   const addedColumnIds = resolveAddedColumnIds(diff.addedColumns, schema, beforeSchema);
   const changedCells = new Map<string, CellDiff>();
-  const derivedCellsByName = new Map<string, CellDiff[]>();
   const rowsByNumber = new Map(page.rows.map((row) => [row.rowNumber, row]));
   const beforeRowsById = new Map(beforePage?.rows.map((row) => [row.id, row]) ?? []);
-  const beforePositionById = new Map(beforeSchema?.map((column) => [column.id, column.position]) ?? []);
-  const rememberChangedCell = (columnId: string, cellDiff: CellDiff, derived = false) => {
+  const pagePositionById = new Map(page.columnIds.map((columnId, position) => [columnId, position]));
+  const beforePositionById = new Map(beforePage?.columnIds.map((columnId, position) => [columnId, position]) ?? []);
+  const schemaById = new Map(schema.map((column) => [column.id, column]));
+  const comparableColumns = page.columnIds.flatMap((columnId, afterPosition) => {
+    const column = schemaById.get(columnId);
+    const beforePosition = beforePositionById.get(columnId);
+    return column && beforePosition !== undefined ? [{ column, beforePosition, afterPosition }] : [];
+  });
+  const rememberChangedCell = (columnId: string, cellDiff: CellDiff) => {
     changedCells.set(diffCellKey(cellDiff.rowNumber, columnId), cellDiff);
-    if (!derived) return;
-    const nameKey = diffNameKey(cellDiff.rowNumber, cellDiff.column);
-    const matchingName = derivedCellsByName.get(nameKey);
-    if (matchingName) matchingName.push(cellDiff);
-    else derivedCellsByName.set(nameKey, [cellDiff]);
   };
 
   if (beforePage && beforeSchema) {
     for (const row of page.rows) {
       const beforeRow = beforeRowsById.get(row.id);
       if (!beforeRow) continue;
-      for (const column of schema) {
-        const beforePosition = beforePositionById.get(column.id);
-        if (beforePosition === undefined) continue;
+      for (const { column, beforePosition, afterPosition } of comparableColumns) {
         const before = beforeRow.values[beforePosition];
-        const after = row.values[column.position];
+        const after = row.values[afterPosition];
         if (!before || !after || sameCellValue(before, after)) continue;
-        rememberChangedCell(
-          column.id,
-          {
-            rowNumber: row.rowNumber,
-            column: column.name,
-            before,
-            after
-          },
-          true
-        );
+        rememberChangedCell(column.id, {
+          rowNumber: row.rowNumber,
+          columnId: column.id,
+          column: column.name,
+          before,
+          after
+        });
       }
     }
   }
 
   for (const cellDiff of diff.cells) {
-    if (takeMatchingCellDiff(derivedCellsByName.get(diffNameKey(cellDiff.rowNumber, cellDiff.column)), cellDiff)) {
-      continue;
-    }
+    const key = diffCellKey(cellDiff.rowNumber, cellDiff.columnId);
+    if (changedCells.has(key)) continue;
     const row = rowsByNumber.get(cellDiff.rowNumber);
     if (!row) continue;
-    const candidates = schema.filter(
-      (column) =>
-        column.name === cellDiff.column &&
-        !changedCells.has(diffCellKey(cellDiff.rowNumber, column.id)) &&
-        sameCellValue(row.values[column.position], cellDiff.after)
-    );
-    const matchingBefore = candidates.find((column) => {
-      const beforeRow = beforeRowsById.get(row.id);
-      const beforePosition = beforePositionById.get(column.id);
-      return beforeRow && beforePosition !== undefined
-        ? sameCellValue(beforeRow.values[beforePosition], cellDiff.before)
-        : false;
-    });
-    const column = matchingBefore ?? candidates[0] ?? schema.find((candidate) => candidate.name === cellDiff.column);
-    if (column) rememberChangedCell(column.id, cellDiff);
+    const afterPosition = pagePositionById.get(cellDiff.columnId);
+    if (afterPosition === undefined || !sameCellValue(row.values[afterPosition], cellDiff.after)) continue;
+    rememberChangedCell(cellDiff.columnId, cellDiff);
   }
 
   return {
@@ -622,20 +677,6 @@ function countNames(names: string[]): Map<string, number> {
   return counts;
 }
 
-function takeMatchingCellDiff(changedCells: CellDiff[] | undefined, candidate: CellDiff): boolean {
-  const index =
-    changedCells?.findIndex(
-      (current) =>
-        current.rowNumber === candidate.rowNumber &&
-        current.column === candidate.column &&
-        sameCellValue(current.before, candidate.before) &&
-        sameCellValue(current.after, candidate.after)
-    ) ?? -1;
-  if (index < 0) return false;
-  changedCells!.splice(index, 1);
-  return true;
-}
-
 function sameCellValue(left: CellValue | null | undefined, right: CellValue | null | undefined): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
@@ -672,10 +713,6 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
 
 function diffCellKey(rowNumber: number, columnId: string): string {
   return `${rowNumber}\u0000${columnId}`;
-}
-
-function diffNameKey(rowNumber: number, columnName: string): string {
-  return `${rowNumber}\u0000${columnName}`;
 }
 
 function changedCellLabel(column: string, rowNumber: number, diff: CellDiff): string {

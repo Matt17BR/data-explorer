@@ -1,9 +1,11 @@
 import type {
+  ColumnSchema,
   FilterModel,
   OpenWranglerRequest,
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope,
+  SessionMetadata,
   TransformStep
 } from "./protocol.generated";
 import { PROTOCOL_VERSION } from "./protocol";
@@ -121,7 +123,11 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       return candidate !== undefined && candidate.kind === "initialize";
     }
     case "openSession": {
-      const candidate = exactRecord(value, ["kind", "source", "pageSize"], ["requestedSessionId", "backend", "mode"]);
+      const candidate = exactRecord(
+        value,
+        ["kind", "source", "pageSize", "columnOffset", "columnLimit"],
+        ["requestedSessionId", "backend", "mode"]
+      );
       return (
         candidate !== undefined &&
         candidate.kind === "openSession" &&
@@ -129,7 +135,9 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
         optional(candidate, "backend", (backend) => isOneOf(backend, ["polars", "duckdb", "pandas"])) &&
         optional(candidate, "mode", (mode) => isOneOf(mode, ["viewing", "editing"])) &&
-        isBoundedPageSize(candidate.pageSize)
+        isBoundedPageSize(candidate.pageSize) &&
+        isNonNegativeInteger(candidate.columnOffset) &&
+        isBoundedColumnLimit(candidate.columnLimit)
       );
     }
     case "getPage": {
@@ -140,6 +148,8 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         "viewRequestId",
         "offset",
         "limit",
+        "columnOffset",
+        "columnLimit",
         "filterModel"
       ]);
       return (
@@ -147,6 +157,8 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         isNonEmptyString(candidate.viewRequestId) &&
         isNonNegativeInteger(candidate.offset) &&
         isBoundedPageSize(candidate.limit) &&
+        isNonNegativeInteger(candidate.columnOffset) &&
+        isBoundedColumnLimit(candidate.columnLimit) &&
         isFilterModel(candidate.filterModel)
       );
     }
@@ -189,7 +201,7 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
     case "previewStep": {
       const candidate = exactRecord(
         value,
-        ["kind", "sessionId", "revision", "step", "offset", "limit"],
+        ["kind", "sessionId", "revision", "step", "offset", "limit", "columnOffset", "columnLimit"],
         ["replaceStepId"]
       );
       return (
@@ -197,26 +209,49 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         isTransformStep(candidate.step) &&
         optional(candidate, "replaceStepId", isNonEmptyString) &&
         isNonNegativeInteger(candidate.offset) &&
-        isBoundedPageSize(candidate.limit)
+        isBoundedPageSize(candidate.limit) &&
+        isNonNegativeInteger(candidate.columnOffset) &&
+        isBoundedColumnLimit(candidate.columnLimit)
       );
     }
     case "inspectStep": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "stepId", "offset", "limit"]);
+      const candidate = exactRecord(value, [
+        "kind",
+        "sessionId",
+        "revision",
+        "stepId",
+        "offset",
+        "limit",
+        "columnOffset",
+        "columnLimit"
+      ]);
       return (
         isSessionRequest(candidate, "inspectStep") &&
         isNonEmptyString(candidate.stepId) &&
         isNonNegativeInteger(candidate.offset) &&
-        isBoundedPageSize(candidate.limit)
+        isBoundedPageSize(candidate.limit) &&
+        isNonNegativeInteger(candidate.columnOffset) &&
+        isBoundedColumnLimit(candidate.columnLimit)
       );
     }
     case "applyDraft":
     case "discardDraft":
     case "undoStep": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "offset", "limit"]);
+      const candidate = exactRecord(value, [
+        "kind",
+        "sessionId",
+        "revision",
+        "offset",
+        "limit",
+        "columnOffset",
+        "columnLimit"
+      ]);
       return (
         isSessionRequest(candidate, value.kind) &&
         isNonNegativeInteger(candidate.offset) &&
-        isBoundedPageSize(candidate.limit)
+        isBoundedPageSize(candidate.limit) &&
+        isNonNegativeInteger(candidate.columnOffset) &&
+        isBoundedColumnLimit(candidate.columnLimit)
       );
     }
     case "exportData": {
@@ -306,7 +341,7 @@ function isSessionOpenedResponse(value: unknown): boolean {
     candidate !== undefined &&
     candidate.kind === "sessionOpened" &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page) &&
+    isGridPage(candidate.page, candidate.metadata.schema) &&
     isArrayOf(candidate.summaries, isColumnSummary)
   );
 }
@@ -318,8 +353,8 @@ function isPageResponse(value: unknown): boolean {
     candidate.kind === "page" &&
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.viewRequestId) &&
-    isGridPage(candidate.page) &&
-    isSessionMetadata(candidate.metadata)
+    isSessionMetadata(candidate.metadata) &&
+    isGridPage(candidate.page, candidate.metadata.schema)
   );
 }
 
@@ -365,8 +400,8 @@ function isStepPreviewResponse(value: unknown): boolean {
     candidate.kind === "stepPreview" &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page) &&
-    isDataDiff(candidate.diff) &&
+    isGridPage(candidate.page, candidate.metadata.schema) &&
+    isDataDiff(candidate.diff, candidate.metadata.schema) &&
     isString(candidate.code) &&
     optional(candidate, "warnings", (warnings) => isArrayOf(warnings, isString))
   );
@@ -391,11 +426,11 @@ function isStepInspectionResponse(value: unknown): boolean {
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.stepId) &&
     isNonNegativeInteger(candidate.stepIndex) &&
-    isGridPage(candidate.inputPage) &&
-    isGridPage(candidate.outputPage) &&
     isColumnSchemaArray(candidate.inputSchema) &&
     isColumnSchemaArray(candidate.outputSchema) &&
-    isDataDiff(candidate.diff) &&
+    isGridPage(candidate.inputPage, candidate.inputSchema) &&
+    isGridPage(candidate.outputPage, candidate.outputSchema) &&
+    isDataDiff(candidate.diff, candidate.outputSchema) &&
     isString(candidate.code)
   );
 }
@@ -408,7 +443,7 @@ function isPlanUpdatedResponse(value: unknown): boolean {
     isOneOf(candidate.action, ["apply", "discard", "undo"]) &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page) &&
+    isGridPage(candidate.page, candidate.metadata.schema) &&
     isString(candidate.code)
   );
 }
@@ -458,7 +493,7 @@ function isErrorResponse(value: unknown): boolean {
   );
 }
 
-function isSessionMetadata(value: unknown): boolean {
+function isSessionMetadata(value: unknown): value is SessionMetadata {
   const candidate = exactRecord(
     value,
     [
@@ -554,7 +589,7 @@ function isColumnSchema(value: unknown): boolean {
   );
 }
 
-function isColumnSchemaArray(value: unknown): boolean {
+function isColumnSchemaArray(value: unknown): value is ColumnSchema[] {
   if (!Array.isArray(value)) return false;
   const identities = new Set<string>();
   return value.every((column, position) => {
@@ -934,25 +969,50 @@ function isByExampleProgram(value: unknown, depth: number): boolean {
   }
 }
 
-function isGridPage(value: unknown): boolean {
-  const candidate = exactRecord(value, ["offset", "limit", "totalRows", "rows"]);
+function isGridPage(value: unknown, schema?: readonly ColumnSchema[]): boolean {
+  const candidate = exactRecord(value, ["offset", "limit", "totalRows", "columnIds", "rows"]);
+  if (candidate === undefined) return false;
+  const columnIds = candidate.columnIds;
+  const rows = candidate.rows;
+  if (
+    !isNonNegativeInteger(candidate.offset) ||
+    !isPositiveInteger(candidate.limit) ||
+    !isNonNegativeInteger(candidate.totalRows) ||
+    !isUniqueNonEmptyStringArray(columnIds) ||
+    !Array.isArray(rows) ||
+    rows.length > candidate.limit
+  ) {
+    return false;
+  }
+  if (schema !== undefined && !isOrderedSchemaProjection(columnIds, schema)) return false;
+  return rows.every((row) => isDataRow(row, columnIds.length));
+}
+
+function isDataRow(value: unknown, expectedWidth?: number): boolean {
+  const candidate = exactRecord(value, ["id", "rowNumber", "values"]);
+  if (candidate === undefined) return false;
+  const values = candidate.values;
+  if (!Array.isArray(values) || !values.every(isCellValue)) return false;
   return (
-    candidate !== undefined &&
-    isNonNegativeInteger(candidate.offset) &&
-    isPositiveInteger(candidate.limit) &&
-    isNonNegativeInteger(candidate.totalRows) &&
-    isArrayOf(candidate.rows, isDataRow)
+    isString(candidate.id) &&
+    isNonNegativeInteger(candidate.rowNumber) &&
+    (expectedWidth === undefined || values.length === expectedWidth)
   );
 }
 
-function isDataRow(value: unknown): boolean {
-  const candidate = exactRecord(value, ["id", "rowNumber", "values"]);
+function isOrderedSchemaProjection(columnIds: readonly string[], schema: readonly ColumnSchema[]): boolean {
+  if (columnIds.length === 0) return true;
+  const firstIndex = schema.findIndex((column) => column.id === columnIds[0]);
   return (
-    candidate !== undefined &&
-    isString(candidate.id) &&
-    isNonNegativeInteger(candidate.rowNumber) &&
-    isArrayOf(candidate.values, isCellValue)
+    firstIndex >= 0 &&
+    firstIndex + columnIds.length <= schema.length &&
+    columnIds.every((columnId, index) => schema[firstIndex + index]?.id === columnId)
   );
+}
+
+function isUniqueNonEmptyStringArray(value: unknown): value is string[] {
+  if (!Array.isArray(value) || !value.every(isNonEmptyString)) return false;
+  return new Set(value).size === value.length;
 }
 
 function isCellValue(value: unknown): boolean {
@@ -1073,7 +1133,7 @@ function isMissingValueCount(value: unknown): boolean {
   return candidate !== undefined && isString(candidate.column) && isNonNegativeInteger(candidate.count);
 }
 
-function isDataDiff(value: unknown): boolean {
+function isDataDiff(value: unknown, outputSchema?: readonly ColumnSchema[]): boolean {
   const candidate = exactRecord(value, [
     "addedRows",
     "removedRows",
@@ -1090,19 +1150,26 @@ function isDataDiff(value: unknown): boolean {
     isArrayOf(candidate.addedColumns, isString) &&
     isArrayOf(candidate.removedColumns, isString) &&
     isNonNegativeInteger(candidate.changedCells) &&
-    isArrayOf(candidate.cells, isCellDiff) &&
+    isArrayOf(candidate.cells, (cell) => isCellDiff(cell, outputSchema)) &&
     isBoolean(candidate.truncated)
   );
 }
 
-function isCellDiff(value: unknown): boolean {
-  const candidate = exactRecord(value, ["rowNumber", "column", "before", "after"]);
-  return (
+function isCellDiff(value: unknown, outputSchema?: readonly ColumnSchema[]): boolean {
+  const candidate = exactRecord(value, ["rowNumber", "columnId", "column", "before", "after"]);
+  if (!(
     candidate !== undefined &&
     isNonNegativeInteger(candidate.rowNumber) &&
+    isNonEmptyString(candidate.columnId) &&
     isString(candidate.column) &&
     (candidate.before === null || isCellValue(candidate.before)) &&
     (candidate.after === null || isCellValue(candidate.after))
+  )) {
+    return false;
+  }
+  return (
+    outputSchema === undefined ||
+    outputSchema.some((column) => column.id === candidate.columnId && column.name === candidate.column)
   );
 }
 
@@ -1177,6 +1244,10 @@ function isPositiveInteger(value: unknown): value is number {
 
 function isBoundedPageSize(value: unknown): value is number {
   return isPositiveInteger(value) && value <= 10_000;
+}
+
+function isBoundedColumnLimit(value: unknown): value is number {
+  return isPositiveInteger(value) && value <= 256;
 }
 
 function isEnumMember(value: unknown, values: ReadonlySet<string>): value is string {

@@ -9,6 +9,7 @@ const page = {
   offset: 0,
   limit: 1,
   totalRows: 1,
+  columnIds: ["c:0"],
   rows: [
     {
       id: "r:0",
@@ -46,6 +47,70 @@ describe("notebook output", () => {
     const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [] });
     expect(normalized?.mimeVersion).toBe(2);
     expect(notebookPayloadAsOpened(normalized!).kind).toBe("sessionOpened");
+  });
+
+  it("migrates saved full-width MIME v2 pages created before column projections", () => {
+    const { columnIds: _columnIds, ...legacyPage } = page;
+
+    const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page: legacyPage, summaries: [] });
+
+    expect(normalized?.page.columnIds).toEqual(["c:0"]);
+    expect(normalized?.page.rows[0]?.values).toHaveLength(1);
+  });
+
+  it("rejects projected notebook snapshots that cannot fetch their missing columns", () => {
+    const secondColumn = {
+      id: "c:1",
+      name: "other",
+      position: 1,
+      rawType: "Int64",
+      type: "integer",
+      nullable: false
+    };
+    const wideMetadata = {
+      ...metadata,
+      shape: { rows: 1, columns: 2 },
+      filteredShape: { rows: 1, columns: 2 },
+      schema: [...metadata.schema, secondColumn]
+    };
+    const { columnIds: _columnIds, ...legacyNarrowPage } = page;
+
+    expect(
+      normalizeNotebookOutputPayload({ mimeVersion: 2, metadata: wideMetadata, page, summaries: [] })
+    ).toBeUndefined();
+    expect(
+      normalizeNotebookOutputPayload({ mimeVersion: 2, metadata: wideMetadata, page: legacyNarrowPage, summaries: [] })
+    ).toBeUndefined();
+  });
+
+  it("rejects current and legacy snapshots that omit claimed rows", () => {
+    const { columnIds: _columnIds, ...legacyPage } = page;
+
+    for (const candidate of [page, legacyPage]) {
+      expect(
+        normalizeNotebookOutputPayload({
+          mimeVersion: 2,
+          metadata,
+          page: { ...candidate, totalRows: 1, rows: [] },
+          summaries: []
+        })
+      ).toBeUndefined();
+    }
+  });
+
+  it("rejects current and legacy snapshots that do not start at the first row", () => {
+    const { columnIds: _columnIds, ...legacyPage } = page;
+
+    for (const candidate of [page, legacyPage]) {
+      expect(
+        normalizeNotebookOutputPayload({
+          mimeVersion: 2,
+          metadata,
+          page: { ...candidate, offset: 1 },
+          summaries: []
+        })
+      ).toBeUndefined();
+    }
   });
 
   it("rejects malformed and unknown-version outputs", () => {

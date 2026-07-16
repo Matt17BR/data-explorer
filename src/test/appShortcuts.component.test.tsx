@@ -47,6 +47,7 @@ const page: GridPage = {
   offset: 0,
   limit: 200,
   totalRows: 1,
+  columnIds: metadata.schema.map((column) => column.id),
   rows: [
     {
       id: "r:0",

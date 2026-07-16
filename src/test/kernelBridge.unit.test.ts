@@ -9,7 +9,7 @@ import {
   withKernelSessionIdentity
 } from "../extension/notebooks/kernelBridge";
 import { buildKernelBootstrapCode } from "../extension/notebooks/kernelRuntimeBundle";
-import type { OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
+import type { OpenSessionRequest, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
 
 const HANG = Symbol("hang kernel request");
 
@@ -156,12 +156,14 @@ describe("kernel protocol responses", () => {
 
 describe("kernel retry classification", () => {
   it("assigns a stable host-known identity to kernel session opens", () => {
-    const request: OpenWranglerRequest = {
+    const request: OpenSessionRequest = {
       kind: "openSession",
       source: { kind: "notebookVariable", label: "df", variableName: "df" },
       backend: "polars",
       mode: "viewing",
-      pageSize: 200
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
     };
 
     expect(withKernelSessionIdentity(request, () => "candidate-session")).toEqual({
@@ -298,7 +300,9 @@ function openRequest(): OpenWranglerRequest {
     source: { kind: "notebookVariable", label: "df", variableName: "df" },
     backend: "polars",
     mode: "viewing",
-    pageSize: 200
+    pageSize: 200,
+    columnOffset: 0,
+    columnLimit: 16
   };
 }
 
@@ -372,7 +376,7 @@ function openedResponse(sessionId: string): OpenWranglerResponse {
       filterModel: { logic: "and", filters: [], sort: [] },
       steps: []
     },
-    page: { offset: 0, limit: 200, totalRows: 0, rows: [] },
+    page: { offset: 0, limit: 200, totalRows: 0, columnIds: [], rows: [] },
     summaries: []
   };
 }

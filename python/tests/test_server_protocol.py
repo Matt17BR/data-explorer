@@ -30,6 +30,8 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
                 "viewRequestId": "view-missing",
                 "offset": 0,
                 "limit": 20,
+                "columnOffset": 0,
+                "columnLimit": 64,
                 "filterModel": {"logic": "and", "filters": [], "sort": []},
             },
         },
@@ -100,6 +102,8 @@ def test_dispatch_echoes_view_request_id() -> None:
             "viewRequestId": "view-page",
             "offset": 0,
             "limit": 20,
+            "columnOffset": 3,
+            "columnLimit": 7,
             "filterModel": {"logic": "and", "filters": [], "sort": []},
         },
     )
@@ -110,7 +114,7 @@ def test_dispatch_echoes_view_request_id() -> None:
 def test_dispatch_routes_applied_step_inspection_without_view_correlation() -> None:
     class InspectionManager:
         def inspect_step(self, *args: Any) -> dict[str, Any]:
-            assert args == ("session", 4, "round-value", 20, 10)
+            assert args == ("session", 4, "round-value", 20, 10, 3, 7)
             return {"kind": "stepInspection", "revision": 4, "stepId": "round-value"}
 
     response = server.dispatch(
@@ -122,6 +126,8 @@ def test_dispatch_routes_applied_step_inspection_without_view_correlation() -> N
             "stepId": "round-value",
             "offset": 20,
             "limit": 10,
+            "columnOffset": 3,
+            "columnLimit": 7,
         },
     )
 

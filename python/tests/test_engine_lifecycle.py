@@ -55,6 +55,7 @@ class TrackingPandasEngine(PandasEngine):
         limit: int,
         *,
         total_rows: int | None = None,
+        column_projection=None,
     ) -> dict[str, Any]:
         self.page_calls += 1
         self._fail("page")
@@ -62,7 +63,13 @@ class TrackingPandasEngine(PandasEngine):
             self.page_started.set()
             if not self.release_page.wait(2):
                 raise RuntimeError("timed out waiting for the page test to release")
-        return super().page(frame, offset, limit, total_rows=total_rows)
+        return super().page(
+            frame,
+            offset,
+            limit,
+            total_rows=total_rows,
+            column_projection=column_projection,
+        )
 
     def summaries(self, frame: Any, columns=None) -> list[dict[str, Any]]:
         self._fail("summaries")

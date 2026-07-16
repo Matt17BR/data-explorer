@@ -35,6 +35,11 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         timeout=60,
     )
     payload = json.loads(report.read_text(encoding="utf-8"))
+    package_manifest = json.loads((Path(__file__).parents[2] / "package.json").read_text(encoding="utf-8"))
+    configured_column_block_size = package_manifest["contributes"]["configuration"]["properties"][
+        "openWrangler.fetchColumnBlockSize"
+    ]["default"]
+    assert runtime_performance.DEFAULT_FETCH_COLUMN_BLOCK_SIZE == configured_column_block_size == 16
     assert payload["smoke"] is True
     assert payload["csv"]["shape"] == {"rows": 2_000, "columns": 8}
     assert payload["parquet"]["shape"] == {"rows": 5_000, "columns": 8}
@@ -76,6 +81,7 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
             "warmSourceReopenMedianMs",
         }
         assert fixture["firstVisibleProfileMs"] >= 0
+        assert fixture["projectedGridColumns"] == min(16, fixture["expectedColumns"])
         assert fixture["initialSummaryCount"] == 0
         assert fixture["exactRowCounts"] is True
         assert fixture["expectedColumns"] == fixture["shape"]["columns"]
@@ -92,6 +98,8 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         assert len(fixture["uncachedOffsets"]) > fixture["pageCache"]["limit"]
         assert len(fixture["uncachedOffsets"]) == len(set(fixture["uncachedOffsets"]))
         assert fixture["cachedOffset"] not in fixture["uncachedOffsets"]
+        assert fixture["cachedColumnOffset"] == 0
+        assert len(fixture["uncachedColumnOffsets"]) == len(fixture["uncachedOffsets"])
         assert fixture["retainedSessions"] == 0
         transport = fixture["stdioTransport"]
         assert transport["boundary"].startswith("standalone Python process")
@@ -102,6 +110,8 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         assert isinstance(transport["coldSourceCacheDrop"]["applied"], bool)
         assert transport["cacheMissPageP95Ms"] >= 0
         assert len(transport["cacheMissPageSamplesMs"]) == len(transport["cacheMissOffsets"])
+        assert len(transport["cacheMissColumnOffsets"]) == len(transport["cacheMissOffsets"])
+        assert transport["sameSessionContentionColumnOffset"] >= 0
         assert transport["statsStartProof"].startswith("benchmark-only Polars header_stats")
         assert transport["sameSessionStatsDurationMs"] >= 0
         assert transport["sameSessionStatsContendedPageLatencyMs"] >= 0
@@ -139,6 +149,12 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
             "stdioTransportCacheMissPageP95",
         }
     assert '"warmSourceReopenMedianMs"' in result.stdout
+
+
+def test_performance_column_sampling_covers_real_horizontal_blocks() -> None:
+    assert runtime_performance._sample_column_offsets(8, 4) == [0, 0, 0, 0]
+    assert runtime_performance._sample_column_offsets(20, 4) == [16, 0, 16, 0]
+    assert runtime_performance._sample_column_offsets(50, 5) == [16, 32, 48, 0, 16]
 
 
 def test_existing_invalid_fixtures_are_atomically_regenerated_and_fully_validated(tmp_path, monkeypatch) -> None:

@@ -48,6 +48,8 @@ __ow_notebook.register_formatters()
             "viewRequestId": "view-missing",
             "offset": 0,
             "limit": 10,
+            "columnOffset": 0,
+            "columnLimit": 64,
             "filterModel": {"filters": [], "sort": []},
         },
     )
@@ -66,6 +68,8 @@ __ow_notebook.register_formatters()
             "revision": 0,
             "viewRequestId": "view-malformed",
             "offset": 0,
+            "columnOffset": 0,
+            "columnLimit": 64,
             "filterModel": {"filters": [], "sort": []},
         },
     )
@@ -94,6 +98,8 @@ __ow_notebook.register_formatters()
             "backend": "pandas",
             "mode": "viewing",
             "pageSize": 10,
+            "columnOffset": 0,
+            "columnLimit": 64,
         },
     )
     polars_opened = _dispatch(
@@ -105,6 +111,8 @@ __ow_notebook.register_formatters()
             "backend": "polars",
             "mode": "viewing",
             "pageSize": 10,
+            "columnOffset": 0,
+            "columnLimit": 64,
         },
     )
     assert pandas_opened["response"]["metadata"]["backend"] == "pandas"

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
+import { workspace } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import { OpenWranglerPanel } from "../extension/webviewPanel";
 import type {
@@ -37,6 +38,7 @@ const page: GridPage = {
   offset: 0,
   limit: 200,
   totalRows: 2,
+  columnIds: ["c:0"],
   rows: [
     {
       id: "r:0",
@@ -71,6 +73,26 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.html).toContain("font-src mock-webview;");
     expect(harness.html).not.toContain("script-src 'unsafe-inline'");
     expect(script?.[2].replaceAll("\\", "/")).toBe("file:///extension/media/webview.js");
+    expect(harness.html).toContain('data-fetch-column-block-size="16"');
+  });
+
+  it("clamps an out-of-range horizontal block setting before exposing or requesting it", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockImplementation(
+      () =>
+        ({
+          get: (key: string, fallback?: unknown): unknown => (key === "fetchColumnBlockSize" ? 999 : fallback)
+        }) as vscode.WorkspaceConfiguration
+    );
+    const request = vi.fn(async (_request: OpenWranglerRequest): Promise<OpenWranglerResponse> => initialResponse);
+    const harness = createPanelHarness({ request }, { initialResponse: undefined });
+
+    expect(harness.html).toContain('data-fetch-column-block-size="256"');
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    expect(request.mock.calls[0]?.[0]).toMatchObject({
+      kind: "openSession",
+      columnOffset: 0,
+      columnLimit: 256
+    });
   });
 
   it("rejects a stale profile from an older opaque view even when metadata and filters match", async () => {
@@ -256,13 +278,18 @@ describe("OpenWranglerPanel retained view state", () => {
   });
 
   it("forwards only validated applied-step inspection and host-clear messages with correlation", async () => {
+    const inspectionPage = {
+      ...page,
+      offset: 200,
+      rows: [{ ...page.rows[0], id: "r:200", rowNumber: 200 }]
+    };
     const inspection: OpenWranglerResponse = {
       kind: "stepInspection",
       revision: 0,
       stepId: "round-sales",
       stepIndex: 0,
-      inputPage: page,
-      outputPage: page,
+      inputPage: inspectionPage,
+      outputPage: inspectionPage,
       inputSchema: metadata.schema,
       outputSchema: metadata.schema,
       diff: {
@@ -284,18 +311,34 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await harness.send({
       kind: "runtimeRequest",
-      request: { kind: "inspectStep", stepId: "round-sales", offset: 200, limit: 200 }
+      request: {
+        kind: "inspectStep",
+        stepId: "round-sales",
+        offset: 200,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      }
     });
     await harness.send({ kind: "clearStepInspection" });
     await harness.send({ kind: "clearStepInspection", unexpected: true });
     await harness.send({
       kind: "runtimeRequest",
-      request: { kind: "inspectStep", stepId: "", offset: 0, limit: 200 }
+      request: { kind: "inspectStep", stepId: "", offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
     });
 
     expect(bridge.request).toHaveBeenCalledOnce();
     expect(bridge.request).toHaveBeenCalledWith(
-      { kind: "inspectStep", sessionId: "session", revision: 0, stepId: "round-sales", offset: 200, limit: 200 },
+      {
+        kind: "inspectStep",
+        sessionId: "session",
+        revision: 0,
+        stepId: "round-sales",
+        offset: 200,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      },
       undefined
     );
     expect(bridge.clearStepInspection).toHaveBeenCalledOnce();
@@ -304,6 +347,9 @@ describe("OpenWranglerPanel retained view state", () => {
       kind: "stepInspectionResult",
       stepId: "round-sales",
       offset: 200,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 16,
       response: inspection
     });
   });
@@ -361,7 +407,9 @@ describe("OpenWranglerPanel retained view state", () => {
         kind: "previewStep",
         step: { id: "bad", kind: "renameColumn", params: { columns: ["city"] } },
         offset: 0,
-        limit: 200
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 16
       }
     });
     await harness.send({
@@ -395,6 +443,20 @@ describe("OpenWranglerPanel retained view state", () => {
     const harness = createPanelHarness(bridge, { initialResponse: undefined });
     await vi.waitFor(() => expect(harness.posted).toContainEqual(initialResponse));
 
+    expect(bridge.request).toHaveBeenNthCalledWith(
+      1,
+      {
+        kind: "openSession",
+        source: metadata.source,
+        backend: "polars",
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16,
+        mode: "editing"
+      },
+      undefined
+    );
+
     harness.dispose();
 
     expect(bridge.setActiveSession).toHaveBeenCalledWith(undefined);
@@ -416,6 +478,8 @@ function pageMessage(viewRequestId: string, viewContextId: string) {
       viewRequestId,
       offset: 0,
       limit: 200,
+      columnOffset: 0,
+      columnLimit: 16,
       filterModel: metadata.filterModel
     }
   };

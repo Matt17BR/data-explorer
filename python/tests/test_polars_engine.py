@@ -57,6 +57,97 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
     assert summary["summaries"][0]["visualization"]["bins"]
 
 
+def test_lazy_polars_page_projects_before_the_terminal_collect(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = PolarsEngine()
+    frame = engine.ensure_row_ids(
+        pl.DataFrame({"omitted": [10, 20], "selected": [30, 40], "also_omitted": [50, 60]}).lazy(),
+        "projection-order",
+    )
+    events: list[str] = []
+    selected_columns: list[list[str]] = []
+    native_select = pl.LazyFrame.select
+    native_collect = pl.LazyFrame.collect
+
+    def tracked_select(lazy_frame: pl.LazyFrame, *columns: Any, **kwargs: Any) -> pl.LazyFrame:
+        events.append("select")
+        values = columns[0] if len(columns) == 1 and isinstance(columns[0], list) else columns
+        selected_columns.append([str(value) for value in values])
+        return native_select(lazy_frame, *columns, **kwargs)
+
+    def tracked_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        events.append("collect")
+        return cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+
+    monkeypatch.setattr(pl.LazyFrame, "select", tracked_select)
+    monkeypatch.setattr(pl.LazyFrame, "collect", tracked_collect)
+
+    page = engine.page(
+        frame,
+        0,
+        2,
+        total_rows=2,
+        column_projection=[(1, "stable:selected")],
+    )
+
+    assert events == ["select", "collect"]
+    assert selected_columns and "selected" in selected_columns[0]
+    assert "omitted" not in selected_columns[0]
+    assert "also_omitted" not in selected_columns[0]
+    assert page["columnIds"] == ["stable:selected"]
+    assert [row["values"][0]["display"] for row in page["rows"]] == ["30", "40"]
+
+
+@pytest.mark.parametrize("extension", ["csv", "parquet"])
+def test_real_polars_scan_selects_only_the_page_projection_before_collect(
+    extension: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / f"projection.{extension}"
+    source = pl.DataFrame({"omitted": [10, 20], "selected": [30, 40], "also_omitted": [50, 60]})
+    if extension == "csv":
+        source.write_csv(path)
+    else:
+        source.write_parquet(path)
+
+    engine = PolarsEngine()
+    frame = engine.ensure_row_ids(engine.read_file(str(path)), f"real-{extension}-projection")
+    assert isinstance(frame, pl.LazyFrame)
+    private_columns = set(frame.collect_schema().names()) - {"omitted", "selected", "also_omitted"}
+    assert len(private_columns) == 1
+    row_id = next(iter(private_columns))
+    events: list[str] = []
+    selected_columns: list[list[str]] = []
+    native_select = pl.LazyFrame.select
+    native_collect = pl.LazyFrame.collect
+
+    def tracked_select(lazy_frame: pl.LazyFrame, *columns: Any, **kwargs: Any) -> pl.LazyFrame:
+        events.append("select")
+        values = columns[0] if len(columns) == 1 and isinstance(columns[0], list) else columns
+        selected_columns.append([str(value) for value in values])
+        return native_select(lazy_frame, *columns, **kwargs)
+
+    def tracked_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        events.append("collect")
+        return cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+
+    monkeypatch.setattr(pl.LazyFrame, "select", tracked_select)
+    monkeypatch.setattr(pl.LazyFrame, "collect", tracked_collect)
+
+    page = engine.page(
+        frame,
+        0,
+        2,
+        total_rows=2,
+        column_projection=[(1, "stable:selected")],
+    )
+
+    assert events == ["select", "collect"]
+    assert selected_columns == [[row_id, "selected"]]
+    assert page["columnIds"] == ["stable:selected"]
+    assert [row["values"][0]["display"] for row in page["rows"]] == ["30", "40"]
+
+
 def test_polars_column_values_and_parquet(tmp_path):
     frame = pl.DataFrame({"group": ["a", "a", "b"], "value": [1, 2, 3]})
     path = tmp_path / "sample.parquet"

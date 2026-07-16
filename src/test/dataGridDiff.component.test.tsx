@@ -66,6 +66,7 @@ const outputPage: GridPage = {
   offset: 0,
   limit: 1,
   totalRows: 1,
+  columnIds: outputSchema.map((column) => column.id),
   rows: [
     {
       id: "r:0",
@@ -79,6 +80,7 @@ const inputPage: GridPage = {
   offset: 0,
   limit: 1,
   totalRows: 1,
+  columnIds: inputSchema.map((column) => column.id),
   rows: [
     {
       id: "r:0",
@@ -94,7 +96,7 @@ const diff: DataDiff = {
   addedColumns: ["segment"],
   removedColumns: ["legacy"],
   changedCells: 1,
-  cells: [{ rowNumber: 0, column: "sales", before: numberCell(10.5), after: numberCell(11) }],
+  cells: [{ rowNumber: 0, columnId: "c:sales", column: "sales", before: numberCell(10.5), after: numberCell(11) }],
   truncated: false
 };
 
@@ -159,6 +161,10 @@ describe("DataGrid diff presentation", () => {
 
   it("uses stable column IDs from the before context when names are duplicated", () => {
     const duplicateSchema: ColumnSchema[] = [
+      { id: "c:second", name: "value", position: 0, rawType: "String", type: "string", nullable: false },
+      { id: "c:first", name: "value", position: 1, rawType: "String", type: "string", nullable: false }
+    ];
+    const duplicateBeforeSchema: ColumnSchema[] = [
       { id: "c:first", name: "value", position: 0, rawType: "String", type: "string", nullable: false },
       { id: "c:second", name: "value", position: 1, rawType: "String", type: "string", nullable: false }
     ];
@@ -170,11 +176,13 @@ describe("DataGrid diff presentation", () => {
     };
     const duplicateBefore: GridPage = {
       ...inputPage,
-      rows: [{ id: "r:0", rowNumber: 0, values: [stringCell("old"), stringCell("same")] }]
+      columnIds: ["c:first"],
+      rows: [{ id: "r:0", rowNumber: 0, values: [stringCell("old")] }]
     };
     const duplicateAfter: GridPage = {
       ...outputPage,
-      rows: [{ id: "r:0", rowNumber: 0, values: [stringCell("new"), stringCell("same")] }]
+      columnIds: ["c:first"],
+      rows: [{ id: "r:0", rowNumber: 0, values: [stringCell("new")] }]
     };
     const duplicateDiff: DataDiff = {
       addedRows: 0,
@@ -182,7 +190,9 @@ describe("DataGrid diff presentation", () => {
       addedColumns: [],
       removedColumns: [],
       changedCells: 1,
-      cells: [{ rowNumber: 0, column: "value", before: stringCell("old"), after: stringCell("new") }],
+      cells: [
+        { rowNumber: 0, columnId: "c:first", column: "value", before: stringCell("old"), after: stringCell("new") }
+      ],
       truncated: false
     };
 
@@ -191,11 +201,11 @@ describe("DataGrid diff presentation", () => {
       page: duplicateAfter,
       dataDiff: duplicateDiff,
       beforePage: duplicateBefore,
-      beforeSchema: duplicateSchema
+      beforeSchema: duplicateBeforeSchema
     });
 
-    expect(document.querySelector('[data-grid-column="0"]')).toHaveAttribute("data-diff-state", "changed");
-    expect(document.querySelector('[data-grid-column="1"]')).not.toHaveAttribute("data-diff-state");
+    expect(document.querySelector('td[data-grid-column="0"]')).not.toHaveAttribute("data-diff-state");
+    expect(document.querySelector('td[data-grid-column="1"]')).toHaveAttribute("data-diff-state", "changed");
     expect(screen.getByRole("cell", { name: "value, row 1: changed from old to new" })).toBeVisible();
   });
 

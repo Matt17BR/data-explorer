@@ -21,6 +21,9 @@ interface WalkthroughStep {
 
 interface PackageManifest {
   contributes?: {
+    configuration?: {
+      properties?: Record<string, { type?: string; default?: unknown; minimum?: number; maximum?: number }>;
+    };
     configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
     menus?: Record<string, MenuContribution[]>;
@@ -96,5 +99,18 @@ describe("file launch contributions", () => {
     }
     expect(match.test("notes.txt")).toBe(false);
     expect(match.test("data.csv.backup")).toBe(false);
+  });
+});
+
+describe("grid block configuration", () => {
+  it("bounds the default horizontal fetch block", () => {
+    expect(manifest.contributes?.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]).toEqual(
+      expect.objectContaining({
+        type: "number",
+        default: 16,
+        minimum: 1,
+        maximum: 256
+      })
+    );
   });
 });

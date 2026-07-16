@@ -166,6 +166,65 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
     manager.close_session(session_id, revision)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_step_inspection_projects_each_boundary_as_its_own_contiguous_window(
+    backend: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / f"inspection-projection-{backend}.csv"
+    path.write_text("first,second,third\na,b,c\n", encoding="utf-8")
+    if backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Inspection must stay native")),
+            raising=False,
+        )
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    revision = apply_step(
+        manager,
+        session_id,
+        0,
+        step(
+            "reverse",
+            "selectColumns",
+            columns=[
+                {"id": "c:source:2", "name": "third"},
+                {"id": "c:source:1", "name": "second"},
+                {"id": "c:source:0", "name": "first"},
+            ],
+        ),
+    )
+
+    inspection = manager.inspect_step(
+        session_id,
+        revision,
+        "reverse",
+        0,
+        1,
+        column_offset=0,
+        column_limit=1,
+    )
+
+    assert inspection["inputPage"]["columnIds"] == ["c:source:0"]
+    assert inspection["outputPage"]["columnIds"] == ["c:source:2"]
+    assert inspection["inputPage"]["rows"][0]["values"][0]["display"] == "a"
+    assert inspection["outputPage"]["rows"][0]["values"][0]["display"] == "c"
+    assert inspection["diff"]["changedCells"] == 0
+    assert inspection["diff"]["cells"] == []
+    assert inspection["diff"]["truncated"] is True
+
+    manager.close_session(session_id, revision)
+
+
 def test_step_inspection_marks_a_nonzero_final_block_as_truncated(tmp_path: Path) -> None:
     path = tmp_path / "inspection-final-block.csv"
     path.write_text("value\n1.2\n2.8\n3.4\n", encoding="utf-8")

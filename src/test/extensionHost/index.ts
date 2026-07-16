@@ -60,6 +60,7 @@ interface FakeJupyterApi {
 
 const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
+const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
 
 function columnReference(metadata: SessionMetadata, name: string): ColumnReference {
   const column = metadata.schema.find((candidate) => candidate.name === name);
@@ -136,6 +137,7 @@ export async function run(): Promise<void> {
     ["openWrangler.operations", "openWrangler.summary", "openWrangler.filters", "openWrangler.cleaningSteps"]
   );
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
   const enabledFileTypes = contributions.configuration?.properties?.["openWrangler.enabledFileTypes"] as
     { items?: { enum?: string[] }; default?: string[] } | undefined;
@@ -291,6 +293,7 @@ export async function run(): Promise<void> {
     await exercisePackagedFileInputs(testing, workspace, testPython);
   }
   await exercisePackagedViewingQueries(testing, fixture);
+  await exerciseWideColumnProjection(testing);
   await exercisePackagedOperationGroups(testing, fixture);
   await exercisePackagedNotebookFlows(testing);
   if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
@@ -900,6 +903,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     offset: 0,
     limit: 1,
     totalRows: 1,
+    columnIds: ["c:0"],
     rows: [
       {
         id: "r:0",
@@ -1008,6 +1012,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (!active) throw new Error("Pandas notebook session did not become active.");
     const pandasPage = await testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: "notebook-pandas-page",
       sessionId: active.sessionId,
       revision: active.metadata.revision,
@@ -1020,6 +1025,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(pandasPage.page.rows[1]?.values[0]?.display, "2");
     const preview = await testing.request({
       kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
       sessionId: active.sessionId,
       revision: pandasPage.revision,
       step: {
@@ -1039,6 +1045,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (preview.kind !== "stepPreview") throw new Error("Pandas notebook step did not preview.");
     const applied = await testing.request({
       kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
       sessionId: active.sessionId,
       revision: preview.revision,
       offset: 0,
@@ -1087,6 +1094,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.ok(replacementGeneration > generation);
     const recovered = await testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: "notebook-polars-recovery-page",
       sessionId: active.sessionId,
       revision: active.metadata.revision,
@@ -1150,6 +1158,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
   ]) {
     const opened = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source,
       backend: target.backend,
       pageSize: 20,
@@ -1160,6 +1169,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
 
     const preview = await testing.request({
       kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       step: {
@@ -1180,6 +1190,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
 
     const applied = await testing.request({
       kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
       sessionId: opened.metadata.sessionId,
       revision: preview.revision,
       offset: 0,
@@ -1190,6 +1201,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
 
     const page = await testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: `persisted-${target.backend}-plan-page`,
       sessionId: opened.metadata.sessionId,
       revision: applied.revision,
@@ -1227,6 +1239,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
 
     const readback = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source,
       backend: target.backend,
       pageSize: 20,
@@ -1268,6 +1281,7 @@ async function verifyPersistedReplayAndRecovery(
   const sourceText = readFileSync(fixture.fsPath, "utf8");
   const restored = await testing.request({
     kind: "openSession",
+    ...GRID_COLUMN_WINDOW,
     source: csvSource(fixture),
     backend: "polars",
     pageSize: 20,
@@ -1296,6 +1310,7 @@ async function verifyPersistedReplayAndRecovery(
   const secondSourceText = readFileSync(secondFixture.fsPath, "utf8");
   const second = await testing.request({
     kind: "openSession",
+    ...GRID_COLUMN_WINDOW,
     source: tsvSource(secondFixture),
     backend: "pandas",
     pageSize: 20,
@@ -1306,6 +1321,7 @@ async function verifyPersistedReplayAndRecovery(
   assert.notEqual(second.metadata.sessionId, restored.metadata.sessionId);
   const third = await testing.request({
     kind: "openSession",
+    ...GRID_COLUMN_WINDOW,
     source: csvSource(fixture),
     backend: "duckdb",
     pageSize: 20,
@@ -1345,6 +1361,7 @@ async function verifyPersistedReplayAndRecovery(
   const [restoredPage, secondPage, thirdPage] = await Promise.all([
     testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: "restart-restored-page",
       sessionId: restored.metadata.sessionId,
       revision: restored.metadata.revision,
@@ -1354,6 +1371,7 @@ async function verifyPersistedReplayAndRecovery(
     }),
     testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: "restart-second-page",
       sessionId: second.metadata.sessionId,
       revision: second.metadata.revision,
@@ -1363,6 +1381,7 @@ async function verifyPersistedReplayAndRecovery(
     }),
     testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: "restart-duckdb-page",
       sessionId: third.metadata.sessionId,
       revision: third.metadata.revision,
@@ -1612,6 +1631,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
 
     const rejected = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source: csvSource(fixture),
       backend: "polars",
       pageSize: 20,
@@ -1625,6 +1645,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     }
     const rejectedDuckDB = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source: csvSource(fixture),
       backend: "duckdb",
       pageSize: 20,
@@ -1638,6 +1659,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     }
     const rejectedLossyUtf8 = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source: {
         ...csvSource(fixture),
         importOptions: {
@@ -1659,6 +1681,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     }
     const rejectedLegacyExcel = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source: {
         kind: "file",
         label: "legacy.xls",
@@ -1717,6 +1740,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
   for (const backend of ["pandas", "polars", "duckdb"] as const) {
     const opened = await testing.request({
       kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
       source: csvSource(fixture),
       backend,
       pageSize: 2,
@@ -1727,6 +1751,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 
     const page = await testing.request({
       kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
       viewRequestId: `${backend}-filter-page`,
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
@@ -1805,6 +1830,86 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
   assert.equal(readFileSync(fixture.fsPath, "utf8"), original, "Viewing queries must not alter the source.");
 }
 
+async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-wide-projection-"));
+  const sourcePath = path.join(directory, "wide.csv");
+  const columnCount = 300;
+  const names = Array.from({ length: columnCount }, (_, column) => `column_${column.toString().padStart(3, "0")}`);
+  const values = (row: number) => names.map((_name, column) => String(row * 1_000 + column));
+  const source = [names, values(0), values(1)].map((row) => row.join(",")).join("\n") + "\n";
+  writeFileSync(sourcePath, source);
+
+  try {
+    for (const backend of ["pandas", "polars", "duckdb"] as const) {
+      const opened = await testing.request({
+        kind: "openSession",
+        source: { kind: "file", label: "wide.csv", path: sourcePath },
+        backend,
+        pageSize: 2,
+        columnOffset: 0,
+        columnLimit: 16,
+        mode: "viewing"
+      });
+      assert.equal(opened.kind, "sessionOpened", `${backend} wide projection must open.`);
+      if (opened.kind !== "sessionOpened") continue;
+      assert.equal(opened.metadata.shape.columns, columnCount);
+      assert.deepEqual(
+        opened.page.columnIds,
+        opened.metadata.schema.slice(0, 16).map((column) => column.id),
+        `${backend} initial transport must stay column bounded.`
+      );
+      assert.ok(opened.page.rows.every((row) => row.values.length === 16));
+
+      const projected = await testing.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: `${backend}-wide-far-columns`,
+        offset: 0,
+        limit: 2,
+        columnOffset: 288,
+        columnLimit: 12,
+        filterModel: {
+          logic: "and",
+          filters: [
+            {
+              column: "column_000",
+              type: "integer",
+              predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+            }
+          ],
+          sort: [{ column: "column_001", direction: "desc", nulls: "last" }]
+        }
+      });
+      assert.equal(projected.kind, "page", `${backend} far-column block must resolve.`);
+      if (projected.kind !== "page") continue;
+      assert.equal(projected.page.totalRows, 1, `${backend} must filter on an untransported column.`);
+      assert.deepEqual(
+        projected.page.columnIds,
+        projected.metadata.schema.slice(288, 300).map((column) => column.id)
+      );
+      assert.equal(projected.page.rows[0]?.values[0]?.display, "1288");
+      assert.equal(projected.page.rows[0]?.values[11]?.display, "1299");
+      assert.ok(projected.page.rows.every((row) => row.values.length === 12));
+
+      const closed = await testing.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: projected.revision
+      });
+      assert.equal(closed.kind, "sessionClosed");
+    }
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      "wide projected sessions to close"
+    );
+    assert.equal(readFileSync(sourcePath, "utf8"), source, "Wide projection must not mutate the source.");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-operation-groups-"));
   const sourcePath = path.join(directory, "operations.csv");
@@ -1815,6 +1920,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
     for (const backend of ["pandas", "polars", "duckdb"] as const) {
       const opened = await testing.request({
         kind: "openSession",
+        ...GRID_COLUMN_WINDOW,
         source: csvSource(vscode.Uri.file(sourcePath)),
         backend,
         pageSize: 20,
@@ -1888,6 +1994,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       for (const step of steps) {
         const preview = await testing.request({
           kind: "previewStep",
+          ...GRID_COLUMN_WINDOW,
           sessionId: opened.metadata.sessionId,
           revision,
           step,
@@ -1911,6 +2018,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         revision = preview.revision;
         const applied = await testing.request({
           kind: "applyDraft",
+          ...GRID_COLUMN_WINDOW,
           sessionId: opened.metadata.sessionId,
           revision,
           offset: 0,
@@ -1927,6 +2035,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           testing.restartRuntime(`${backend} custom-code replay acceptance`);
           const replayed = await testing.request({
             kind: "getPage",
+            ...GRID_COLUMN_WINDOW,
             viewRequestId: `${backend}-${step.kind}-replay-page`,
             sessionId: opened.metadata.sessionId,
             revision,

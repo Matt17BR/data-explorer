@@ -562,6 +562,7 @@ describe("App progressive profiling and view correlation", () => {
       offset: 0,
       limit: 200,
       totalRows: 1,
+      columnIds: columns.map((column) => column.id),
       rows: [
         {
           id: "r:wide",
@@ -992,6 +993,7 @@ function pageWithCity(city: string): GridPage {
     offset: 0,
     limit: 200,
     totalRows: 500,
+    columnIds: metadata.schema.map((column) => column.id),
     rows: [
       {
         id: "r:0",

@@ -10,6 +10,7 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    PageColumnProjection,
     boolean_visualization,
     bound_column_name,
     categorical_visualization,
@@ -17,6 +18,7 @@ from .base import (
     ensure_output_columns_available,
     infer_semantic_type,
     normalize_cell,
+    normalize_page_projection,
     numeric_visualization,
 )
 
@@ -222,21 +224,35 @@ class PolarsEngine(DataFrameEngine):
         limit: int,
         *,
         total_rows: int | None = None,
+        column_projection: PageColumnProjection | None = None,
     ) -> dict[str, Any]:
         import polars as pl
 
+        visible = self._visible_columns(frame)
+        projection = normalize_page_projection(len(visible), column_projection)
+        columns = [visible[position] for position, _identifier in projection]
+        column_ids = [identifier for _position, identifier in projection]
+        row_id = self._row_id_column(frame)
+        selected = [*([row_id] if row_id is not None else []), *columns]
+        # A direct engine call may request an empty projection before a private
+        # row identity has been attached. Keep one bounded placeholder column
+        # in that terminal plan rather than collecting every visible column.
+        terminal_columns = selected or visible[:1]
         if isinstance(frame, pl.LazyFrame):
             if total_rows is None:
                 total_rows = int(frame.select(pl.len()).collect(engine="streaming").item())
-            df = frame.slice(offset, limit).collect(engine="streaming")
-            sliced = df
+            # Projection must enter the lazy plan before its terminal slice and
+            # collect so scan adapters can prune every unneeded output column.
+            sliced = (
+                frame.select(terminal_columns).slice(offset, limit).collect(engine="streaming")
+                if terminal_columns
+                else frame.slice(offset, limit).collect(engine="streaming")
+            )
         else:
             df = self.normalize(frame)
-            sliced = df.slice(offset, limit)
+            sliced = df.select(terminal_columns).slice(offset, limit) if terminal_columns else df.slice(offset, limit)
             if total_rows is None:
                 total_rows = int(df.height)
-        columns = self._visible_columns(df)
-        row_id = self._row_id_column(df)
         rows = []
         for row_number, row in enumerate(sliced.iter_rows(named=True), start=offset):
             rows.append(
@@ -250,6 +266,7 @@ class PolarsEngine(DataFrameEngine):
             "offset": offset,
             "limit": limit,
             "totalRows": int(total_rows),
+            "columnIds": column_ids,
             "rows": rows,
         }
 

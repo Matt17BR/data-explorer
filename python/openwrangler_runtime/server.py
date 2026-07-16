@@ -26,6 +26,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request.get("pageSize", 200)),
             request.get("mode"),
             request.get("requestedSessionId"),
+            int(request["columnOffset"]),
+            int(request["columnLimit"]),
         )
     if kind == "getPage":
         return _with_view_request_id(
@@ -35,6 +37,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
                 int(request.get("offset", 0)),
                 int(request.get("limit", 200)),
                 request.get("filterModel", {"filters": [], "sort": []}),
+                int(request["columnOffset"]),
+                int(request["columnLimit"]),
             ),
             request,
         )
@@ -77,6 +81,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request.get("offset", 0)),
             int(request.get("limit", 200)),
             request.get("replaceStepId"),
+            int(request["columnOffset"]),
+            int(request["columnLimit"]),
         )
     if kind == "inspectStep":
         return manager.inspect_step(
@@ -85,6 +91,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             request["stepId"],
             int(request.get("offset", 0)),
             int(request.get("limit", 200)),
+            int(request["columnOffset"]),
+            int(request["columnLimit"]),
         )
     if kind == "applyDraft":
         return manager.apply_draft(
@@ -92,6 +100,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request["revision"]),
             int(request.get("offset", 0)),
             int(request.get("limit", 200)),
+            int(request["columnOffset"]),
+            int(request["columnLimit"]),
         )
     if kind == "discardDraft":
         return manager.discard_draft(
@@ -99,6 +109,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request["revision"]),
             int(request.get("offset", 0)),
             int(request.get("limit", 200)),
+            int(request["columnOffset"]),
+            int(request["columnLimit"]),
         )
     if kind == "undoStep":
         return manager.undo_step(
@@ -106,6 +118,8 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request["revision"]),
             int(request.get("offset", 0)),
             int(request.get("limit", 200)),
+            int(request["columnOffset"]),
+            int(request["columnLimit"]),
         )
     if kind == "exportData":
         return manager.export_data(

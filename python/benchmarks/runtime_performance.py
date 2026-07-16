@@ -27,6 +27,10 @@ PAGE_SIZE = 200
 SAMPLES = 20
 FRESH_MANAGER_OPEN_SAMPLES = 5
 VISIBLE_PROFILE_COLUMNS = 8
+# Product default for openWrangler.fetchColumnBlockSize. The performance
+# harness test reads package.json and fails if these independently owned
+# process boundaries drift.
+DEFAULT_FETCH_COLUMN_BLOCK_SIZE = 16
 EMPTY_FILTER = {"logic": "and", "filters": [], "sort": []}
 TRANSPORT_TIMEOUT_SECONDS = 30.0
 SERIALIZATION_EVIDENCE_MIN_MS = 5.0
@@ -644,6 +648,8 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
             {"kind": "file", "label": path.name, "path": str(path.resolve())},
             backend=backend,
             page_size=PAGE_SIZE,
+            column_offset=0,
+            column_limit=DEFAULT_FETCH_COLUMN_BLOCK_SIZE,
         )
         fresh_manager_open_samples.append((perf_counter() - started) * 1_000)
         _assert_open_contract(sample_opened, spec, path, backend)
@@ -693,13 +699,41 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
         cache_bytes.append(initial_cache_bytes)
 
     cached_offset = 0
-    cached_warmup_ms = _time_page(manager, session_id, cached_offset, spec.rows, cache_sizes, cache_bytes)
+    cached_column_offset = 0
+    cached_warmup_ms = _time_page(
+        manager,
+        session_id,
+        cached_offset,
+        spec.rows,
+        cache_sizes,
+        cache_bytes,
+        column_offset=cached_column_offset,
+    )
     cached_samples = [
-        _time_page(manager, session_id, cached_offset, spec.rows, cache_sizes, cache_bytes) for _ in range(SAMPLES)
+        _time_page(
+            manager,
+            session_id,
+            cached_offset,
+            spec.rows,
+            cache_sizes,
+            cache_bytes,
+            column_offset=cached_column_offset,
+        )
+        for _ in range(SAMPLES)
     ]
     uncached_offsets = _uncached_offsets(spec.rows, cached_offset)
+    uncached_column_offsets = _sample_column_offsets(spec.columns, len(uncached_offsets))
     uncached_samples = [
-        _time_page(manager, session_id, offset, spec.rows, cache_sizes, cache_bytes) for offset in uncached_offsets
+        _time_page(
+            manager,
+            session_id,
+            offset,
+            spec.rows,
+            cache_sizes,
+            cache_bytes,
+            column_offset=column_offset,
+        )
+        for offset, column_offset in zip(uncached_offsets, uncached_column_offsets, strict=True)
     ]
 
     page_cache_observable = bool(cache_sizes)
@@ -755,6 +789,7 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
         },
         "firstVisibleProfileMs": round(first_visible_profile_ms, 3),
         "profiledColumns": profiled_columns,
+        "projectedGridColumns": min(DEFAULT_FETCH_COLUMN_BLOCK_SIZE, spec.columns),
         "initialSummaryCount": len(opened["summaries"]),
         "exactRowCounts": True,
         "engineMetadata": {
@@ -771,8 +806,10 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
         "directRuntimeCachedPageP95Ms": round(cached_p95_ms, 3),
         "directRuntimeCacheMissPageP95Ms": round(uncached_p95_ms, 3),
         "cachedOffset": cached_offset,
+        "cachedColumnOffset": cached_column_offset,
         "cachedWarmupMs": round(cached_warmup_ms, 3),
         "uncachedOffsets": uncached_offsets,
+        "uncachedColumnOffsets": uncached_column_offsets,
         "cachedSamplesMs": [round(value, 3) for value in cached_samples],
         "uncachedSamplesMs": [round(value, 3) for value in uncached_samples],
         "pageCache": {
@@ -825,6 +862,7 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
     """Measure canonical JSON/envelope round trips through the real subprocess."""
     transport_samples: list[float] = []
     offsets = _uncached_offsets(spec.rows, 0)
+    column_offsets = _sample_column_offsets(spec.columns, len(offsets))
     with StdioRuntimeClient(backend) as client:
         initialized, initialize_ms = client.request({"kind": "initialize"}, label="initialize")
         _expect_response_kind(initialized, "initialized", "initialize")
@@ -838,6 +876,8 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
                 "backend": backend,
                 "mode": "editing",
                 "pageSize": PAGE_SIZE,
+                "columnOffset": 0,
+                "columnLimit": DEFAULT_FETCH_COLUMN_BLOCK_SIZE,
             },
             label=f"open-{spec.kind}",
         )
@@ -847,7 +887,7 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
         session_id = opened["metadata"]["sessionId"]
         revision = opened["metadata"]["revision"]
 
-        for sample, offset in enumerate(offsets):
+        for sample, (offset, column_offset) in enumerate(zip(offsets, column_offsets, strict=True)):
             view_request_id = f"transport-{spec.kind}-page-{sample}"
             response, elapsed_ms = client.request(
                 {
@@ -857,6 +897,8 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
                     "viewRequestId": view_request_id,
                     "offset": offset,
                     "limit": PAGE_SIZE,
+                    "columnOffset": column_offset,
+                    "columnLimit": DEFAULT_FETCH_COLUMN_BLOCK_SIZE,
                     "filterModel": EMPTY_FILTER,
                 },
                 label=f"page-{spec.kind}-{sample}",
@@ -866,10 +908,17 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
                 raise AssertionError(f"Transport page {offset} did not preserve its viewRequestId for {path.name}.")
             if response["page"]["totalRows"] != spec.rows:
                 raise AssertionError(f"Transport page {offset} returned an inexact row count for {path.name}.")
+            _assert_page_projection(
+                response["page"],
+                opened["metadata"]["schema"],
+                column_offset,
+                f"transport page {offset} for {path.name}",
+            )
             transport_samples.append(elapsed_ms)
         client.record_resources("cache-miss-pages-complete")
 
         contention_offset = _contention_offset(spec.rows, offsets)
+        contention_column_offset = _sample_column_offsets(spec.columns, 1)[0]
         stats_view_request_id = f"transport-{spec.kind}-contended-stats"
         stats_id, stats_started = client.send(
             {
@@ -893,6 +942,8 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
                 "viewRequestId": page_view_request_id,
                 "offset": contention_offset,
                 "limit": PAGE_SIZE,
+                "columnOffset": contention_column_offset,
+                "columnLimit": DEFAULT_FETCH_COLUMN_BLOCK_SIZE,
                 "filterModel": EMPTY_FILTER,
             },
             label=f"contended-page-{spec.kind}",
@@ -910,6 +961,12 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
             raise AssertionError(f"Contended page did not preserve its viewRequestId for {path.name}.")
         if stats.get("viewRequestId") != stats_view_request_id:
             raise AssertionError(f"Dataset statistics did not preserve their viewRequestId for {path.name}.")
+        _assert_page_projection(
+            contended_page["page"],
+            opened["metadata"]["schema"],
+            contention_column_offset,
+            f"same-session contended page for {path.name}",
+        )
         completion_delta_ms = (client.response_arrivals[page_id] - client.response_arrivals[stats_id]) * 1_000
         # A serialized cache miss would only begin after statistics completes,
         # leaving approximately a full uncontented cache-miss gap between the
@@ -949,9 +1006,11 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
         "cacheMissPageP95Ms": round(_percentile(transport_samples, 0.95), 3),
         "cacheMissPageSamplesMs": [round(value, 3) for value in transport_samples],
         "cacheMissOffsets": offsets,
+        "cacheMissColumnOffsets": column_offsets,
         "sameSessionStatsDurationMs": round(stats_ms, 3),
         "sameSessionStatsContendedPageLatencyMs": round(contended_page_ms, 3),
         "sameSessionContentionOffset": contention_offset,
+        "sameSessionContentionColumnOffset": contention_column_offset,
         **overlap_evidence,
         "serializedCompletionGapThresholdMs": round(serialized_gap_threshold_ms, 3),
         "pageMinusStatsCompletionMs": round(completion_delta_ms, 3),
@@ -1097,14 +1156,30 @@ def _time_page(
     expected_rows: int,
     cache_sizes: list[int],
     cache_bytes: list[int],
+    *,
+    column_offset: int,
 ) -> float:
     started = perf_counter()
-    response = manager.get_page(session_id, 0, offset, PAGE_SIZE, EMPTY_FILTER)
+    response = manager.get_page(
+        session_id,
+        0,
+        offset,
+        PAGE_SIZE,
+        EMPTY_FILTER,
+        column_offset=column_offset,
+        column_limit=DEFAULT_FETCH_COLUMN_BLOCK_SIZE,
+    )
     elapsed_ms = (perf_counter() - started) * 1_000
     if response["page"]["totalRows"] != expected_rows:
         raise AssertionError(
             f"Page at offset {offset} reported {response['page']['totalRows']} rows; expected {expected_rows}."
         )
+    _assert_page_projection(
+        response["page"],
+        response["metadata"]["schema"],
+        column_offset,
+        f"direct runtime page at row offset {offset}",
+    )
     cache_size = _observable_cache_size(manager.sessions[session_id])
     if cache_size is not None:
         cache_sizes.append(cache_size)
@@ -1149,10 +1224,28 @@ def _assert_open_contract(opened: dict[str, Any], spec: FixtureSpec, path: Path,
         raise AssertionError(f"First grid returned unexpected column types for {path.name}: {wrong_types!r}.")
     first_row = opened["page"]["rows"][0]
     first_values = [cell["raw"] for cell in first_row["values"]]
-    if first_row["rowNumber"] != 0 or first_values != list(range(spec.columns)):
+    expected_grid_columns = min(DEFAULT_FETCH_COLUMN_BLOCK_SIZE, spec.columns)
+    _assert_page_projection(opened["page"], schema, 0, f"first grid for {path.name}")
+    if first_row["rowNumber"] != 0 or first_values != list(range(expected_grid_columns)):
         raise AssertionError(
             f"First grid returned invalid deterministic content for {path.name}: "
             f"rowNumber={first_row['rowNumber']}, values={first_values!r}."
+        )
+
+
+def _assert_page_projection(
+    page: dict[str, Any],
+    schema: list[dict[str, Any]],
+    column_offset: int,
+    context: str,
+) -> None:
+    expected_column_ids = [
+        column["id"] for column in schema[column_offset : column_offset + DEFAULT_FETCH_COLUMN_BLOCK_SIZE]
+    ]
+    if page.get("columnIds") != expected_column_ids:
+        raise AssertionError(
+            f"{context} returned invalid projected column identities: "
+            f"{page.get('columnIds')!r}; expected {expected_column_ids!r}."
         )
 
 
@@ -1181,6 +1274,18 @@ def _uncached_offsets(expected_rows: int, cached_offset: int) -> list[int]:
     if len(offsets) <= PAGE_CACHE_LIMIT:
         raise AssertionError("Uncached page samples must exceed the page-cache capacity.")
     return offsets
+
+
+def _sample_column_offsets(expected_columns: int, sample_count: int) -> list[int]:
+    if expected_columns < 0 or sample_count < 0:
+        raise AssertionError("Column sampling requires non-negative column and sample counts.")
+    aligned_offsets = list(range(0, expected_columns, DEFAULT_FETCH_COLUMN_BLOCK_SIZE)) or [0]
+    if len(aligned_offsets) == 1:
+        return [0] * sample_count
+    # Start beyond the already measured initial block, then cycle through every
+    # real horizontal block so both direct and stdio miss samples exercise the
+    # two-dimensional cache rather than only varying row offsets.
+    return [aligned_offsets[(sample + 1) % len(aligned_offsets)] for sample in range(sample_count)]
 
 
 def _contention_offset(expected_rows: int, prior_offsets: list[int]) -> int:

@@ -45,6 +45,8 @@ def test_notebook_snapshot_validates_options():
         notebook.build_payload(pd.DataFrame({"value": [1]}), variable_name="not valid")
     with pytest.raises(EngineError, match="page_size"):
         notebook.build_payload(pd.DataFrame({"value": [1]}), page_size=0)
+    with pytest.raises(EngineError, match="page_size"):
+        notebook.build_payload(pd.DataFrame({"value": [1]}), page_size=10_001)
 
 
 def test_notebook_snapshot_preserves_backend_detection_faults(monkeypatch):

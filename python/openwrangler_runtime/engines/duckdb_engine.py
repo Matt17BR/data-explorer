@@ -14,11 +14,13 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    PageColumnProjection,
     bound_column_name,
     categorical_visualization,
     datetime_visualization,
     ensure_output_columns_available,
     normalize_cell,
+    normalize_page_projection,
     numeric_visualization,
 )
 
@@ -178,37 +180,44 @@ class DuckDBEngine(DataFrameEngine):
         limit: int,
         *,
         total_rows: int | None = None,
+        column_projection: PageColumnProjection | None = None,
     ) -> dict[str, Any]:
         frame = self.normalize(frame)
         if offset < 0 or limit < 0:
             raise EngineError("DuckDB page offset and limit must be non-negative.")
-        columns = self._columns(frame)
         visible = self._visible_columns(frame)
-        positions = [columns.index(column) for column in visible]
+        projection = normalize_page_projection(len(visible), column_projection)
+        selected_columns = [visible[position] for position, _identifier in projection]
+        column_ids = [identifier for _position, identifier in projection]
         row_id = self._row_id_column(frame)
-        row_id_position = columns.index(row_id) if row_id is not None else None
+        terminal_columns = [*([row_id] if row_id is not None else []), *selected_columns]
+        # DuckDB has no empty SELECT list. Session frames always have a private
+        # row identity, while this literal preserves direct zero-column paging.
+        select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
         with self._terminal_connection(frame) as (connection, source_sql):
             if total_rows is None:
                 total_rows = int(_execute_scalar(connection, source_sql, "SELECT count(*) FROM ow") or 0)
             records = _execute_rows(
                 connection,
                 source_sql,
-                f"SELECT * FROM ow LIMIT {int(limit)} OFFSET {int(offset)}",
+                f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}",
             )
         rows = []
         for row_number, record in enumerate(records, start=offset):
-            identity = record[row_id_position] if row_id_position is not None else row_number
+            identity = record[0] if row_id is not None else row_number
+            value_offset = 1 if row_id is not None else 0
             rows.append(
                 {
                     "id": f"r:{row_id}:{identity}" if row_id is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(record[position]) for position in positions],
+                    "values": [normalize_cell(record[value_offset + index]) for index in range(len(selected_columns))],
                 }
             )
         return {
             "offset": offset,
             "limit": limit,
             "totalRows": int(total_rows),
+            "columnIds": column_ids,
             "rows": rows,
         }
 

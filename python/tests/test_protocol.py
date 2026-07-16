@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from openwrangler_runtime import SessionManager, __version__
-from openwrangler_runtime.protocol import ProtocolError, decode_envelope
+from openwrangler_runtime.protocol import MAX_PAGE_LIMIT, ProtocolError, decode_envelope
 
 
 def test_initialize_advertises_the_canonical_runtime_version() -> None:
@@ -35,6 +35,8 @@ def test_open_session_accepts_only_a_non_empty_requested_session_identity() -> N
             "source": {"kind": "file", "label": "sample.csv", "path": "/tmp/sample.csv"},
             "requestedSessionId": "candidate-session",
             "pageSize": 200,
+            "columnOffset": 0,
+            "columnLimit": 64,
         },
     }
 
@@ -54,6 +56,8 @@ def test_open_session_accepts_duckdb_and_rejects_unknown_backends() -> None:
             "source": {"kind": "file", "label": "sample.parquet", "path": "/tmp/sample.parquet"},
             "backend": "duckdb",
             "pageSize": 200,
+            "columnOffset": 0,
+            "columnLimit": 64,
         },
     }
 
@@ -73,7 +77,7 @@ def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
         "filterModel": {"logic": "and", "filters": [], "sort": []},
     }
     if kind == "getPage":
-        request.update(offset=0, limit=200)
+        request.update(offset=0, limit=200, columnOffset=0, columnLimit=64)
     elif kind == "getColumnValues":
         request.update(column="city", limit=100)
 
@@ -94,6 +98,118 @@ def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
         decode_envelope(envelope)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("columnOffset", -1, "columnOffset must be a non-negative integer"),
+        ("columnOffset", True, "columnOffset must be a non-negative integer"),
+        ("columnLimit", 0, "columnLimit must be an integer between 1 and 256"),
+        ("columnLimit", 257, "columnLimit must be an integer between 1 and 256"),
+        ("columnLimit", True, "columnLimit must be an integer between 1 and 256"),
+    ],
+)
+def test_page_column_windows_are_bounded_and_reject_booleans(field: str, value: object, message: str) -> None:
+    request: dict[str, object] = {
+        "kind": "getPage",
+        "sessionId": "session-1",
+        "revision": 0,
+        "viewRequestId": "view-17",
+        "offset": 0,
+        "limit": 200,
+        "columnOffset": 0,
+        "columnLimit": 64,
+        "filterModel": {"logic": "and", "filters": [], "sort": []},
+    }
+    request[field] = value
+
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(
+            {
+                "protocolVersion": 2,
+                "requestId": "transport-1",
+                "priority": "interactive",
+                "request": request,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "openSession",
+        "getPage",
+        "getColumnValues",
+        "previewStep",
+        "inspectStep",
+        "applyDraft",
+        "discardDraft",
+        "undoStep",
+    ],
+)
+def test_protocol_result_windows_accept_10000_and_reject_10001(kind: str) -> None:
+    if kind == "openSession":
+        field = "pageSize"
+        request: dict[str, object] = {
+            "kind": kind,
+            "source": {"kind": "file", "label": "sample.csv", "path": "/tmp/sample.csv"},
+            "pageSize": MAX_PAGE_LIMIT,
+            "columnOffset": 0,
+            "columnLimit": 64,
+        }
+    elif kind == "getColumnValues":
+        field = "limit"
+        request = {
+            "kind": kind,
+            "sessionId": "session-1",
+            "revision": 0,
+            "viewRequestId": "view-values",
+            "column": "city",
+            "filterModel": {"logic": "and", "filters": [], "sort": []},
+            "limit": MAX_PAGE_LIMIT,
+        }
+    else:
+        field = "limit"
+        request = {
+            "kind": kind,
+            "sessionId": "session-1",
+            "revision": 0,
+            "offset": 0,
+            "limit": MAX_PAGE_LIMIT,
+            "columnOffset": 0,
+            "columnLimit": 64,
+        }
+        if kind == "getPage":
+            request.update(
+                viewRequestId="view-page",
+                filterModel={"logic": "and", "filters": [], "sort": []},
+            )
+        elif kind == "previewStep":
+            request["step"] = {
+                "id": "rename-1",
+                "kind": "renameColumn",
+                "params": {"column": {"id": "column:0", "name": "old"}, "newName": "new"},
+            }
+        elif kind == "inspectStep":
+            request["stepId"] = "rename-1"
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": f"bounded-{kind}",
+        "priority": "interactive",
+        "request": request,
+    }
+    assert decode_envelope(envelope)[2][field] == MAX_PAGE_LIMIT
+
+    request[field] = MAX_PAGE_LIMIT + 1
+    message = (
+        f"inspectStep limit must not exceed {MAX_PAGE_LIMIT}"
+        if kind == "inspectStep"
+        else f"{field} must not exceed {MAX_PAGE_LIMIT}"
+    )
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(envelope)
+
+
 def test_protocol_v2_validates_transformation_steps() -> None:
     _, _, request = decode_envelope(
         {
@@ -111,6 +227,8 @@ def test_protocol_v2_validates_transformation_steps() -> None:
                 },
                 "offset": 0,
                 "limit": 200,
+                "columnOffset": 0,
+                "columnLimit": 64,
             },
         }
     )
@@ -186,6 +304,8 @@ def test_protocol_v2_accepts_canonical_column_references(step: dict) -> None:
             "step": step,
             "offset": 0,
             "limit": 200,
+            "columnOffset": 0,
+            "columnLimit": 64,
         },
     }
 
@@ -289,6 +409,8 @@ def test_protocol_v2_rejects_legacy_or_malformed_column_references(step: dict, m
             "step": step,
             "offset": 0,
             "limit": 200,
+            "columnOffset": 0,
+            "columnLimit": 64,
         },
     }
 
@@ -308,6 +430,8 @@ def test_protocol_v2_validates_applied_step_inspection() -> None:
             "stepId": "round-value",
             "offset": 20,
             "limit": 10,
+            "columnOffset": 4,
+            "columnLimit": 6,
         },
     }
 
@@ -348,6 +472,8 @@ def test_protocol_v2_rejects_malformed_transformation_steps() -> None:
                     },
                     "offset": 0,
                     "limit": 200,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
                 },
             }
         )

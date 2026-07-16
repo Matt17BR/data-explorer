@@ -33,6 +33,7 @@ const page: GridPage = {
   offset: 0,
   limit: 2,
   totalRows: 2,
+  columnIds: metadata.schema.map((column) => column.id),
   rows: [
     {
       id: "r:0",
@@ -138,6 +139,73 @@ describe("DataGrid", () => {
     expect(onViewStateChange).not.toHaveBeenCalled();
   });
 
+  it("preserves a restored logical viewport across device-pixel scroll quantization", async () => {
+    const onViewStateChange = vi.fn();
+    const onPage = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    let physicalScrollTop = scroller.scrollTop;
+    let physicalScrollLeft = scroller.scrollLeft;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = value === 29 ? 28.8 : value;
+      }
+    });
+    Object.defineProperty(scroller, "scrollLeft", {
+      configurable: true,
+      get: () => physicalScrollLeft,
+      set: (value: number) => {
+        physicalScrollLeft = value === 35 ? 35.2000007629 : value;
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: {},
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 35 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+
+    expect(scroller.scrollTop).toBe(28.8);
+    expect(scroller.scrollLeft).toBe(35.2000007629);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(onPage).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+
+    fireEvent.wheel(scroller);
+    scroller.scrollTop = 28.8;
+    scroller.scrollLeft = 80;
+    fireEvent.scroll(scroller);
+
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: {},
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 1, scrollLeft: 80 }
+    });
+    expect(onPage).not.toHaveBeenCalled();
+  });
+
   it("carries the scroll-requested row into the next block's roving focus", async () => {
     const onPage = vi.fn();
     const scrollMetadata = {
@@ -196,6 +264,7 @@ describe("DataGrid", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
+      columnIds: columns.map((column) => column.id),
       rows: [
         {
           id: "r:wide",
@@ -211,6 +280,7 @@ describe("DataGrid", () => {
       ]
     };
     const onVisibleSummaryColumnsChange = vi.fn();
+    const onVisibleColumnRangeChange = vi.fn();
     render(
       <DataGrid
         metadata={wideMetadata}
@@ -222,6 +292,7 @@ describe("DataGrid", () => {
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
+        onVisibleColumnRangeChange={onVisibleColumnRangeChange}
         onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
       />
     );
@@ -237,6 +308,7 @@ describe("DataGrid", () => {
     await waitFor(() =>
       expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["column-4", "column-5", "column-6", "column-7"])
     );
+    expect(onVisibleColumnRangeChange).toHaveBeenLastCalledWith({ start: 4, end: 8 });
     expect(document.querySelector('th[data-column="column-4"]')).toHaveAttribute("aria-colindex", "6");
     expect(document.querySelector('th[data-column="column-7"]')).toHaveAttribute("aria-colindex", "9");
     await waitFor(() => {
@@ -255,7 +327,7 @@ describe("DataGrid", () => {
     render(
       <DataGrid
         metadata={{ ...metadata, shape: { rows: 40, columns: 2 }, filteredShape: { rows: 40, columns: 2 } }}
-        page={{ offset: 0, limit: 200, totalRows: 40, rows }}
+        page={{ offset: 0, limit: 200, totalRows: 40, columnIds: page.columnIds, rows }}
         summaries={[]}
         pageSize={200}
         defaultColumnWidth={190}
@@ -293,7 +365,7 @@ describe("DataGrid", () => {
     render(
       <DataGrid
         metadata={{ ...metadata, shape: { rows: 80, columns: 2 }, filteredShape: { rows: 80, columns: 2 } }}
-        page={{ offset: 0, limit: 200, totalRows: 80, rows }}
+        page={{ offset: 0, limit: 200, totalRows: 80, columnIds: page.columnIds, rows }}
         summaries={[]}
         pageSize={200}
         defaultColumnWidth={190}
@@ -391,6 +463,51 @@ describe("DataGrid", () => {
     expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(3);
   });
 
+  it("maps a projected page by stable column ID while preserving full-schema grid coordinates", async () => {
+    const projectedPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: ["c:1"],
+      rows: [
+        {
+          id: "r:projected",
+          rowNumber: 0,
+          values: [{ kind: "number", raw: 42, display: "42", isNull: false, isNaN: false }]
+        }
+      ]
+    };
+
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 1, columns: 2 }, filteredShape: { rows: 1, columns: 2 } }}
+        page={projectedPage}
+        summaries={[]}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        projecting={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+    expect(document.querySelector('[data-grid-row="0"][data-grid-column="0"]')).toHaveAccessibleName(
+      "Loading city, row 1"
+    );
+    const projectedCell = screen.getByRole("cell", { name: "42" });
+    expect(projectedCell).toHaveAttribute("aria-colindex", "3");
+
+    const loadingCell = screen.getByRole("cell", { name: "Loading city, row 1" });
+    act(() => loadingCell.focus());
+    fireEvent.keyDown(loadingCell, { key: "ArrowRight" });
+    await waitFor(() => expect(document.activeElement).toBe(projectedCell));
+  });
+
   it("reprofiles visible columns when the filter scope changes without a revision change", async () => {
     const onVisibleSummaryColumnsChange = vi.fn();
     const props = {
@@ -466,7 +583,7 @@ describe("DataGrid", () => {
     rerender(
       <DataGrid
         metadata={{ ...metadata, shape: { rows: 0, columns: 2 }, filteredShape: { rows: 0, columns: 2 } }}
-        page={{ offset: 0, limit: 2, totalRows: 0, rows: [] }}
+        page={{ offset: 0, limit: 2, totalRows: 0, columnIds: page.columnIds, rows: [] }}
         summaries={[]}
         pageSize={2}
         defaultColumnWidth={190}

@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
+  ColumnSchema,
+  DataDiff,
   OpenWranglerRequest,
   OpenWranglerResponse,
   DataExportedResponse,
   ErrorResponse,
   FilterModel,
+  GridPage,
   OpenSessionRequest,
   PageResponse,
   SessionMetadata,
@@ -68,6 +71,7 @@ type DetachedRuntimeRole =
   | "retired runtime"
   | "saved-plan fallback runtime"
   | "failed saved-state runtime"
+  | "invalid open runtime"
   | "late-open runtime"
   | "terminal runtime";
 
@@ -336,12 +340,27 @@ export class SessionCoordinator implements vscode.Disposable {
       closing: false,
       recoveryRequired: false
     };
+    const openedMismatch = sessionOpenedResponseMismatch(request, response);
+    if (openedMismatch) {
+      await this.closeRuntimeState(session, "invalid open runtime");
+      return protocolError(
+        "invalid_runtime_response",
+        `Ignored an invalid openSession response: ${openedMismatch}`,
+        true
+      );
+    }
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
     const persisted = this.loadPersistedSession(request, response.metadata.backend);
     if (persisted) {
       let cleaningRestored = false;
       try {
-        await this.restoreCleaningState(session, persisted.cleaning, options);
+        await this.restoreCleaningState(
+          session,
+          persisted.cleaning,
+          request.columnOffset,
+          request.columnLimit,
+          options
+        );
         cleaningRestored = true;
       } catch {
         await this.closeRuntimeState(session, "saved-plan fallback runtime");
@@ -360,6 +379,15 @@ export class SessionCoordinator implements vscode.Disposable {
         session.metadata = clean.metadata;
         session.code = "";
         session.viewState = initialViewingState(clean.metadata);
+        const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
+        if (cleanMismatch) {
+          await this.closeRuntimeState(session, "invalid open runtime");
+          return protocolError(
+            "invalid_runtime_response",
+            `Ignored an invalid openSession response while reopening the immutable source: ${cleanMismatch}`,
+            true
+          );
+        }
         opened = { ...clean, summaries: [] };
         void vscode.window.showWarningMessage(
           `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
@@ -368,7 +396,14 @@ export class SessionCoordinator implements vscode.Disposable {
       if (cleaningRestored) {
         let page: PageResponse;
         try {
-          page = await this.restoreViewingState(session, persisted.view, request.pageSize, options);
+          page = await this.restoreViewingState(
+            session,
+            persisted.view,
+            request.pageSize,
+            request.columnOffset,
+            request.columnLimit,
+            options
+          );
         } catch {
           await this.closeRuntimeState(session, "failed saved-state runtime");
           return protocolError(
@@ -625,7 +660,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
 
-    const mismatch = responseMismatch(publicRequest, response, requestRuntimeId);
+    const mismatch = responseMismatch(publicRequest, response, requestRuntimeId, session.metadata.schema);
     if (mismatch) {
       if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
       return protocolError(
@@ -999,15 +1034,19 @@ export class SessionCoordinator implements vscode.Disposable {
     session: RuntimeSessionState,
     state: DecodedPersistedSessionState,
     pageSize: number,
+    columnOffset: number,
+    columnLimit: number,
     options?: BridgeRequestOptions
   ): Promise<PageResponse> {
-    await this.restoreCleaningState(session, state.cleaning, options);
-    return this.restoreViewingState(session, state.view, pageSize, options);
+    await this.restoreCleaningState(session, state.cleaning, columnOffset, columnLimit, options);
+    return this.restoreViewingState(session, state.view, pageSize, columnOffset, columnLimit, options);
   }
 
   private async restoreCleaningState(
     session: RuntimeSessionState,
     cleaning: PersistedCleaningState,
+    columnOffset: number,
+    columnLimit: number,
     options?: BridgeRequestOptions
   ): Promise<void> {
     for (const step of cleaning.steps) {
@@ -1017,7 +1056,9 @@ export class SessionCoordinator implements vscode.Disposable {
         revision: session.runtimeRevision,
         step,
         offset: 0,
-        limit: 1
+        limit: 1,
+        columnOffset,
+        columnLimit
       };
       const preview = await session.delegate.request(previewRequest, options);
       if (
@@ -1034,7 +1075,9 @@ export class SessionCoordinator implements vscode.Disposable {
         sessionId: session.runtimeId,
         revision: session.runtimeRevision,
         offset: 0,
-        limit: 1
+        limit: 1,
+        columnOffset,
+        columnLimit
       };
       const applied = await session.delegate.request(applyRequest, options);
       if (applied.kind !== "planUpdated" || responseMismatch(applyRequest, applied, session.runtimeId) !== undefined) {
@@ -1053,7 +1096,9 @@ export class SessionCoordinator implements vscode.Disposable {
         step: cleaning.draftStep,
         replaceStepId: cleaning.draftReplacesStepId,
         offset: 0,
-        limit: 1
+        limit: 1,
+        columnOffset,
+        columnLimit
       };
       const preview = await session.delegate.request(previewRequest, options);
       if (
@@ -1072,14 +1117,40 @@ export class SessionCoordinator implements vscode.Disposable {
     session: RuntimeSessionState,
     savedView: PersistedViewingState | undefined,
     pageSize: number,
+    columnOffset: number,
+    columnLimit: number,
     options?: BridgeRequestOptions
   ): Promise<PageResponse> {
     if (!savedView)
-      return this.restoreOneViewingState(session, emptyConfirmedViewingState(), pageSize, "empty", options);
+      return this.restoreOneViewingState(
+        session,
+        emptyConfirmedViewingState(),
+        pageSize,
+        columnOffset,
+        columnLimit,
+        "empty",
+        options
+      );
     try {
-      return await this.restoreOneViewingState(session, savedView, pageSize, "saved", options);
+      return await this.restoreOneViewingState(
+        session,
+        savedView,
+        pageSize,
+        columnOffset,
+        columnLimit,
+        "saved",
+        options
+      );
     } catch {
-      return this.restoreOneViewingState(session, emptyConfirmedViewingState(), pageSize, "empty", options);
+      return this.restoreOneViewingState(
+        session,
+        emptyConfirmedViewingState(),
+        pageSize,
+        columnOffset,
+        columnLimit,
+        "empty",
+        options
+      );
     }
   }
 
@@ -1087,6 +1158,8 @@ export class SessionCoordinator implements vscode.Disposable {
     session: RuntimeSessionState,
     view: PersistedViewingState,
     pageSize: number,
+    columnOffset: number,
+    columnLimit: number,
     label: "saved" | "empty",
     options?: BridgeRequestOptions
   ): Promise<PageResponse> {
@@ -1100,10 +1173,15 @@ export class SessionCoordinator implements vscode.Disposable {
         viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}:${suffix}`,
         offset,
         limit: restoredPageSize,
+        columnOffset,
+        columnLimit,
         filterModel: view.filterModel
       };
       const response = await session.delegate.request(pageRequest, options);
-      if (response.kind !== "page" || responseMismatch(pageRequest, response, session.runtimeId) !== undefined) {
+      if (
+        response.kind !== "page" ||
+        responseMismatch(pageRequest, response, session.runtimeId, session.metadata.schema) !== undefined
+      ) {
         throw new Error("Could not restore the saved viewing query.");
       }
       return response;
@@ -1143,7 +1221,16 @@ export class SessionCoordinator implements vscode.Disposable {
         code: "",
         viewState: initialViewingState(response.metadata)
       };
-      await this.restoreRuntimeState(candidate, persisted, 1, options);
+      const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response);
+      if (openedMismatch) throw new Error(openedMismatch);
+      await this.restoreRuntimeState(
+        candidate,
+        persisted,
+        1,
+        session.openRequest.columnOffset,
+        session.openRequest.columnLimit,
+        options
+      );
     } catch {
       if (candidate) await this.closeRuntimeState(candidate, "recovery candidate");
       return false;
@@ -1288,7 +1375,8 @@ function isCurrentLogicalView(session: CoordinatedSession, options?: BridgeReque
 function responseMismatch(
   request: SessionBoundRequest,
   response: OpenWranglerResponse,
-  runtimeSessionId: string
+  runtimeSessionId: string,
+  confirmedPageSchema?: readonly ColumnSchema[]
 ): string | undefined {
   const expectedViewRequestId = requestViewId(request);
   if (response.kind === "error") {
@@ -1308,13 +1396,19 @@ function responseMismatch(
   }
 
   switch (request.kind) {
-    case "getPage":
+    case "getPage": {
       if (response.kind !== "page") return `runtime returned ${response.kind}`;
       if (response.viewRequestId !== request.viewRequestId) return "page correlation did not match";
       if (response.revision !== request.revision) {
         return `page revision ${response.revision} did not match ${request.revision}`;
       }
-      return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+      const pageMetadataMismatch = metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+      if (pageMetadataMismatch) return pageMetadataMismatch;
+      if (confirmedPageSchema && !isDeepStrictEqual(response.metadata.schema, confirmedPageSchema)) {
+        return "page metadata schema changed without a revision";
+      }
+      return projectedPageMismatch(response.page, confirmedPageSchema ?? response.metadata.schema, request);
+    }
     case "getSummary":
       if (response.kind !== "summary") return `runtime returned ${response.kind}`;
       if (response.viewRequestId !== request.viewRequestId) return "summary correlation did not match";
@@ -1339,7 +1433,11 @@ function responseMismatch(
       if (response.revision !== request.revision + 1) {
         return `preview revision ${response.revision} did not follow ${request.revision}`;
       }
-      return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+      return (
+        metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId) ??
+        projectedPageMismatch(response.page, response.metadata.schema, request) ??
+        dataDiffSchemaMismatch(response.diff, response.metadata.schema)
+      );
     case "inspectStep":
       if (response.kind !== "stepInspection") return `runtime returned ${response.kind}`;
       if (response.stepId !== request.stepId) {
@@ -1348,13 +1446,11 @@ function responseMismatch(
       if (response.revision !== request.revision) {
         return `inspection revision ${response.revision} did not match ${request.revision}`;
       }
-      if (response.inputPage.offset !== request.offset || response.outputPage.offset !== request.offset) {
-        return `inspection page offset did not match ${request.offset}`;
-      }
-      if (response.inputPage.limit !== request.limit || response.outputPage.limit !== request.limit) {
-        return `inspection page limit did not match ${request.limit}`;
-      }
-      return undefined;
+      return (
+        projectedPageMismatch(response.inputPage, response.inputSchema, request, "inspection input page") ??
+        projectedPageMismatch(response.outputPage, response.outputSchema, request, "inspection output page") ??
+        dataDiffSchemaMismatch(response.diff, response.outputSchema)
+      );
     case "applyDraft":
     case "discardDraft":
     case "undoStep": {
@@ -1367,7 +1463,10 @@ function responseMismatch(
       if (response.revision !== request.revision + 1) {
         return `plan revision ${response.revision} did not follow ${request.revision}`;
       }
-      return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+      return (
+        metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId) ??
+        projectedPageMismatch(response.page, response.metadata.schema, request)
+      );
     }
     case "exportData":
       if (response.kind !== "dataExported") return `runtime returned ${response.kind}`;
@@ -1382,6 +1481,54 @@ function responseMismatch(
         ? undefined
         : `runtime acknowledged session ${response.sessionId} instead of ${runtimeSessionId}`;
   }
+}
+
+function sessionOpenedResponseMismatch(
+  request: OpenSessionRequest,
+  response: SessionOpenedResponse
+): string | undefined {
+  if (response.page.offset !== 0) return `page offset ${response.page.offset} did not match 0`;
+  if (response.page.limit !== request.pageSize) {
+    return `page limit ${response.page.limit} did not match ${request.pageSize}`;
+  }
+  return projectedPageMismatch(response.page, response.metadata.schema, {
+    offset: 0,
+    limit: request.pageSize,
+    columnOffset: request.columnOffset,
+    columnLimit: request.columnLimit
+  });
+}
+
+function projectedPageMismatch(
+  page: GridPage,
+  schema: readonly ColumnSchema[],
+  request: { offset: number; limit: number; columnOffset: number; columnLimit: number },
+  label = "page"
+): string | undefined {
+  if (page.offset !== request.offset) return `${label} offset ${page.offset} did not match ${request.offset}`;
+  if (page.limit !== request.limit) return `${label} limit ${page.limit} did not match ${request.limit}`;
+  const expectedColumnIds = schema
+    .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+    .map((column) => column.id);
+  if (!isDeepStrictEqual(page.columnIds, expectedColumnIds)) {
+    return `${label} column identities did not match the requested projection`;
+  }
+  if (page.rows.length > request.limit) return `${label} returned more than ${request.limit} rows`;
+  if (page.rows.some((row) => row.values.length !== expectedColumnIds.length)) {
+    return `${label} row width did not match its projected column identities`;
+  }
+  return undefined;
+}
+
+function dataDiffSchemaMismatch(diff: DataDiff, outputSchema: readonly ColumnSchema[]): string | undefined {
+  for (const cell of diff.cells) {
+    const column = outputSchema.find((candidate) => candidate.id === cell.columnId);
+    if (!column) return `diff cell named unknown output column identity ${cell.columnId}`;
+    if (column.name !== cell.column) {
+      return `diff cell label ${cell.column} did not match output column ${column.name}`;
+    }
+  }
+  return undefined;
 }
 
 function metadataResponseMismatch(
@@ -1486,7 +1633,7 @@ function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
 }
 
 function stepInspectionKey(request: Extract<SessionBoundRequest, { kind: "inspectStep" }>): string {
-  return `${request.revision}:${request.stepId}:${request.offset}:${request.limit}`;
+  return `${request.revision}:${request.stepId}:${request.offset}:${request.limit}:${request.columnOffset}:${request.columnLimit}`;
 }
 
 function publicOpenedResponse(

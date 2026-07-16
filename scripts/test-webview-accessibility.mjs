@@ -146,6 +146,7 @@ async function verifyWideGridPerformance(browser) {
     await page.waitForSelector(`[data-grid-row="${row}"]`);
     uncached.push(performance.now() - started);
   }
+  await assertProjectedHarnessClean(page, "wide-grid performance");
   await page.close();
 
   const cachedP95 = percentile(cached, 0.95);
@@ -327,6 +328,18 @@ async function verifyGridKeyboardWorkflow(browser) {
   const scroller = page.locator("[data-testid='data-grid-scroller']");
   const firstCell = page.locator('[data-grid-row="0"][data-grid-column="0"]');
   await firstCell.waitFor();
+  const initialProjectionIsExact = await page.evaluate(() => {
+    const payload = globalThis.openWranglerSessionPayload;
+    const expected = payload.metadata.schema.slice(0, 16).map((column) => column.id);
+    return (
+      payload.page.columnIds.length === expected.length &&
+      payload.page.columnIds.every((columnId, index) => columnId === expected[index]) &&
+      payload.page.rows.every((row) => row.values.length === expected.length)
+    );
+  });
+  if (!initialProjectionIsExact) {
+    throw new Error("Wide-grid browser harness did not start from an exact 16-column projected page.");
+  }
   await firstCell.focus();
   await waitForFocusedGridCell(page, 0, 0);
 
@@ -341,11 +354,49 @@ async function verifyGridKeyboardWorkflow(browser) {
 
   await page.keyboard.press("End");
   await waitForFocusedGridCell(page, 0, 39);
+  await page.waitForFunction(() => {
+    const cell = document.querySelector('td[data-grid-row="0"][data-grid-column="39"]');
+    return (
+      cell?.textContent?.trim() === "39" &&
+      globalThis.openWranglerProjectedResponses.some(
+        (response) =>
+          response.columnOffset > 0 &&
+          response.columnOffset + response.columnIds.length ===
+            globalThis.openWranglerSessionPayload.metadata.schema.length
+      )
+    );
+  });
+  const farProjection = await page.evaluate(() => {
+    const schema = globalThis.openWranglerSessionPayload.metadata.schema;
+    return globalThis.openWranglerProjectedResponses.find(
+      (response) => response.columnOffset > 0 && response.columnOffset + response.columnIds.length === schema.length
+    );
+  });
+  const expectedFarIds = await page.evaluate(
+    ({ columnOffset, columnLimit }) =>
+      globalThis.openWranglerSessionPayload.metadata.schema
+        .slice(columnOffset, columnOffset + columnLimit)
+        .map((column) => column.id),
+    farProjection
+  );
+  const maximumPrefetchWidth = 2 * 16;
+  if (
+    !farProjection ||
+    farProjection.columnLimit > maximumPrefetchWidth ||
+    farProjection.columnIds.length > farProjection.columnLimit ||
+    farProjection.columnIds.some((columnId, index) => columnId !== expectedFarIds[index]) ||
+    farProjection.rowWidths.some((width) => width !== farProjection.columnIds.length)
+  ) {
+    throw new Error(`Far-column projection was not exact and bounded: ${JSON.stringify(farProjection)}.`);
+  }
   if ((await scroller.evaluate((element) => element.scrollLeft)) <= 0) {
     throw new Error("End did not horizontally virtualize and focus the final grid column.");
   }
   await page.keyboard.press("Home");
   await waitForFocusedGridCell(page, 0, 0);
+  await page.waitForFunction(
+    () => document.querySelector('td[data-grid-row="0"][data-grid-column="0"]')?.textContent?.trim() === "0"
+  );
 
   await scroller.evaluate((element) => {
     element.style.flex = "none";
@@ -400,8 +451,16 @@ async function verifyGridKeyboardWorkflow(browser) {
   await page.keyboard.press("ArrowRight");
   await waitForFocusedGridCell(page, rovingRow, rovingColumn + 1);
 
+  await assertProjectedHarnessClean(page, "wide-grid keyboard workflow");
   await page.close();
-  console.log("Grid arrows, paging, mouse virtualization, horizontal virtualization, and cross-block focus verified.");
+  console.log(
+    "Grid arrows, two-dimensional projected paging, exact far-column rendering, and cross-block focus verified."
+  );
+}
+
+async function assertProjectedHarnessClean(page, label) {
+  const errors = await page.evaluate(() => [...globalThis.openWranglerHarnessErrors]);
+  if (errors.length) throw new Error(`${label} reported projected-page fixture errors: ${errors.join(" ")}`);
 }
 
 async function resetDraftHarness(page) {

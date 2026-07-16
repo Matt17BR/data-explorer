@@ -30,6 +30,7 @@ const page: GridPage = {
   offset: 0,
   limit: 50,
   totalRows: 1,
+  columnIds: ["column:0"],
   rows: [
     {
       id: "row:0",
@@ -135,6 +136,7 @@ const responses: OpenWranglerResponse[] = [
       cells: [
         {
           rowNumber: 0,
+          columnId: "column:0",
           column: "value",
           before: { kind: "number", raw: 1.2, display: "1.2", isNull: false, isNaN: false },
           after: { kind: "number", raw: 1, display: "1", isNull: false, isNaN: false }
@@ -323,6 +325,8 @@ describe("protocol-v2 response validation", () => {
       page: invalidPage
     });
     expect(isOpenWranglerResponse(pageResponse({ ...page, limit: 0 }))).toBe(false);
+    expect(isOpenWranglerResponse(pageResponse({ ...page, columnIds: ["column:0", "column:0"] }))).toBe(false);
+    expect(isOpenWranglerResponse(pageResponse({ ...page, columnIds: ["unknown"] }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ id: "row:0", rowNumber: -1, values: [] }] }))).toBe(
       false
     );
@@ -339,6 +343,66 @@ describe("protocol-v2 response validation", () => {
           ]
         })
       )
+    ).toBe(false);
+  });
+
+  it("requires projected columns to follow schema order with exact row widths", () => {
+    const secondColumn = {
+      id: "column:1",
+      name: "other",
+      position: 1,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    };
+    const projectedMetadata = {
+      ...metadata,
+      shape: { rows: 1, columns: 2 },
+      filteredShape: { rows: 1, columns: 2 },
+      schema: [metadata.schema[0], secondColumn]
+    };
+    const projectedResponse = (columnIds: string[], width = columnIds.length): unknown => ({
+      kind: "page",
+      revision: 3,
+      viewRequestId: "view-1",
+      metadata: projectedMetadata,
+      page: {
+        ...page,
+        columnIds,
+        rows: [{ ...page.rows[0], values: Array.from({ length: width }, () => page.rows[0].values[0]) }]
+      }
+    });
+
+    expect(isOpenWranglerResponse(projectedResponse(["column:0", "column:1"]))).toBe(true);
+    expect(isOpenWranglerResponse(projectedResponse(["column:1", "column:0"]))).toBe(false);
+    expect(isOpenWranglerResponse(projectedResponse(["column:0", "column:1"], 1))).toBe(false);
+  });
+
+  it("binds changed-cell identities and labels to the output schema", () => {
+    const preview = responses.find((response) => response.kind === "stepPreview");
+    expect(preview?.kind).toBe("stepPreview");
+    if (preview?.kind !== "stepPreview") return;
+    const cell = preview.diff.cells[0];
+
+    expect(
+      isOpenWranglerResponse({ ...preview, diff: { ...preview.diff, cells: [{ ...cell, columnId: "unknown" }] } })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({ ...preview, diff: { ...preview.diff, cells: [{ ...cell, column: "other" }] } })
+    ).toBe(false);
+
+    const inspection = responses.find((response) => response.kind === "stepInspection");
+    expect(inspection?.kind).toBe("stepInspection");
+    if (inspection?.kind !== "stepInspection") return;
+    expect(
+      isOpenWranglerResponse({
+        ...inspection,
+        diff: {
+          ...inspection.diff,
+          changedCells: 1,
+          cells: [{ rowNumber: 0, columnId: "unknown", column: "value", before: null, after: null }]
+        }
+      })
     ).toBe(false);
   });
 
@@ -403,7 +467,9 @@ const requests: OpenWranglerRequest[] = [
     requestedSessionId: "runtime-candidate",
     backend: "polars",
     mode: "editing",
-    pageSize: 200
+    pageSize: 200,
+    columnOffset: 0,
+    columnLimit: 16
   },
   {
     kind: "getPage",
@@ -412,6 +478,8 @@ const requests: OpenWranglerRequest[] = [
     viewRequestId: "page-1",
     offset: 0,
     limit: 200,
+    columnOffset: 0,
+    columnLimit: 16,
     filterModel: metadata.filterModel
   },
   {
@@ -445,7 +513,9 @@ const requests: OpenWranglerRequest[] = [
     revision: 3,
     step: { id: "rename", kind: "renameColumn", params: { column: valueReference, newName: "amount" } },
     offset: 0,
-    limit: 200
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 16
   },
   {
     kind: "inspectStep",
@@ -453,11 +523,37 @@ const requests: OpenWranglerRequest[] = [
     revision: 3,
     stepId: "step-1",
     offset: 0,
-    limit: 200
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 16
   },
-  { kind: "applyDraft", sessionId: "session-1", revision: 3, offset: 0, limit: 200 },
-  { kind: "discardDraft", sessionId: "session-1", revision: 3, offset: 0, limit: 200 },
-  { kind: "undoStep", sessionId: "session-1", revision: 3, offset: 0, limit: 200 },
+  {
+    kind: "applyDraft",
+    sessionId: "session-1",
+    revision: 3,
+    offset: 0,
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 16
+  },
+  {
+    kind: "discardDraft",
+    sessionId: "session-1",
+    revision: 3,
+    offset: 0,
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 16
+  },
+  {
+    kind: "undoStep",
+    sessionId: "session-1",
+    revision: 3,
+    offset: 0,
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 16
+  },
   { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", format: "csv" },
   { kind: "closeSession", sessionId: "session-1", revision: 3 },
   { kind: "cancelRequest", targetRequestId: "request-1" }
@@ -486,7 +582,9 @@ describe("protocol-v2 request validation", () => {
         source: metadata.source,
         backend: "duckdb",
         mode: "editing",
-        pageSize: 200
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16
       })
     ).toBe(true);
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
@@ -551,7 +649,9 @@ describe("protocol-v2 request validation", () => {
       requestedSessionId: "",
       backend: "polars",
       mode: "editing",
-      pageSize: 200
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
     },
     {
       kind: "previewStep",
@@ -559,17 +659,39 @@ describe("protocol-v2 request validation", () => {
       revision: 3,
       step: { id: "bad", kind: "renameColumn", params: { columns: ["value"] } },
       offset: 0,
-      limit: 200
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 16
     },
-    { kind: "inspectStep", sessionId: "session-1", revision: 3, stepId: "", offset: 0, limit: 200 },
-    { kind: "inspectStep", sessionId: "session-1", revision: 3, stepId: "step-1", offset: -1, limit: 200 },
+    {
+      kind: "inspectStep",
+      sessionId: "session-1",
+      revision: 3,
+      stepId: "",
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    },
+    {
+      kind: "inspectStep",
+      sessionId: "session-1",
+      revision: 3,
+      stepId: "step-1",
+      offset: -1,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    },
     {
       kind: "previewStep",
       sessionId: "session-1",
       revision: 3,
       step: { id: "bad", kind: "customCode", params: { code: "   " } },
       offset: 0,
-      limit: 200
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 16
     },
     { kind: "exportData", sessionId: "session-1", revision: 3, path: "", format: "csv" },
     { kind: "exportData", sessionId: "session-1", revision: 3, path: "/tmp/out.csv", format: "json" },
@@ -578,6 +700,19 @@ describe("protocol-v2 request validation", () => {
     { kind: "closeSession", sessionId: "session-1", revision: 3, force: true }
   ])("rejects malformed boundary input: %j", (request) => {
     expect(isOpenWranglerRequest(request)).toBe(false);
+  });
+
+  it("rejects missing, fractional, negative, zero, and oversized column windows", () => {
+    const getPage = requests.find((request) => request.kind === "getPage");
+    expect(getPage?.kind).toBe("getPage");
+    if (getPage?.kind !== "getPage") return;
+
+    const { columnOffset: _columnOffset, ...withoutOffset } = getPage;
+    expect(isOpenWranglerRequest(withoutOffset)).toBe(false);
+    expect(isOpenWranglerRequest({ ...getPage, columnOffset: -1 })).toBe(false);
+    expect(isOpenWranglerRequest({ ...getPage, columnOffset: 0.5 })).toBe(false);
+    expect(isOpenWranglerRequest({ ...getPage, columnLimit: 0 })).toBe(false);
+    expect(isOpenWranglerRequest({ ...getPage, columnLimit: 257 })).toBe(false);
   });
 
   it("rejects unknown request kinds and malformed request envelopes", () => {

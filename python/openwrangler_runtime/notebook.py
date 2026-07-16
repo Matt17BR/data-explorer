@@ -7,6 +7,7 @@ from IPython.core.getipython import get_ipython
 from IPython.display import display
 
 from .engines import EngineError, UnsupportedDataFrameError, default_engine_registry
+from .protocol import MAX_PAGE_LIMIT
 
 MIME_TYPE_V2 = "application/vnd.openwrangler.viewer.v2+json"
 
@@ -34,8 +35,8 @@ def build_payload(
 ) -> dict[str, Any]:
     if not isinstance(label, str) or not label:
         raise EngineError("Notebook output label must be a non-empty string.")
-    if not isinstance(page_size, int) or isinstance(page_size, bool) or page_size < 1:
-        raise EngineError("Notebook output page_size must be a positive integer.")
+    if not isinstance(page_size, int) or isinstance(page_size, bool) or page_size < 1 or page_size > MAX_PAGE_LIMIT:
+        raise EngineError(f"Notebook output page_size must be an integer between 1 and {MAX_PAGE_LIMIT}.")
     if variable_name is not None and not _is_python_identifier(variable_name):
         raise EngineError("Notebook variable_name must be a valid Python identifier.")
 
