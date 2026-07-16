@@ -88,8 +88,7 @@ export function writeEditorSettings(userDataDirectory, settings) {
   const userDirectory = resolve(userDataDirectory, "User");
   const settingsPath = resolve(userDirectory, "settings.json");
   mkdirSync(userDirectory, { recursive: true });
-  const current = existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, "utf8")) : {};
-  writeFileSync(settingsPath, `${JSON.stringify({ ...current, ...settings }, null, 2)}\n`);
+  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
 }
 
 export function writeFakeJupyterExtension(directory) {
