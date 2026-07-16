@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from math import isnan
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import polars as pl
@@ -228,7 +228,7 @@ def test_pandas_row_order_operations_target_duplicate_and_integer_labels_positio
             [2, None, "y", "r2"],
             [1, 10.0, "x", "r3"],
         ],
-        columns=["duplicate", "duplicate", 7, "label"],
+        columns=cast(Any, ["duplicate", "duplicate", 7, "label"]),
     )
     plan = [
         bound_step(
@@ -291,7 +291,10 @@ def test_pandas_row_order_operations_target_duplicate_and_integer_labels_positio
 
 def test_pandas_optional_all_column_row_operations_exclude_no_visible_data() -> None:
     engine = PandasEngine()
-    frame = pd.DataFrame([[1, "a"], [1, "a"], [None, "b"]], columns=[7, "label"])
+    frame = pd.DataFrame(
+        [[1, "a"], [1, "a"], [None, "b"]],
+        columns=cast(Any, [7, "label"]),
+    )
     missing = bound_step("dropMissingRows", columns=[], how="any")
     duplicates = bound_step("dropDuplicates", keep="first")
 
