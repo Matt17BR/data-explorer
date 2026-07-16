@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from data_wrangler_runtime.by_example import SynthesisError, evaluate_program, normalize_by_example, synthesize_program
+from openwrangler_runtime.by_example import SynthesisError, evaluate_program, normalize_by_example, synthesize_program
 
 
 def examples(column, pairs):

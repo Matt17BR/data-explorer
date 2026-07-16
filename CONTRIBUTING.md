@@ -1,6 +1,6 @@
-# Contributing to Data Explorer
+# Contributing to Open Wrangler
 
-Data Explorer welcomes bug fixes, tests, documentation, and product improvements. Read `AGENTS.md` and the linked architecture and testing documents before making changes.
+Open Wrangler welcomes bug fixes, tests, documentation, and product improvements. Read `AGENTS.md` and the linked architecture and testing documents before making changes.
 
 ## Development setup
 
@@ -12,7 +12,7 @@ npm run build
 npm test
 ```
 
-Set `DATA_EXPLORER_PYTHON` when the development interpreter is not `.venv/bin/python`.
+Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/python`.
 
 ## Pull requests
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from data_wrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import SessionManager
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

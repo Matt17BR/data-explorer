@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
-import { DataExplorerPanel } from "../webviewPanel";
+import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 
@@ -23,10 +23,10 @@ interface JupyterLikeApi {
 
 export const registerNotebookCommands = (context: vscode.ExtensionContext, coordinator: SessionCoordinator): void => {
   context.subscriptions.push(
-    vscode.commands.registerCommand("dataExplorer.launchDataViewer", async (...args: unknown[]) => {
+    vscode.commands.registerCommand("openWrangler.launchDataViewer", async (...args: unknown[]) => {
       const variableName = variableNameFromArgs(args);
       if (!variableName) {
-        vscode.window.showWarningMessage("Data Explorer could not determine the notebook variable name to open.");
+        vscode.window.showWarningMessage("Open Wrangler could not determine the notebook variable name to open.");
         return;
       }
 
@@ -35,17 +35,17 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("dataExplorer.openNotebookVariable", async () => {
+    vscode.commands.registerCommand("openWrangler.openNotebookVariable", async () => {
       const notebook = vscode.window.activeNotebookEditor?.notebook;
       if (!notebook) {
         vscode.window.showWarningMessage(
-          "Open a Jupyter notebook before launching a notebook variable in Data Explorer."
+          "Open a Jupyter notebook before launching a notebook variable in Open Wrangler."
         );
         return;
       }
 
       const variableName = await vscode.window.showInputBox({
-        title: "Open Notebook Variable in Data Explorer",
+        title: "Open Notebook Variable in Open Wrangler",
         prompt: "Enter a Pandas or Polars dataframe variable name from the active notebook kernel.",
         validateInput: (value) =>
           /^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? undefined : "Enter a valid Python variable name."
@@ -59,7 +59,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("dataExplorer.checkJupyterIntegration", async () => {
+    vscode.commands.registerCommand("openWrangler.checkJupyterIntegration", async () => {
       const jupyter = vscode.extensions.getExtension<JupyterLikeApi>("ms-toolsai.jupyter");
       if (!jupyter) {
         vscode.window.showInformationMessage(
@@ -72,8 +72,8 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
       const kernel = notebook ? await api.kernels.getKernel(notebook) : undefined;
       vscode.window.showInformationMessage(
         kernel
-          ? "Data Explorer can access the selected Jupyter kernel."
-          : "Data Explorer found Jupyter, but no active notebook kernel is selected."
+          ? "Open Wrangler can access the selected Jupyter kernel."
+          : "Open Wrangler found Jupyter, but no active notebook kernel is selected."
       );
     })
   );
@@ -87,7 +87,7 @@ async function openLiveNotebookVariable(
 ): Promise<void> {
   const notebook = notebookUri ?? vscode.window.activeNotebookEditor?.notebook.uri;
   if (!notebook) {
-    vscode.window.showWarningMessage("Open a Jupyter notebook before launching a notebook variable in Data Explorer.");
+    vscode.window.showWarningMessage("Open a Jupyter notebook before launching a notebook variable in Open Wrangler.");
     return;
   }
 
@@ -97,7 +97,7 @@ async function openLiveNotebookVariable(
     variableName,
     uri: notebook.toString()
   };
-  DataExplorerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook)), source);
+  OpenWranglerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook)), source);
 }
 
 function variableNameFromArgs(args: unknown[]): string | undefined {

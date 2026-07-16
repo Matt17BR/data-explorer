@@ -133,7 +133,7 @@ def synthesize_program(
             "Preview the selected result carefully."
         )
     elif len(ranked) > 1:
-        warnings.append(f"{len(ranked)} programs match; Data Explorer selected the simplest deterministic program.")
+        warnings.append(f"{len(ranked)} programs match; Open Wrangler selected the simplest deterministic program.")
     return best, warnings, len(ranked)
 
 

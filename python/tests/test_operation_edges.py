@@ -7,8 +7,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from data_wrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
-from data_wrangler_runtime.operations import OperationError, validate_step
+from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
+from openwrangler_runtime.operations import OperationError, validate_step
 
 
 @pytest.fixture(params=["pandas", "polars"])

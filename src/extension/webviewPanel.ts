@@ -2,16 +2,17 @@ import * as path from "path";
 import * as vscode from "vscode";
 import type {
   DataBackend,
-  DataExplorerRequest,
-  DataExplorerResponse,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
   OperationKind,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
-import type { DataExplorerBridge } from "./dataBridge";
+import type { OpenWranglerBridge } from "./dataBridge";
+import { getExplicitSetting, getSetting } from "./configuration";
 
-export class DataExplorerPanel {
-  private static activePanel: DataExplorerPanel | undefined;
+export class OpenWranglerPanel {
+  private static activePanel: OpenWranglerPanel | undefined;
   private sessionId: string | undefined;
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
@@ -22,12 +23,12 @@ export class DataExplorerPanel {
   constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
-    private readonly bridge: DataExplorerBridge,
+    private readonly bridge: OpenWranglerBridge,
     private readonly source: SessionSource,
     private readonly backend?: DataBackend,
     private readonly initialResponse?: SessionOpenedResponse
   ) {
-    DataExplorerPanel.activePanel = this;
+    OpenWranglerPanel.activePanel = this;
     this.panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
@@ -49,7 +50,7 @@ export class DataExplorerPanel {
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) {
-          DataExplorerPanel.activePanel = this;
+          OpenWranglerPanel.activePanel = this;
           if (this.sessionId) this.bridge.setActiveSession?.(this.sessionId);
         }
       },
@@ -59,7 +60,7 @@ export class DataExplorerPanel {
   }
 
   static sendEditorAction(message: EditorActionMessage): boolean {
-    const active = DataExplorerPanel.activePanel;
+    const active = OpenWranglerPanel.activePanel;
     if (!active) return false;
     if (message.action === "openOperation" || message.action === "editLatest") {
       active.panel.reveal(active.panel.viewColumn, false);
@@ -70,13 +71,13 @@ export class DataExplorerPanel {
 
   static create(
     context: vscode.ExtensionContext,
-    bridge: DataExplorerBridge,
+    bridge: OpenWranglerBridge,
     source: SessionSource,
     backend?: DataBackend
-  ): DataExplorerPanel {
+  ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
-      "dataExplorer.viewer",
-      `Data Explorer: ${source.label}`,
+      "openWrangler.viewer",
+      `Open Wrangler: ${source.label}`,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -85,17 +86,17 @@ export class DataExplorerPanel {
       }
     );
 
-    return new DataExplorerPanel(panel, context, bridge, source, backend);
+    return new OpenWranglerPanel(panel, context, bridge, source, backend);
   }
 
   static createFromPayload(
     context: vscode.ExtensionContext,
-    bridge: DataExplorerBridge,
+    bridge: OpenWranglerBridge,
     response: SessionOpenedResponse
-  ): DataExplorerPanel {
+  ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
-      "dataExplorer.viewer",
-      `Data Explorer: ${response.metadata.source.label}`,
+      "openWrangler.viewer",
+      `Open Wrangler: ${response.metadata.source.label}`,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -104,15 +105,14 @@ export class DataExplorerPanel {
       }
     );
 
-    return new DataExplorerPanel(panel, context, bridge, response.metadata.source, response.metadata.backend, response);
+    return new OpenWranglerPanel(panel, context, bridge, response.metadata.source, response.metadata.backend, response);
   }
 
   async open(): Promise<void> {
     if (this.opening) return this.opening;
-    const configuration = vscode.workspace.getConfiguration("dataExplorer");
-    const pageSize = configuredBlockSize(configuration);
+    const pageSize = configuredBlockSize();
     const isFile = this.source.kind === "file";
-    const mode = configuration.get<"editing" | "viewing">(
+    const mode = getSetting<"editing" | "viewing">(
       isFile ? "fileStartMode" : "notebookStartMode",
       isFile ? "editing" : "viewing"
     );
@@ -129,7 +129,7 @@ export class DataExplorerPanel {
 
   dispose(): void {
     this.disposed = true;
-    if (DataExplorerPanel.activePanel === this) DataExplorerPanel.activePanel = undefined;
+    if (OpenWranglerPanel.activePanel === this) OpenWranglerPanel.activePanel = undefined;
     if (this.sessionId && !this.initialResponse) {
       void this.bridge.request({
         kind: "closeSession",
@@ -171,7 +171,7 @@ export class DataExplorerPanel {
       ...message.request,
       sessionId: this.sessionId,
       revision: this.sessionRevision
-    } as DataExplorerRequest;
+    } as OpenWranglerRequest;
     if (request.kind === "previewStep" && request.step.kind === "customCode" && !vscode.workspace.isTrusted) {
       await this.post({
         kind: "error",
@@ -184,7 +184,7 @@ export class DataExplorerPanel {
     await this.forward(request);
   }
 
-  private async forward(request: DataExplorerRequest): Promise<void> {
+  private async forward(request: OpenWranglerRequest): Promise<void> {
     try {
       const response = await this.bridge.request(request);
       if (this.disposed) {
@@ -229,13 +229,13 @@ export class DataExplorerPanel {
     }
   }
 
-  private async post(response: DataExplorerResponse): Promise<void> {
+  private async post(response: OpenWranglerResponse): Promise<void> {
     await this.panel.webview.postMessage(response);
   }
 
   private isWebviewRequest(
     message: unknown
-  ): message is { kind: "ready" } | { kind: "runtimeRequest"; request: Omit<DataExplorerRequest, "sessionId"> } {
+  ): message is { kind: "ready" } | { kind: "runtimeRequest"; request: Omit<OpenWranglerRequest, "sessionId"> } {
     if (typeof message !== "object" || message === null || !("kind" in message)) {
       return false;
     }
@@ -252,11 +252,10 @@ export class DataExplorerPanel {
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
     );
     const nonce = randomNonce();
-    const configuration = vscode.workspace.getConfiguration("dataExplorer");
-    const fetchBlockSize = configuredBlockSize(configuration);
-    const defaultColumnWidth = configuration.get<number>("defaultColumnWidth", 190);
-    const insightsOnOpen = configuration.get<boolean>("insightsOnOpen", true);
-    const filterMode = configuration.get<"basic" | "advanced">("filterMode", "basic");
+    const fetchBlockSize = configuredBlockSize();
+    const defaultColumnWidth = getSetting<number>("defaultColumnWidth", 190);
+    const insightsOnOpen = getSetting<boolean>("insightsOnOpen", true);
+    const filterMode = getSetting<"basic" | "advanced">("filterMode", "basic");
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -265,7 +264,7 @@ export class DataExplorerPanel {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
-  <title>Data Explorer</title>
+  <title>Open Wrangler</title>
 </head>
 <body data-fetch-block-size="${fetchBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}">
   <div id="root"></div>
@@ -289,14 +288,6 @@ const randomNonce = (): string => {
   return nonce;
 };
 
-function configuredBlockSize(configuration: vscode.WorkspaceConfiguration): number {
-  const inspected = configuration.inspect<number>("fetchBlockSize");
-  const explicitlyConfigured =
-    inspected?.globalValue ??
-    inspected?.workspaceValue ??
-    inspected?.workspaceFolderValue ??
-    inspected?.globalLanguageValue ??
-    inspected?.workspaceLanguageValue ??
-    inspected?.workspaceFolderLanguageValue;
-  return explicitlyConfigured ?? configuration.get<number>("pageSize", 200);
+function configuredBlockSize(): number {
+  return getExplicitSetting<number>("fetchBlockSize") ?? getSetting<number>("pageSize", 200);
 }

@@ -1,14 +1,17 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
-import type { DataExplorerBridge } from "../dataBridge";
-import { DataExplorerPanel } from "../webviewPanel";
+import type { OpenWranglerBridge } from "../dataBridge";
+import { OpenWranglerPanel } from "../webviewPanel";
+import { getSetting } from "../configuration";
+
+const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "./importOptions";
 
-export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
+export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly bridge: DataExplorerBridge
+    private readonly bridge: OpenWranglerBridge
   ) {}
 
   openCustomDocument(uri: vscode.Uri): vscode.CustomDocument {
@@ -21,40 +24,36 @@ export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEd
   async resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
     const source = fileSource(document.uri, defaultImportOptions(document.uri));
     const defaultBackend = getDefaultBackend();
-    new DataExplorerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
+    new OpenWranglerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
   }
 }
 
-export const registerFileCommands = (context: vscode.ExtensionContext, bridge: DataExplorerBridge): void => {
-  context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider(
-      "dataExplorer.viewer",
-      new DataExplorerCustomEditorProvider(context, bridge),
-      {
-        supportsMultipleEditorsPerDocument: true,
-        webviewOptions: {
-          retainContextWhenHidden: true
-        }
-      }
-    )
-  );
+export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
+  const provider = new OpenWranglerCustomEditorProvider(context, bridge);
+  const providerOptions = {
+    supportsMultipleEditorsPerDocument: true,
+    webviewOptions: {
+      retainContextWhenHidden: true
+    }
+  };
+  context.subscriptions.push(vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, providerOptions));
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("dataExplorer.openFile", async (uri?: vscode.Uri) => {
+    vscode.commands.registerCommand("openWrangler.openFile", async (uri?: vscode.Uri) => {
       const target = uri ?? vscode.window.activeTextEditor?.document.uri;
       if (!target) {
-        await vscode.commands.executeCommand("dataExplorer.openPath");
+        await vscode.commands.executeCommand("openWrangler.openPath");
         return;
       }
       if (!isEnabledFileType(target)) {
         await vscode.window.showWarningMessage(
-          `${path.extname(target.fsPath) || "This file type"} is disabled in Data Explorer settings.`
+          `${path.extname(target.fsPath) || "This file type"} is disabled in Open Wrangler settings.`
         );
         return;
       }
 
       try {
-        DataExplorerPanel.create(
+        OpenWranglerPanel.create(
           context,
           bridge,
           fileSource(target, await promptImportOptions(target)),
@@ -67,10 +66,10 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: D
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("dataExplorer.openPath", async () => {
+    vscode.commands.registerCommand("openWrangler.openPath", async () => {
       const enabledFileTypes = getEnabledFileTypes();
       if (enabledFileTypes.length === 0) {
-        await vscode.window.showWarningMessage("Enable at least one Data Explorer file type in Settings.");
+        await vscode.window.showWarningMessage("Enable at least one Open Wrangler file type in Settings.");
         return;
       }
       const files = await vscode.window.showOpenDialog({
@@ -85,7 +84,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: D
       }
 
       try {
-        DataExplorerPanel.create(
+        OpenWranglerPanel.create(
           context,
           bridge,
           fileSource(selected, await promptImportOptions(selected)),
@@ -107,16 +106,13 @@ const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOption
 });
 
 const getDefaultBackend = (): DataBackend | undefined => {
-  const configured = vscode.workspace
-    .getConfiguration("dataExplorer")
-    .get<DataBackend | "auto">("defaultBackend", "auto");
+  const configured = getSetting<DataBackend | "auto">("defaultBackend", "auto");
   return configured === "auto" ? undefined : configured;
 };
 
 const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"];
 
-const getEnabledFileTypes = (): string[] =>
-  vscode.workspace.getConfiguration("dataExplorer").get<string[]>("enabledFileTypes", allFileTypes);
+const getEnabledFileTypes = (): string[] => getSetting<string[]>("enabledFileTypes", allFileTypes);
 
 const isEnabledFileType = (uri: vscode.Uri): boolean =>
   getEnabledFileTypes().includes(path.extname(uri.fsPath).slice(1).toLowerCase());

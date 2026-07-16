@@ -10,7 +10,7 @@ from typing import Any
 
 import polars as pl
 
-from data_wrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import SessionManager
 
 PAGE_SIZE = 200
 SAMPLES = 20
@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
 
-    with tempfile.TemporaryDirectory(prefix="data-explorer-benchmark-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="openwrangler-benchmark-") as temporary:
         directory = args.fixture_dir or Path(temporary)
         report = run_benchmark(directory, smoke=args.smoke)
     if args.strict and not args.smoke:

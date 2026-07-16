@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import type {
-  DataExplorerRequest,
-  DataExplorerResponse,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
   DataExportedResponse,
   ErrorResponse,
   OpenSessionRequest,
@@ -12,7 +12,7 @@ import type {
   SessionBoundRequest
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
-import type { BridgeRequestOptions, DataExplorerBridge } from "./dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import {
   decodePersistedSession,
   persistedStateFromMetadata,
@@ -27,7 +27,7 @@ interface CoordinatedSession {
   publicRevision: number;
   runtimeRevision: number;
   openRequest: OpenSessionRequest;
-  delegate: DataExplorerBridge;
+  delegate: OpenWranglerBridge;
   tail: Promise<void>;
   metadata: SessionMetadata;
   code: string;
@@ -53,7 +53,7 @@ export interface SessionCoordinatorDiagnostics {
 
 export class SessionCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, CoordinatedSession>();
-  private readonly pendingOpens = new Map<DataExplorerBridge, number>();
+  private readonly pendingOpens = new Map<OpenWranglerBridge, number>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
   private disposed = false;
@@ -63,7 +63,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
-  createBridge(delegate: DataExplorerBridge): DataExplorerBridge {
+  createBridge(delegate: OpenWranglerBridge): OpenWranglerBridge {
     return {
       request: (request, options) => this.request(delegate, request, options),
       setActiveSession: (sessionId) => this.setActive(sessionId)
@@ -111,7 +111,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
-    if (!session) throw new Error("Open a dataframe in Data Explorer before exporting cleaned data.");
+    if (!session) throw new Error("Open a dataframe in Open Wrangler before exporting cleaned data.");
     const response = await this.request(session.delegate, {
       kind: "exportData",
       sessionId: session.publicId,
@@ -138,12 +138,12 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private async request(
-    delegate: DataExplorerBridge,
-    request: DataExplorerRequest,
+    delegate: OpenWranglerBridge,
+    request: OpenWranglerRequest,
     options?: BridgeRequestOptions
-  ): Promise<DataExplorerResponse> {
+  ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
-      return protocolError("coordinator_disposed", "The Data Explorer session coordinator has been disposed.", false);
+      return protocolError("coordinator_disposed", "The Open Wrangler session coordinator has been disposed.", false);
     }
     if (request.kind === "openSession") {
       return this.open(delegate, request, options);
@@ -154,7 +154,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
     const session = this.sessions.get(request.sessionId);
     if (!session) {
-      return protocolError("unknown_session", `Unknown Data Explorer session: ${request.sessionId}`, true);
+      return protocolError("unknown_session", `Unknown Open Wrangler session: ${request.sessionId}`, true);
     }
     if (request.revision !== session.publicRevision) {
       return protocolError(
@@ -174,10 +174,10 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private async open(
-    delegate: DataExplorerBridge,
+    delegate: OpenWranglerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions
-  ): Promise<DataExplorerResponse> {
+  ): Promise<OpenWranglerResponse> {
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     try {
       return await this.openTracked(delegate, request, options);
@@ -190,10 +190,10 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private async openTracked(
-    delegate: DataExplorerBridge,
+    delegate: OpenWranglerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions
-  ): Promise<DataExplorerResponse> {
+  ): Promise<OpenWranglerResponse> {
     const response = await delegate.request(request, options);
     if (response.kind !== "sessionOpened") return response;
 
@@ -248,7 +248,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.code = "";
         opened = clean;
         void vscode.window.showWarningMessage(
-          `Data Explorer could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
+          `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
         );
       }
     }
@@ -261,7 +261,7 @@ export class SessionCoordinator implements vscode.Disposable {
     session: CoordinatedSession,
     publicRequest: SessionBoundRequest,
     options?: BridgeRequestOptions
-  ): Promise<DataExplorerResponse> {
+  ): Promise<OpenWranglerResponse> {
     let requestRuntimeRevision = session.runtimeRevision;
     const runtimeRequest = (): SessionBoundRequest =>
       ({
@@ -270,7 +270,7 @@ export class SessionCoordinator implements vscode.Disposable {
         revision: session.runtimeRevision
       }) as SessionBoundRequest;
 
-    let response: DataExplorerResponse;
+    let response: OpenWranglerResponse;
     try {
       response = await session.delegate.request(runtimeRequest(), options);
     } catch (error) {
@@ -337,8 +337,9 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private loadPersistedSession(request: OpenSessionRequest): PersistedSessionState | undefined {
+    const key = persistenceKey(request.source);
     const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
-    return decodePersistedSession(stored?.[persistenceKey(request.source)]);
+    return decodePersistedSession(stored?.[key]);
   }
 
   private async persistSession(session: CoordinatedSession): Promise<void> {
@@ -446,7 +447,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
   }
 
-  private releaseDelegateIfIdle(delegate: DataExplorerBridge): void {
+  private releaseDelegateIfIdle(delegate: OpenWranglerBridge): void {
     if (
       !this.pendingOpens.has(delegate) &&
       ![...this.sessions.values()].some((session) => session.delegate === delegate)
@@ -468,7 +469,7 @@ function publicOpenedResponse(
   return { ...response, metadata: publicMetadata(response.metadata, publicId, publicRevision) };
 }
 
-function isUnknownRuntimeSession(response: DataExplorerResponse): response is ErrorResponse {
+function isUnknownRuntimeSession(response: OpenWranglerResponse): response is ErrorResponse {
   return (
     response.kind === "error" && response.code === "engine_error" && response.message.startsWith("Unknown session:")
   );

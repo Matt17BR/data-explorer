@@ -28,10 +28,10 @@ export function writeEditorAcceptanceHarness(directory) {
   writeFileSync(
     resolve(directory, "package.json"),
     JSON.stringify({
-      name: "data-explorer-packaged-test-harness",
-      displayName: "Data Explorer packaged test harness",
+      name: "openwrangler-packaged-test-harness",
+      displayName: "Open Wrangler packaged test harness",
       version: "0.0.0",
-      publisher: "data-explorer-tests",
+      publisher: "openwrangler-tests",
       engines: { vscode: "^1.105.0" },
       main: "./extension.js",
       activationEvents: ["*"]
@@ -45,13 +45,13 @@ const vscode = require("vscode");
 exports.activate = async function () {
   let outcome;
   try {
-    await require(process.env.DATA_EXPLORER_TEST_MODULE).run();
+    await require(process.env.OPEN_WRANGLER_TEST_MODULE).run();
     outcome = { ok: true };
   } catch (error) {
     console.error(error);
     outcome = { ok: false, error: error instanceof Error ? error.stack || error.message : String(error) };
   }
-  fs.writeFileSync(process.env.DATA_EXPLORER_TEST_RESULT, JSON.stringify(outcome));
+  fs.writeFileSync(process.env.OPEN_WRANGLER_TEST_RESULT, JSON.stringify(outcome));
   setTimeout(() => void vscode.commands.executeCommand("workbench.action.quit"), 2_000);
   setTimeout(() => void vscode.commands.executeCommand("workbench.action.closeWindow"), 500);
 };
@@ -65,7 +65,7 @@ export function writeFakeJupyterExtension(directory) {
     resolve(directory, "package.json"),
     JSON.stringify({
       name: "jupyter",
-      displayName: "Data Explorer stable Jupyter API acceptance double",
+      displayName: "Open Wrangler stable Jupyter API acceptance double",
       version: "0.0.0",
       publisher: "ms-toolsai",
       engines: { vscode: "^1.105.0" },
@@ -89,7 +89,7 @@ for line in sys.stdin:
         code = base64.b64decode(request["code"]).decode("utf-8")
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            exec(compile(code, "<data-explorer-kernel>", "exec"), namespace, namespace)
+            exec(compile(code, "<openwrangler-kernel>", "exec"), namespace, namespace)
         response = {"id": request["id"], "ok": True, "text": output.getvalue()}
     except BaseException:
         response = {
@@ -149,7 +149,7 @@ class AcceptanceKernel {
 
   ensureProcess() {
     if (this.process) return this.process;
-    const executable = process.env.DATA_EXPLORER_TEST_PYTHON || "python3";
+    const executable = process.env.OPEN_WRANGLER_TEST_PYTHON || "python3";
     const child = spawn(executable, [path.join(__dirname, "kernel_server.py")], {
       cwd: __dirname,
       env: { ...process.env, PYTHONPATH: "" }
@@ -255,7 +255,7 @@ export async function runEditorAcceptancePhase({
   resultPath
 }) {
   rmSync(resultPath, { force: true });
-  const cdpPort = process.env.DATA_EXPLORER_CAPTURE_EDITOR_SCREENSHOTS ? await reservePort() : undefined;
+  const cdpPort = process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ? await reservePort() : undefined;
   const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
   const sharedDataArgs = editor.sharedDataDir ? ["--shared-data-dir", resolve(userData, "shared-data")] : [];
   const child = spawn(
@@ -280,13 +280,13 @@ export async function runEditorAcceptancePhase({
     {
       env: {
         ...process.env,
-        DATA_EXPLORER_EXTENSION_TESTS: "1",
-        DATA_EXPLORER_TEST_PHASE: phase,
-        DATA_EXPLORER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
-        ...(cdpPort ? { DATA_EXPLORER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
-        DATA_EXPLORER_TEST_PYTHON: python,
-        DATA_EXPLORER_TEST_MODULE: testModule,
-        DATA_EXPLORER_TEST_RESULT: resultPath
+        OPEN_WRANGLER_EXTENSION_TESTS: "1",
+        OPEN_WRANGLER_TEST_PHASE: phase,
+        OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
+        ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
+        OPEN_WRANGLER_TEST_PYTHON: python,
+        OPEN_WRANGLER_TEST_MODULE: testModule,
+        OPEN_WRANGLER_TEST_RESULT: resultPath
       },
       encoding: "utf8",
       stdio: "inherit"

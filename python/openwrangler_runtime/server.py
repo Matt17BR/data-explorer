@@ -127,7 +127,7 @@ def main() -> None:
             response = error_response(str(error), detail=traceback.format_exc())
         write(response_envelope(request_id, response))
 
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="data-explorer") as executor:
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="openwrangler") as executor:
         for line in sys.stdin:
             if not line.strip():
                 continue

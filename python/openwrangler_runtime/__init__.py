@@ -1,4 +1,4 @@
-"""Runtime package for Data Explorer."""
+"""Runtime package for Open Wrangler."""
 
 from .session import SessionManager
 

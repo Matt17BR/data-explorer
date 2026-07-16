@@ -22,7 +22,7 @@ export function activate(context: RendererContext): RendererApi {
       if (!payload) {
         const error = document.createElement("p");
         error.setAttribute("role", "alert");
-        error.textContent = "This Data Explorer output is malformed or uses an unsupported MIME version.";
+        error.textContent = "This Open Wrangler output is malformed or uses an unsupported MIME version.";
         element.appendChild(error);
         return;
       }
@@ -33,7 +33,7 @@ export function activate(context: RendererContext): RendererApi {
 
 function renderPayload(payload: NotebookOutputPayload, context: RendererContext): HTMLElement {
   const root = document.createElement("section");
-  root.className = "data-explorer-notebook";
+  root.className = "openwrangler-notebook";
 
   const header = document.createElement("header");
   header.style.alignItems = "center";
@@ -42,13 +42,13 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   header.style.justifyContent = "space-between";
 
   const title = document.createElement("span");
-  title.textContent = `Data Explorer preview: ${payload.metadata.source.label} (${payload.metadata.backend}) - ${payload.metadata.shape.rows} x ${payload.metadata.shape.columns}`;
+  title.textContent = `Open Wrangler preview: ${payload.metadata.source.label} (${payload.metadata.backend}) - ${payload.metadata.shape.rows} x ${payload.metadata.shape.columns}`;
   header.appendChild(title);
 
   const openButton = document.createElement("button");
   openButton.type = "button";
-  openButton.textContent = "Open Data Explorer";
-  openButton.title = "Open this notebook output in the full Data Explorer view";
+  openButton.textContent = "Open in Open Wrangler";
+  openButton.title = "Open this notebook output in the full Open Wrangler view";
   openButton.style.background = "var(--vscode-button-background)";
   openButton.style.border = "0";
   openButton.style.borderRadius = "3px";
@@ -57,7 +57,7 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   openButton.style.padding = "4px 8px";
   openButton.addEventListener("click", () => {
     context.postMessage?.({
-      kind: "openInDataExplorer",
+      kind: "openInOpenWrangler",
       payload
     });
   });
@@ -71,7 +71,7 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   root.appendChild(scroller);
 
   const table = document.createElement("table");
-  table.setAttribute("aria-label", `Data Explorer snapshot of ${payload.metadata.source.label}`);
+  table.setAttribute("aria-label", `Open Wrangler snapshot of ${payload.metadata.source.label}`);
   table.style.borderCollapse = "collapse";
   table.style.width = "max-content";
   table.style.minWidth = "100%";

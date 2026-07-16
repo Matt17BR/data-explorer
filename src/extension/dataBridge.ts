@@ -1,4 +1,4 @@
-import type { DataExplorerRequest, DataExplorerResponse } from "../shared/protocol";
+import type { OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
 
 export interface CancellationTokenLike {
   readonly isCancellationRequested: boolean;
@@ -11,8 +11,8 @@ export interface BridgeRequestOptions {
   timeoutMs?: number;
 }
 
-export interface DataExplorerBridge {
-  request(request: DataExplorerRequest, options?: BridgeRequestOptions): Promise<DataExplorerResponse>;
+export interface OpenWranglerBridge {
+  request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   setActiveSession?(sessionId: string | undefined): void;
   onIdle?(): void;
 }

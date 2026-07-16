@@ -2,15 +2,16 @@ import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type {
-  DataExplorerRequest,
-  DataExplorerResponse,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope
 } from "../../shared/protocol";
 import { PROTOCOL_VERSION } from "../../shared/protocol";
-import type { BridgeRequestOptions, DataExplorerBridge } from "../dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge } from "../dataBridge";
 import { RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
+import { getSetting } from "../configuration";
 
 interface JupyterExtensionApi {
   kernels: {
@@ -22,7 +23,7 @@ interface JupyterKernel {
   executeCode(code: string, token: vscode.CancellationToken): AsyncIterable<unknown> | Promise<unknown> | unknown;
 }
 
-export class KernelBridge implements DataExplorerBridge {
+export class KernelBridge implements OpenWranglerBridge {
   private readonly lifecycle: RestartableKernel<JupyterKernel>;
   private readonly bootstrapCode: string;
 
@@ -34,7 +35,7 @@ export class KernelBridge implements DataExplorerBridge {
     this.bootstrapCode = buildKernelBootstrapCode(readRuntimeFiles(path.join(this.context.extensionPath, "python")));
   }
 
-  async request(request: DataExplorerRequest, options: BridgeRequestOptions = {}): Promise<DataExplorerResponse> {
+  async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
     const requestId = randomUUID();
     const envelope: RuntimeRequestEnvelope = {
       protocolVersion: PROTOCOL_VERSION,
@@ -47,12 +48,12 @@ export class KernelBridge implements DataExplorerBridge {
     const marker = requestId.replace(/-/g, "");
     const payload = Buffer.from(JSON.stringify(envelope), "utf8").toString("base64");
     const code = `
-import base64 as __de_base64
-import data_wrangler_runtime.kernel_agent as __de_kernel_agent
-__de_payload = __de_base64.b64decode("${payload}").decode("utf-8")
-print("__DATA_EXPLORER_START_${marker}__")
-print(__de_kernel_agent.dispatch_json(__de_payload))
-print("__DATA_EXPLORER_END_${marker}__")
+import base64 as __ow_base64
+import openwrangler_runtime.kernel_agent as __ow_kernel_agent
+__ow_payload = __ow_base64.b64decode("${payload}").decode("utf-8")
+print("__OPEN_WRANGLER_START_${marker}__")
+print(__ow_kernel_agent.dispatch_json(__ow_payload))
+print("__OPEN_WRANGLER_END_${marker}__")
 `;
 
     const output = await this.lifecycle.run(
@@ -63,7 +64,7 @@ print("__DATA_EXPLORER_END_${marker}__")
 
     const parsed: unknown = JSON.parse(parseMarkedJson(output, marker));
     if (!isRuntimeResponseEnvelope(parsed) || parsed.requestId !== requestId) {
-      throw new Error("Data Explorer kernel agent returned an invalid or stale protocol response.");
+      throw new Error("Open Wrangler kernel agent returned an invalid or stale protocol response.");
     }
     return parsed.response;
   }
@@ -72,9 +73,9 @@ print("__DATA_EXPLORER_END_${marker}__")
     await this.executePython(
       kernel,
       `${this.bootstrapCode}
-import data_wrangler_runtime.kernel_agent as __de_kernel_agent
-import data_wrangler_runtime.notebook as __de_notebook
-__de_notebook.register_formatters()
+import openwrangler_runtime.kernel_agent as __ow_kernel_agent
+import openwrangler_runtime.notebook as __ow_notebook
+__ow_notebook.register_formatters()
 `,
       options
     );
@@ -84,8 +85,7 @@ __de_notebook.register_formatters()
     const tokenSource = new vscode.CancellationTokenSource();
     const cancellation = options.cancellation?.onCancellationRequested(() => tokenSource.cancel());
     if (options.cancellation?.isCancellationRequested) tokenSource.cancel();
-    const timeoutMs =
-      options.timeoutMs ?? vscode.workspace.getConfiguration("dataExplorer").get<number>("requestTimeoutMs", 30_000);
+    const timeoutMs = options.timeoutMs ?? getSetting<number>("requestTimeoutMs", 30_000);
     try {
       return await withKernelTimeout(outputsToText(kernel.executeCode(code, tokenSource.token)), timeoutMs, () =>
         tokenSource.cancel()
@@ -98,7 +98,7 @@ __de_notebook.register_formatters()
 
   private async acquireKernel(): Promise<JupyterKernel> {
     if (!vscode.workspace.isTrusted) {
-      throw new Error("Trust this workspace before Data Explorer accesses a notebook kernel.");
+      throw new Error("Trust this workspace before Open Wrangler accesses a notebook kernel.");
     }
 
     const jupyter = vscode.extensions.getExtension<JupyterExtensionApi>("ms-toolsai.jupyter");
@@ -108,7 +108,7 @@ __de_notebook.register_formatters()
     const api = await jupyter.activate();
     const kernel = await api.kernels.getKernel(this.notebookUri);
     if (!kernel) {
-      throw new Error("Data Explorer could not access the selected Jupyter kernel for this notebook.");
+      throw new Error("Open Wrangler could not access the selected Jupyter kernel for this notebook.");
     }
     return kernel;
   }
@@ -145,12 +145,12 @@ function normalizeText(value: unknown): string {
 }
 
 function parseMarkedJson(output: string, marker: string): string {
-  const start = `__DATA_EXPLORER_START_${marker}__`;
-  const end = `__DATA_EXPLORER_END_${marker}__`;
+  const start = `__OPEN_WRANGLER_START_${marker}__`;
+  const end = `__OPEN_WRANGLER_END_${marker}__`;
   const startIndex = output.indexOf(start);
   const endIndex = output.indexOf(end);
   if (startIndex < 0 || endIndex <= startIndex) {
-    throw new Error(`Data Explorer could not parse the kernel response. Output: ${output.trim()}`);
+    throw new Error(`Open Wrangler could not parse the kernel response. Output: ${output.trim()}`);
   }
   return output.slice(startIndex + start.length, endIndex).trim();
 }

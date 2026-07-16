@@ -328,7 +328,7 @@ class SessionManager:
             destination = Path(path).expanduser().resolve()
             source_path = session.source.get("path")
             if source_path and destination == Path(str(source_path)).expanduser().resolve():
-                raise EngineError("Choose a new destination. Data Explorer never overwrites the source file.")
+                raise EngineError("Choose a new destination. Open Wrangler never overwrites the source file.")
             if not destination.parent.is_dir():
                 raise EngineError(f"Export directory does not exist: {destination.parent}")
 
@@ -581,6 +581,6 @@ class SessionManager:
         if hasattr(main, variable_name):
             return getattr(main, variable_name)
         raise EngineError(
-            "Notebook variable launch requires running the Data Explorer runtime inside the active kernel. "
+            "Notebook variable launch requires running the Open Wrangler runtime inside the active kernel. "
             f"Variable not found: {variable_name}"
         )

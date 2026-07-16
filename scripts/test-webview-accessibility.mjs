@@ -54,24 +54,23 @@ try {
 }
 
 async function verifyNotebookExpansion(browser) {
-  for (const harness of ["notebook-preview.html", "notebook-v1-preview.html"]) {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
-    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
-    const open = page.getByRole("button", { name: "Open Data Explorer" });
-    await open.waitFor();
-    await open.click();
-    await page.waitForFunction(() =>
-      globalThis.dataExplorerNotebookMessages.some((message) => message.kind === "openInDataExplorer")
-    );
-    const payload = await page.evaluate(
-      () => globalThis.dataExplorerNotebookMessages.find((message) => message.kind === "openInDataExplorer")?.payload
-    );
-    if (!payload || payload.metadata?.protocolVersion !== 2) {
-      throw new Error(`${harness} did not normalize and send a protocol v2 full-view payload.`);
-    }
-    await page.close();
+  const harness = "notebook-preview.html";
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+  const open = page.getByRole("button", { name: "Open in Open Wrangler" });
+  await open.waitFor();
+  await open.click();
+  await page.waitForFunction(() =>
+    globalThis.openWranglerNotebookMessages.some((message) => message.kind === "openInOpenWrangler")
+  );
+  const payload = await page.evaluate(
+    () => globalThis.openWranglerNotebookMessages.find((message) => message.kind === "openInOpenWrangler")?.payload
+  );
+  if (!payload || payload.metadata?.protocolVersion !== 2) {
+    throw new Error(`${harness} did not send a protocol v2 full-view payload.`);
   }
-  console.log("Notebook MIME v1/v2 full-view expansion verified.");
+  await page.close();
+  console.log("Notebook MIME v2 full-view expansion verified.");
 }
 
 if (failures.length > 0) {
@@ -148,7 +147,7 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   await waitForRuntimeRequest(page, "discardDraft");
 
   await page.evaluate(() => {
-    const payload = globalThis.dataExplorerSessionPayload;
+    const payload = globalThis.openWranglerSessionPayload;
     const step = payload.metadata.draftStep;
     const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
     window.dispatchEvent(
@@ -178,7 +177,7 @@ async function verifyCleaningKeyboardShortcuts(browser) {
 async function waitForRuntimeRequest(page, kind) {
   await page.waitForFunction(
     (requestKind) =>
-      globalThis.dataExplorerMessages.some(
+      globalThis.openWranglerMessages.some(
         (message) => message.kind === "runtimeRequest" && message.request?.kind === requestKind
       ),
     kind

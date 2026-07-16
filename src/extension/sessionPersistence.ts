@@ -1,7 +1,7 @@
 import { operationCatalog } from "../shared/operations";
 import type { FilterModel, OperationKind, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
 
-export const SESSION_STORAGE_KEY = "dataExplorer.persistedSessions.v2";
+export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v2";
 
 export interface PersistedSessionState {
   steps: TransformStep[];

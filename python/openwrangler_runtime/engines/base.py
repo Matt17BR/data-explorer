@@ -27,11 +27,11 @@ ColumnType = Literal[
     "unknown",
 ]
 
-INTERNAL_ROW_ID_PREFIX = "__data_explorer_internal_row_id_"
+INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 
 
 class EngineError(RuntimeError):
-    """Raised when a backend cannot satisfy a Data Explorer request."""
+    """Raised when a backend cannot satisfy an Open Wrangler request."""
 
 
 @dataclass(frozen=True)

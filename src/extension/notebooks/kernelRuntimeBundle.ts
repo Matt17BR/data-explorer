@@ -4,11 +4,11 @@ import * as path from "node:path";
 
 export function buildKernelBootstrapCode(files: Readonly<Record<string, string>>): string {
   const entries = Object.entries(files).sort(([left], [right]) => left.localeCompare(right));
-  if (!entries.some(([relativePath]) => relativePath === "data_wrangler_runtime/__init__.py")) {
-    throw new Error("The bundled kernel runtime is missing data_wrangler_runtime/__init__.py.");
+  if (!entries.some(([relativePath]) => relativePath === "openwrangler_runtime/__init__.py")) {
+    throw new Error("The bundled kernel runtime is missing openwrangler_runtime/__init__.py.");
   }
   for (const [relativePath] of entries) {
-    if (!/^data_wrangler_runtime\/[A-Za-z0-9_/-]+\.py$/.test(relativePath) || relativePath.includes("..")) {
+    if (!/^openwrangler_runtime\/[A-Za-z0-9_/-]+\.py$/.test(relativePath) || relativePath.includes("..")) {
       throw new Error(`Unsafe bundled kernel runtime path: ${relativePath}`);
     }
   }
@@ -16,22 +16,22 @@ export function buildKernelBootstrapCode(files: Readonly<Record<string, string>>
   const payload = Buffer.from(serialized, "utf8").toString("base64");
   const bundleId = createHash("sha256").update(serialized).digest("hex").slice(0, 16);
   return `
-import base64 as __de_bundle_base64
-import json as __de_bundle_json
-import pathlib as __de_bundle_pathlib
-import sys as __de_sys
-import tempfile as __de_bundle_tempfile
-__de_bundle_root = __de_bundle_pathlib.Path(__de_bundle_tempfile.gettempdir()) / "data-explorer-runtime" / "${bundleId}"
-__de_bundle_marker = __de_bundle_root / ".complete"
-if not __de_bundle_marker.exists():
-    __de_bundle_files = __de_bundle_json.loads(__de_bundle_base64.b64decode("${payload}").decode("utf-8"))
-    for __de_bundle_relative, __de_bundle_source in __de_bundle_files.items():
-        __de_bundle_target = __de_bundle_root / __de_bundle_relative
-        __de_bundle_target.parent.mkdir(parents=True, exist_ok=True)
-        __de_bundle_target.write_text(__de_bundle_source, encoding="utf-8")
-    __de_bundle_marker.write_text("${bundleId}", encoding="ascii")
-if str(__de_bundle_root) not in __de_sys.path:
-    __de_sys.path.insert(0, str(__de_bundle_root))
+import base64 as __ow_bundle_base64
+import json as __ow_bundle_json
+import pathlib as __ow_bundle_pathlib
+import sys as __ow_sys
+import tempfile as __ow_bundle_tempfile
+__ow_bundle_root = __ow_bundle_pathlib.Path(__ow_bundle_tempfile.gettempdir()) / "openwrangler-runtime" / "${bundleId}"
+__ow_bundle_marker = __ow_bundle_root / ".complete"
+if not __ow_bundle_marker.exists():
+    __ow_bundle_files = __ow_bundle_json.loads(__ow_bundle_base64.b64decode("${payload}").decode("utf-8"))
+    for __ow_bundle_relative, __ow_bundle_source in __ow_bundle_files.items():
+        __ow_bundle_target = __ow_bundle_root / __ow_bundle_relative
+        __ow_bundle_target.parent.mkdir(parents=True, exist_ok=True)
+        __ow_bundle_target.write_text(__ow_bundle_source, encoding="utf-8")
+    __ow_bundle_marker.write_text("${bundleId}", encoding="ascii")
+if str(__ow_bundle_root) not in __ow_sys.path:
+    __ow_sys.path.insert(0, str(__ow_bundle_root))
 `;
 }
 
@@ -47,6 +47,6 @@ export function readRuntimeFiles(runtimeRoot: string): Record<string, string> {
       }
     }
   };
-  visit(path.join(runtimeRoot, "data_wrangler_runtime"));
+  visit(path.join(runtimeRoot, "openwrangler_runtime"));
   return files;
 }

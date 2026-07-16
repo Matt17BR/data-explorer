@@ -1,6 +1,6 @@
 # Third-party notices
 
-Data Explorer is distributed under the MIT License. Its production webview bundles include the following independently licensed projects:
+Open Wrangler is distributed under the MIT License. Its production webview bundles include the following independently licensed projects:
 
 - CodeMirror and Lezer, including their bundled support packages — MIT License.
 - React, React DOM, and Scheduler — MIT License.

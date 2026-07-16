@@ -4,7 +4,7 @@ import { delimiter, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const candidates = [
-  process.env.DATA_EXPLORER_PYTHON,
+  process.env.OPEN_WRANGLER_PYTHON,
   process.platform === "win32"
     ? resolve(root, ".venv", "Scripts", "python.exe")
     : resolve(root, ".venv", "bin", "python"),

@@ -7,8 +7,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from data_wrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
-from data_wrangler_runtime.session import SessionManager
+from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
+from openwrangler_runtime.session import SessionManager
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

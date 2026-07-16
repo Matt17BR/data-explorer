@@ -37,8 +37,8 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run license:check
-      - run: npm run package -- --out data-explorer.vsix
-      - run: npm run verify:vsix -- data-explorer.vsix
+      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
 
   release:
     needs: validate
@@ -56,13 +56,13 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: npm run package -- --out data-explorer.vsix
-      - run: npm run verify:vsix -- data-explorer.vsix
-      - run: sha256sum data-explorer.vsix > data-explorer.vsix.sha256
+      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: sha256sum openwrangler.vsix > openwrangler.vsix.sha256
       - uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |
-            data-explorer.vsix
-            data-explorer.vsix.sha256
+            openwrangler.vsix
+            openwrangler.vsix.sha256

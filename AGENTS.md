@@ -1,13 +1,13 @@
-# Data Explorer agent guide
+# Open Wrangler agent guide
 
-This repository builds the open-source Data Explorer extension and its bundled Python runtime. Read this file before changing code. The product is a clean-room implementation: use public documentation and black-box behavior as references, but never copy Microsoft Data Wrangler code or assets.
+This repository builds the open-source Open Wrangler extension and its bundled Python runtime. Read this file before changing code. The product is a clean-room implementation: use public documentation and black-box behavior as references, but never copy Microsoft Data Wrangler code or assets.
 
 ## Architecture map
 
 - `src/extension/` owns VS Code APIs, runtime lifecycle, sessions, commands, custom editors, and notebook integration.
 - `src/shared/` owns the versioned messages and behavior shared by extension and webviews.
 - `src/webviews/` owns the React UI. It must remain themeable, keyboard accessible, and independent of Node APIs.
-- `python/data_wrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
+- `python/openwrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
 - `docs/architecture.md` records boundaries and invariants.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
 - `docs/reference.md` is generated from public interface registries; never edit it by hand.
@@ -44,13 +44,13 @@ npm run test:webview-acceptance
 npm run test:coverage
 npm run license:check
 npm run benchmark:runtime # required for performance/runtime changes and release candidates
-npm run test:packaged-editors -- data-explorer.vsix # after packaging
+npm run test:packaged-editors -- openwrangler.vsix # after packaging
 npx playwright-core install chromium # before local visual capture/verification
 npm run clean
 npm run build
 npm run capture:screenshots # for visible changes
-npm run package -- --out data-explorer.vsix
-npm run verify:vsix -- data-explorer.vsix
+npm run package -- --out openwrangler.vsix
+npm run verify:vsix -- openwrangler.vsix
 ```
 
 For editor-facing changes, also complete the relevant scenarios in `docs/testing.md` in both VS Code and Cursor using isolated profiles.

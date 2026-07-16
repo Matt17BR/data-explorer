@@ -2,7 +2,7 @@ export * from "./protocol.generated";
 
 import type {
   ColumnVisualization,
-  DataExplorerRequest,
+  OpenWranglerRequest,
   DatasetStats,
   SessionSource,
   TypedCellKind
@@ -16,9 +16,9 @@ export type CategoricalVisualization = Extract<ColumnVisualization, { kind: "cat
 export type BooleanVisualization = Extract<ColumnVisualization, { kind: "boolean" }>;
 export type DatetimeVisualization = Extract<ColumnVisualization, { kind: "datetime" }>;
 export type MissingValueByColumn = DatasetStats["missingValuesByColumn"][number];
-export type SessionBoundRequest = Extract<DataExplorerRequest, { sessionId: string }>;
+export type SessionBoundRequest = Extract<OpenWranglerRequest, { sessionId: string }>;
 
-export function isSessionBoundRequest(request: DataExplorerRequest): request is SessionBoundRequest {
+export function isSessionBoundRequest(request: OpenWranglerRequest): request is SessionBoundRequest {
   return "sessionId" in request;
 }
 

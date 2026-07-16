@@ -1,11 +1,10 @@
 import type { ColumnSummary, GridPage, SessionMetadata, SessionOpenedResponse } from "./protocol";
 
-export const DATA_EXPLORER_MIME_V1 = "application/vnd.data-explorer.viewer.v1+json";
-export const DATA_EXPLORER_MIME_V2 = "application/vnd.data-explorer.viewer.v2+json";
-export const DATA_EXPLORER_MIME = DATA_EXPLORER_MIME_V2;
+export const OPEN_WRANGLER_MIME_V2 = "application/vnd.openwrangler.viewer.v2+json";
+export const OPEN_WRANGLER_MIME = OPEN_WRANGLER_MIME_V2;
 
 export interface NotebookOutputPayload {
-  mimeVersion: 1 | 2;
+  mimeVersion: 2;
   metadata: SessionMetadata;
   page: GridPage;
   summaries: ColumnSummary[];
@@ -15,7 +14,7 @@ export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPa
   if (!isRecord(value) || !isRecord(value.metadata) || !isGridPage(value.page) || !Array.isArray(value.summaries)) {
     return undefined;
   }
-  if (value.mimeVersion !== undefined && value.mimeVersion !== 2) return undefined;
+  if (value.mimeVersion !== 2) return undefined;
   const raw = value.metadata;
   const backend = raw.backend === "pandas" || raw.backend === "polars" ? raw.backend : undefined;
   const shape = dataShape(raw.shape);
@@ -66,7 +65,7 @@ export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPa
     ...(isDatasetStats(raw.stats) ? { stats: raw.stats } : {})
   };
   return {
-    mimeVersion: value.mimeVersion === 2 ? 2 : 1,
+    mimeVersion: 2,
     metadata,
     page: value.page,
     summaries: value.summaries as ColumnSummary[]

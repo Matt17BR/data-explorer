@@ -39,5 +39,5 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run license:check
-      - run: npm run package -- --out data-explorer.vsix
-      - run: npm run verify:vsix -- data-explorer.vsix
+      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix

@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/Matt17BR/data-explorer/protocol/data-explorer.v2.schema.json",
-  "title": "DataExplorerTransportMessage",
-  "description": "Canonical standalone and Jupyter transport contract for Data Explorer protocol v2.",
+  "$id": "https://github.com/Matt17BR/openwrangler/protocol/openwrangler.v2.schema.json",
+  "title": "OpenWranglerTransportMessage",
+  "description": "Canonical standalone and Jupyter transport contract for Open Wrangler protocol v2.",
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [2] },
@@ -594,7 +594,7 @@
         "targetRequestId": { "type": "string" }
       }
     },
-    "DataExplorerRequest": {
+    "OpenWranglerRequest": {
       "oneOf": [
         { "$ref": "#/definitions/InitializeRequest" },
         { "$ref": "#/definitions/OpenSessionRequest" },
@@ -746,7 +746,7 @@
         "sessionId": { "type": "string" }
       }
     },
-    "DataExplorerResponse": {
+    "OpenWranglerResponse": {
       "oneOf": [
         { "$ref": "#/definitions/InitializedResponse" },
         { "$ref": "#/definitions/SessionOpenedResponse" },
@@ -770,7 +770,7 @@
         "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
         "requestId": { "type": "string", "minLength": 1 },
         "priority": { "$ref": "#/definitions/RequestPriority" },
-        "request": { "$ref": "#/definitions/DataExplorerRequest" }
+        "request": { "$ref": "#/definitions/OpenWranglerRequest" }
       }
     },
     "RuntimeResponseEnvelope": {
@@ -780,7 +780,7 @@
       "properties": {
         "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
         "requestId": { "type": "string", "minLength": 1 },
-        "response": { "$ref": "#/definitions/DataExplorerResponse" }
+        "response": { "$ref": "#/definitions/OpenWranglerResponse" }
       }
     }
   }

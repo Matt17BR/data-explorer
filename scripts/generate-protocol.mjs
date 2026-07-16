@@ -3,10 +3,10 @@ import { resolve } from "node:path";
 import { compileFromFile } from "json-schema-to-typescript";
 
 const root = resolve(import.meta.dirname, "..");
-const schemaPath = resolve(root, "protocol", "data-explorer.v2.schema.json");
+const schemaPath = resolve(root, "protocol", "openwrangler.v2.schema.json");
 const outputPath = resolve(root, "src", "shared", "protocol.generated.ts");
 const generated = await compileFromFile(schemaPath, {
-  bannerComment: "/* Generated from protocol/data-explorer.v2.schema.json. Do not edit. */",
+  bannerComment: "/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */",
   style: {
     bracketSpacing: true,
     printWidth: 120,

@@ -2,13 +2,13 @@
 
 Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15. This is a clean-room behavior matrix, not an implementation reference.
 
-Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Data Explorer 1.0 requires every in-scope row to be **Done**.
+Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
 | Surface                                             | Pandas | Polars | Status | Required evidence                                 |
 | --------------------------------------------------- | -----: | -----: | ------ | ------------------------------------------------- |
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done   | Format/options/errors and packaged editors green  |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Done   | Real kernel plus packaged stable-API matrix green |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done   | Saved v1/v2, renderer, expansion, packaged green  |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done   | MIME v2 renderer, expansion, packaged green       |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Done   | Browser perf/a11y plus packaged paging green      |
 | Dataset summary and quick insights                  |    Yes |    Yes | Done   | Typed profiles/stats plus packaged queries green  |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Done   | AND/OR engine, browser, and packaged green        |
@@ -38,7 +38,7 @@ Viewing slice, 2026-07-15:
 
 - `npm test`: 9 TypeScript and 16 Python tests passed. The Polars file test asserts a lazy source and fails if `to_pandas()` is called.
 - `npm run test:extension-host` passed against local VS Code 1.128.0, activating the extension, verifying commands/views/settings, and opening `fixtures/sample.csv` through the real custom-editor contribution.
-- The allowlisted 44-entry VSIX installed successfully into isolated VS Code 1.128.0 and Cursor 3.11.19 profiles as `matt17br.data-explorer@0.2.0-alpha.1`.
+- The allowlisted prerelease VSIX installed successfully into isolated VS Code 1.128.0 and Cursor 3.11.19 profiles.
 - The in-app browser exercised the built webview at 800px: drawer open/close, advanced OR selection, value-free null predicates, settled progressive requests, keyboard cell navigation, and column search/focus restoration.
 - The 1,000 by 40 wide harness retained 7 rendered data columns and 39 rendered rows while exposing the full 41-column/1,001-row accessible grid counts. It jumped to column 39 and fetched rows 201–400 without unbounding the DOM.
 - Approved browser baselines are checked into `docs/images/acceptance/` for light, dark, high contrast, 800/1280/1920px widths, and 80/100/150/200% zoom. `docs/images/wide-grid.png` records the wide-grid fixture.
@@ -97,12 +97,12 @@ This advances by-example to **Partial**. More compound programs, null/type-edge 
 
 Notebook MIME and insertion slice, 2026-07-15:
 
-- `npm test`: 20 TypeScript and 62 Python tests passed. New Pandas/Polars helpers emit complete MIME v2 snapshots and remain native; explicit legacy v1 output is still available for fixtures.
-- Shared TypeScript normalization upgrades saved v1 metadata to a read-only current session shape and rejects malformed/unknown-version payloads. The renderer registers both MIME identifiers and presents invalid output as an accessible error.
+- `npm test`: 20 TypeScript and 62 Python tests passed. Pandas/Polars helpers emit complete MIME v2 snapshots and remain engine-native.
+- Shared TypeScript normalization validates MIME v2 into a read-only current session shape and rejects malformed or unknown-version payloads. The renderer presents invalid output as an accessible error.
 - Formatters are registered inside the active kernel only after trusted stable-API access. Live-variable sources retain their originating notebook URI.
 - The insertion command uses the currently edited CodeMirror buffer and a tagged Python cell. The real VS Code extension-host suite applies and verifies the notebook edit against an untitled Jupyter notebook.
 
-This advances notebook rows to **Partial**. Real local/remote kernel formatter display, permission denial, kernel restart, persisted v1 output in packaged VS Code/Cursor, and originating-notebook interaction remain mandatory.
+This advances notebook rows to **Partial**. Real local/remote kernel formatter display, permission denial, kernel restart, saved v2 output in packaged VS Code/Cursor, and originating-notebook interaction remain mandatory.
 
 Interface documentation and navigation slice, 2026-07-15:
 
@@ -131,8 +131,8 @@ This advances notebook recovery and formatter evidence but keeps the notebook ro
 
 Packaged editor slice, 2026-07-15:
 
-- The 53-entry allowlisted VSIX installed into fresh VS Code 1.128.0 and Cursor 3.11.19 user/extension directories. Tests ran from a separate harness extension, ensuring no TypeScript checkout or development extension shadowed `matt17br.data-explorer@0.2.0-alpha.1`.
-- Both editors activated the package, verified its publisher/gallery and Activity Bar assets, all 21 commands, Getting Started walkthrough, and v1/v2 MIME contributions. Each opened the CSV custom editor, completed a real Polars runtime session through the packaged Python source, reopened the exact source URI, and applied a real notebook cell edit.
+- The 53-entry allowlisted VSIX installed into fresh VS Code 1.128.0 and Cursor 3.11.19 user/extension directories. Tests ran from a separate harness extension, ensuring no TypeScript checkout or development extension shadowed the packaged extension.
+- Both editors activated the package, verified its publisher/gallery and Activity Bar assets, all 21 commands, Getting Started walkthrough, and MIME v2 contribution. Each opened the CSV custom editor, completed a real Polars runtime session through the packaged Python source, reopened the exact source URI, and applied a real notebook cell edit.
 - This stronger test exposed and fixed the custom-editor path failing to enable webview scripts; previous tab-only extension-host acceptance could not detect that the runtime session never opened. Open Source File now also waits briefly for an in-flight active session instead of blocking on a notification.
 - Linux CI now installs and exercises the VSIX against current VS Code after allowlist verification. Local release acceptance auto-detects and repeats the package test in Cursor without touching normal profiles.
 
@@ -140,7 +140,7 @@ This advances cross-editor/package evidence but keeps UI rows **Partial** until 
 
 Visual and accessibility hardening slice, 2026-07-15:
 
-- `npm run test:webview-acceptance` renders the production editor, notebook renderer, and Code Preview bundles into 23 Playwright-readable harnesses. It compares actual screenshots against checked-in baselines with an anti-aliasing-tolerant 1% pixel-delta gate and never mutates baselines during verification.
+- `npm run test:webview-acceptance` renders the production editor, notebook renderer, and Code Preview bundles into 22 Playwright-readable harnesses. It compares actual screenshots against checked-in baselines with an anti-aliasing-tolerant 1% pixel-delta gate and never mutates baselines during verification.
 - Automated axe runs cover WCAG 2.0, 2.1, and 2.2 A/AA rules across dark, light, high-contrast dark/light, 800/1280/1920px widths, 80/100/150/200% zoom, operation/draft/by-example states, and explicit empty/loading/error/recovery/Unicode fixtures. Every non-minor violation is a CI failure.
 - Scan findings produced product fixes: column menus and resizers now remain 24px targets at 80% zoom, resizers support Arrow/Home/End keys, generated-code overflow is keyboard focusable, empty grids announce `No rows`, and status/error regions use live semantics. Light-theme type labels now meet contrast requirements.
 
@@ -178,7 +178,7 @@ Packaged reload and recovery slice, 2026-07-15:
 - A fresh editor process reopened the same URI from workspace state and verified the step, sort, transformed schema, first row, and generated value. It then opened a concurrent Pandas TSV session, switched active-session ownership, injected a standalone runtime restart, and fetched both sessions concurrently.
 - Recovery started exactly one replacement Python process, assigned both sessions new runtime IDs, replayed the Polars plan/view and Pandas source, and preserved both public session identities. A real CSV export matched the committed plan while the original fixture remained byte-for-byte unchanged.
 - Both sessions were explicitly closed; acceptance waited for zero coordinator sessions and a stopped runtime. Runtime startup is single-flight across concurrent requests, stale starts are invalidated by a restart epoch, and the final session releases the standalone process.
-- The extension-host acceptance also performs the seed/verify split with shared isolated VS Code state. Test controls are returned by activation only when `DATA_EXPLORER_EXTENSION_TESTS=1`; production activation exposes no recovery or diagnostics surface.
+- The extension-host acceptance also performs the seed/verify split with shared isolated VS Code state. Test controls are returned by activation only when `OPEN_WRANGLER_EXTENSION_TESTS=1`; production activation exposes no recovery or diagnostics surface.
 
 This makes runtime crash/reload/session replay **Done**. Cleaning-history, export, and editor rows remain **Partial** because their remaining keyboard, Parquet-command, and full interactive operation/theme checklists are tracked separately.
 
@@ -193,9 +193,9 @@ These are release guardrails rather than user-visible parity rows. They remain m
 
 Cleaning-history keyboard slice, 2026-07-15:
 
-- Editing sessions expose state-scoped shortcuts for apply (`Ctrl/Cmd+Enter`), discard (`Escape`), edit latest (`Ctrl/Cmd+Shift+E`), and undo latest (`Ctrl/Cmd+Alt+Z`). VS Code context keys enable them only for an active Data Explorer custom editor with the matching draft/history state.
+- Editing sessions expose state-scoped shortcuts for apply (`Ctrl/Cmd+Enter`), discard (`Escape`), edit latest (`Ctrl/Cmd+Shift+E`), and undo latest (`Ctrl/Cmd+Alt+Z`). VS Code context keys enable them only for an active Open Wrangler custom editor with the matching draft/history state.
 - The production webview handles the same keys when focus remains inside its sandbox. It does not steal undo/edit shortcuts from inputs, textareas, selects, or editable code; buttons publish `aria-keyshortcuts` and visible hover titles.
-- React interaction tests cover all four actions and editable-field isolation. Playwright loads the production draft bundle, triggers every shortcut by keyboard, validates the emitted protocol request, opens the latest-step editor, and closes it with Escape while the normal 23-harness axe/pixel/performance matrix remains green.
+- React interaction tests cover all four actions and editable-field isolation. Playwright loads the production draft bundle, triggers every shortcut by keyboard, validates the emitted protocol request, opens the latest-step editor, and closes it with Escape while the normal 22-harness axe/pixel/performance matrix remains green.
 - The generated public reference includes the keybinding table. Real extension-host and installed-VSIX acceptance verify the exact VS Code/Cursor keybinding contributions, stateful history replay, and final cleanup.
 
 This makes cleaning-step history/edit/discard/undo **Done**. The wider editing-mode row remains **Partial** until its complete packaged operation interaction checklist is green.
@@ -240,30 +240,32 @@ This makes generated-code preview/editing and runtime selection/setup/change/cle
 
 Packaged notebook and remote-kernel slice, 2026-07-15:
 
-- Kernel bootstrap no longer inserts the local extension path. The extension validates and encodes only the packaged `data_wrangler_runtime` sources, transfers them over `executeCode`, writes them beneath a content-addressed kernel-temporary directory, and imports the agent there. Unit tests reject incomplete/path-unsafe bundles and prove generated bootstrap code contains no local extension path.
-- A stable-Jupyter-API acceptance extension runs a persistent Python namespace with an explicitly empty `PYTHONPATH`, creating a remote-filesystem boundary while retaining real Pandas and Polars dependencies. The installed Data Explorer package transfers its own runtime, opens live variables for both engines, resolves typed pages, and never converts Polars to Pandas.
+- Kernel bootstrap no longer inserts the local extension path. The extension validates and encodes only the packaged `openwrangler_runtime` sources, transfers them over `executeCode`, writes them beneath a content-addressed kernel-temporary directory, and imports the agent there. Unit tests reject incomplete/path-unsafe bundles and prove generated bootstrap code contains no local extension path.
+- A stable-Jupyter-API acceptance extension runs a persistent Python namespace with an explicitly empty `PYTHONPATH`, creating a remote-filesystem boundary while retaining real Pandas and Polars dependencies. The installed Open Wrangler package transfers its own runtime, opens live variables for both engines, resolves typed pages, and never converts Polars to Pandas.
 - A real local IPykernel test independently registers automatic Pandas/Polars MIME v2 formatters, renders both types, transports protocol v2 sessions, restarts the kernel, and bootstraps again. Lifecycle tests cover permission/acquisition denial, user cancellation, timeout cancellation, one-shot reacquisition, and repeated failure.
-- The packaged VS Code 1.128.0 and Cursor 3.11.19 flows open a real `.ipynb` containing saved MIME v1 and v2 outputs, verify both MIME items survive deserialization, apply a Pandas notebook step, and invoke Insert Generated Code. The inserted tagged cell contains the edited CodeMirror buffer exactly and targets the originating notebook.
+- The packaged VS Code 1.128.0 and Cursor 3.11.19 flows open a real `.ipynb` containing saved MIME v2 output, verify that item survives deserialization, apply a Pandas notebook step, and invoke Insert Generated Code. The inserted tagged cell contains the edited CodeMirror buffer exactly and targets the originating notebook.
 - The acceptance kernel object is then replaced while a Polars variable session is active. The first request rejects on the stale object, the stable API is reacquired, the transferred runtime is bootstrapped again, the unknown session is replayed from the still-live variable, and the original public session returns the expected page. A separate denied-access attempt creates no coordinator session.
-- The production renderer/axe harness renders both MIME versions, normalizes v1 to protocol v2, and clicks **Open Data Explorer**, asserting the full-view message contains the normalized payload. Malformed versions remain accessible errors. This entire matrix runs from the allowlisted 54-entry VSIX in isolated editor profiles.
+- The production renderer/axe harness renders MIME v2 and clicks **Open in Open Wrangler**, asserting the full-view message contains the validated payload. Malformed versions remain accessible errors. This entire matrix runs from the allowlisted VSIX in isolated editor profiles.
 
-This makes notebook variable launch, inline v1/v2 rendering and full-view expansion, and clipboard/script/originating-notebook code export **Done**.
+This makes notebook variable launch, inline v2 rendering and full-view expansion, and clipboard/script/originating-notebook code export **Done**.
 
-Packaged editor visual acceptance slice, 2026-07-15:
+Open Wrangler rename and packaged-editor visual acceptance refresh, 2026-07-16:
 
-- The exact allowlisted VSIX is installed into disposable VS Code 1.128.0 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Data Explorer Activity Bar container, and captures the actual window rather than a reconstructed browser shell.
-- Both editors record dark and light themes at normal zoom plus a high-contrast theme at VS Code zoom level 5 (200%). The harness temporarily disables OS theme auto-detection, waits for the public active-theme kind to change, captures the workbench, and restores every setting. Cursor's isolated first-run login overlay is bypassed with its documented `--skip-onboarding` test-process flag; no normal editor profile is read or changed.
+- The renamed `matt17br.openwrangler@0.2.0-alpha.2` VSIX contains 55 allowlisted entries and has SHA-256 `24095102798b47b2ed5017fd8e143caf4d0baa3817b85cc70121221c34d501b9`. It is installed into disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. Playwright connects to each isolated Electron workbench, opens the packaged custom editor and Open Wrangler Activity Bar container, and captures the real workbench below the native test-host title strip rather than reconstructing it in a browser shell.
+- Both editors record dark and light themes at normal zoom plus a high-contrast theme at VS Code zoom level 4 (approximately 200%). The harness temporarily disables OS theme auto-detection, waits for the public active-theme kind to change, captures the workbench, and restores every setting. Cursor's isolated first-run login overlay is bypassed with its documented `--skip-onboarding` test-process flag; no normal editor profile is read or changed.
 - The six checked-in captures under `docs/images/editor-acceptance/` visibly include the original faceted-table Activity Bar mark, native Operations, Summary, Filters/Sorts, and Cleaning Steps views, the custom grid, and the Code Preview panel. Extension-host assertions independently verify that the 128/256px gallery PNG and monochrome `currentColor` SVG are present in the installed package.
-- The production-bundle matrix remains the exhaustive UI gate: 23 Playwright/axe harnesses cover dark, light, high-contrast dark/light, 800/1280/1920px widths, 80–200% zoom, interaction/state fixtures, keyboard paths, and WCAG 2.0/2.1/2.2 A/AA rules. The editor screenshots prove those token-driven surfaces integrate into both real workbench chromes.
+- The production-bundle matrix remains the exhaustive UI gate: 22 Playwright/axe harnesses cover dark, light, high-contrast dark/light, 800/1280/1920px widths, 80–200% zoom, interaction/state fixtures, keyboard paths, and WCAG 2.0/2.1/2.2 A/AA rules. The editor screenshots prove those token-driven surfaces integrate into both real workbench chromes.
 
-This makes original icons, native views, themes, and accessibility **Done**. Every in-scope row in the Data Explorer 1.0 clean-room parity matrix is now **Done**; `1.0.0` remains gated on the release workflow and cross-platform tag validation rather than an unfinished feature row.
+- The packaged runtime-selection path exercises the canonical `openWrangler.pythonPath` setting, dependency diagnostics, explicit install decline, override clearing, and resolver fallback without mutating an environment.
+
+This makes original icons, native views, themes, and accessibility **Done**. Every in-scope row in the Open Wrangler 1.0 clean-room parity matrix is now **Done**; `1.0.0` remains gated on the release workflow and cross-platform tag validation rather than an unfinished feature row.
 
 Final release-gate correction slice, 2026-07-15:
 
-- Focused snapshot-model and filter/summary interaction tests raised TypeScript/webview coverage to 69.70% statements, 68.15% branches, 71.90% functions, and 72.61% lines; Python remains at 80.37%. The combined suite now contains 51 TypeScript and 113 Python tests.
+- Focused snapshot-model and filter/summary interaction tests hold TypeScript/webview coverage at 69.55% statements, 67.53% branches, 71.90% functions, and 72.57% lines; Python remains at 80.33%. The canonical-only suite contains 51 TypeScript and 112 Python tests.
 - Those tests exposed and fixed saved-notebook snapshot semantics: null numeric cells no longer compare as zero, and multi-column sorts honor the requested null placement independently of ascending/descending direction.
 - Visual and axe acceptance now use the Chromium revision pinned by `playwright-core` and the lockfile. CI installs that exact browser instead of inheriting a moving system Chrome, retaining the 1% visual threshold while eliminating browser-version drift.
-- The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.0 and Cursor 3.11.19 after these corrections.
+- The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.1 and Cursor 3.11.19 after these corrections.
 
 ## Explicitly deferred from 1.0
 

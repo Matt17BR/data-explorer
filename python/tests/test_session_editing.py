@@ -3,8 +3,8 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from data_wrangler_runtime.engines import EngineError
-from data_wrangler_runtime.session import SessionManager
+from openwrangler_runtime.engines import EngineError
+from openwrangler_runtime.session import SessionManager
 
 
 def transform(step_id: str, kind: str, **params):
@@ -169,7 +169,7 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
     row_ids = [row["id"] for row in opened["page"]["rows"]]
     assert source_ids == ["c:source:0", "c:source:1"]
     assert len(set(row_ids)) == 3
-    assert all("data_explorer_internal" not in column["name"] for column in opened["metadata"]["schema"])
+    assert all("open_wrangler_internal" not in column["name"] for column in opened["metadata"]["schema"])
 
     sorted_preview = manager.preview_step(
         session_id,
@@ -277,7 +277,7 @@ def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
             "customCode",
             code=(
                 'columns = df.collect_schema().names() if hasattr(df, "collect_schema") else list(df.columns)\n'
-                'assert all("data_explorer_internal" not in str(column) for column in columns)\n'
+                'assert all("open_wrangler_internal" not in str(column) for column in columns)\n'
                 "result = df"
             ),
         ),
@@ -290,7 +290,7 @@ def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
     destination = tmp_path / f"{backend}-identity.csv"
     manager.export_data(session_id, 2, str(destination), "csv")
     assert destination.read_text(encoding="utf-8").splitlines()[0] == "group,value"
-    assert "data_explorer_internal" not in destination.read_text(encoding="utf-8")
+    assert "open_wrangler_internal" not in destination.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

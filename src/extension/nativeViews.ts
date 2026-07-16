@@ -3,12 +3,13 @@ import * as vscode from "vscode";
 import { operationCatalog, operationByKind } from "../shared/operations";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
-import { DataExplorerPanel } from "./webviewPanel";
+import { OpenWranglerPanel } from "./webviewPanel";
 import { insertGeneratedNotebookCell } from "./notebooks/notebookInsertion";
+import { getSetting } from "./configuration";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 
-class DataExplorerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
+class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<ViewNode | undefined>();
   private snapshot: ActiveSessionSnapshot | undefined;
   private readonly subscription: vscode.Disposable;
@@ -79,16 +80,14 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
       this.snapshot = snapshot;
       this.render();
-      const behavior = vscode.workspace
-        .getConfiguration("dataExplorer")
-        .get<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
+      const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
       const hasDraft = Boolean(snapshot?.metadata.draftStep);
       const changedSession = snapshot?.sessionId !== this.sessionId;
       if (
         snapshot &&
         ((behavior === "always" && changedSession) || (behavior === "onDraft" && hasDraft && !this.hadDraft))
       ) {
-        void vscode.commands.executeCommand("dataExplorer.codePreview.focus");
+        void vscode.commands.executeCommand("openWrangler.codePreview.focus");
       }
       this.hadDraft = hasDraft;
       this.sessionId = snapshot?.sessionId;
@@ -118,6 +117,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   setCodeForExportForTests(code: string): void {
+    this.generatedCode = code;
     this.displayedCode = code;
     this.render();
   }
@@ -145,20 +145,18 @@ export function registerNativeViews(
   coordinator: SessionCoordinator
 ): NativeViewsTestController {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
-    void vscode.commands.executeCommand("setContext", "dataExplorer.hasDraft", Boolean(snapshot?.metadata.draftStep));
-    void vscode.commands.executeCommand(
-      "setContext",
-      "dataExplorer.canChangePlan",
-      Boolean(snapshot && !snapshot.metadata.draftStep && snapshot.metadata.steps.length > 0)
-    );
+    const hasDraft = Boolean(snapshot?.metadata.draftStep);
+    const canChangePlan = Boolean(snapshot && !snapshot.metadata.draftStep && snapshot.metadata.steps.length > 0);
+    void vscode.commands.executeCommand("setContext", "openWrangler.hasDraft", hasDraft);
+    void vscode.commands.executeCommand("setContext", "openWrangler.canChangePlan", canChangePlan);
   };
   updatePlanContexts(coordinator.activeSession());
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
   const providers = {
-    "dataExplorer.operations": new DataExplorerTreeProvider("operations", coordinator),
-    "dataExplorer.summary": new DataExplorerTreeProvider("summary", coordinator),
-    "dataExplorer.filters": new DataExplorerTreeProvider("filters", coordinator),
-    "dataExplorer.cleaningSteps": new DataExplorerTreeProvider("steps", coordinator)
+    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator),
+    "openWrangler.summary": new OpenWranglerTreeProvider("summary", coordinator),
+    "openWrangler.filters": new OpenWranglerTreeProvider("filters", coordinator),
+    "openWrangler.cleaningSteps": new OpenWranglerTreeProvider("steps", coordinator)
   };
   for (const [id, provider] of Object.entries(providers)) {
     context.subscriptions.push(provider, vscode.window.registerTreeDataProvider(id, provider));
@@ -166,34 +164,35 @@ export function registerNativeViews(
   const codePreview = new CodePreviewViewProvider(context, coordinator);
   context.subscriptions.push(
     contextSubscription,
-    vscode.commands.registerCommand("dataExplorer.startOperation", async (kind?: OperationKind) => {
+    vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (!kind || !operationCatalog.some((operation) => operation.kind === kind)) return;
-      if (!DataExplorerPanel.sendEditorAction({ action: "openOperation", operationKind: kind })) {
-        await vscode.window.showInformationMessage("Open a dataframe in Data Explorer before adding a cleaning step.");
+      if (!OpenWranglerPanel.sendEditorAction({ action: "openOperation", operationKind: kind })) {
+        await vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
       }
     }),
-    vscode.commands.registerCommand("dataExplorer.applyStep", () =>
-      DataExplorerPanel.sendEditorAction({ action: "applyDraft" })
+    vscode.commands.registerCommand("openWrangler.applyStep", () =>
+      OpenWranglerPanel.sendEditorAction({ action: "applyDraft" })
     ),
-    vscode.commands.registerCommand("dataExplorer.discardStep", () =>
-      DataExplorerPanel.sendEditorAction({ action: "discardDraft" })
+    vscode.commands.registerCommand("openWrangler.discardStep", () =>
+      OpenWranglerPanel.sendEditorAction({ action: "discardDraft" })
     ),
-    vscode.commands.registerCommand("dataExplorer.editLatestStep", () =>
-      DataExplorerPanel.sendEditorAction({ action: "editLatest" })
+    vscode.commands.registerCommand("openWrangler.editLatestStep", () =>
+      OpenWranglerPanel.sendEditorAction({ action: "editLatest" })
     ),
-    vscode.commands.registerCommand("dataExplorer.undoStep", () =>
-      DataExplorerPanel.sendEditorAction({ action: "undoStep" })
+    vscode.commands.registerCommand("openWrangler.undoStep", () =>
+      OpenWranglerPanel.sendEditorAction({ action: "undoStep" })
     ),
-    vscode.commands.registerCommand("dataExplorer.copyCode", async () => {
+    vscode.commands.registerCommand("openWrangler.copyCode", async () => {
       const code = codePreview.codeForExport();
       if (!code) {
         await vscode.window.showInformationMessage("Add a cleaning step before copying generated code.");
         return;
       }
       await vscode.env.clipboard.writeText(code);
-      void vscode.window.showInformationMessage("Data Explorer code copied to the clipboard.");
+      void vscode.window.showInformationMessage("Open Wrangler code copied to the clipboard.");
+      return code;
     }),
-    vscode.commands.registerCommand("dataExplorer.exportCode", async (providedDestination?: unknown) => {
+    vscode.commands.registerCommand("openWrangler.exportCode", async (providedDestination?: unknown) => {
       if (!(await requireTrustedWorkspace("export code"))) return;
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
@@ -205,16 +204,16 @@ export function registerNativeViews(
         providedDestination instanceof vscode.Uri
           ? providedDestination
           : await vscode.window.showSaveDialog({
-              title: "Export Data Explorer Python Code",
+              title: "Export Open Wrangler Python Code",
               defaultUri: defaultExportUri(snapshot, ".clean.py"),
               filters: { "Python script": ["py"] },
               saveLabel: "Export code"
             });
       if (!destination) return;
       await vscode.workspace.fs.writeFile(destination, Buffer.from(code, "utf8"));
-      void vscode.window.showInformationMessage(`Exported Data Explorer code to ${destination.fsPath}.`);
+      void vscode.window.showInformationMessage(`Exported Open Wrangler code to ${destination.fsPath}.`);
     }),
-    vscode.commands.registerCommand("dataExplorer.insertNotebookCode", async () => {
+    vscode.commands.registerCommand("openWrangler.insertNotebookCode", async () => {
       if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return;
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
@@ -224,7 +223,7 @@ export function registerNativeViews(
       }
       if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
         await vscode.window.showWarningMessage(
-          "The active Data Explorer session did not originate from a notebook variable."
+          "The active Open Wrangler session did not originate from a notebook variable."
         );
         return;
       }
@@ -248,16 +247,16 @@ export function registerNativeViews(
           backend: snapshot.metadata.backend
         }))
       ) {
-        await vscode.window.showErrorMessage("VS Code could not insert the generated Data Explorer function.");
+        await vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler function.");
         return;
       }
       void vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
     }),
-    vscode.commands.registerCommand("dataExplorer.exportData", async () => {
+    vscode.commands.registerCommand("openWrangler.exportData", async () => {
       if (!(await requireTrustedWorkspace("export cleaned data"))) return;
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
-        await vscode.window.showInformationMessage("Open a dataframe in Data Explorer before exporting cleaned data.");
+        await vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before exporting cleaned data.");
         return;
       }
       if (snapshot.metadata.draftStep) {
@@ -306,31 +305,31 @@ export function registerNativeViews(
       }
     }),
     codePreview,
-    vscode.window.registerWebviewViewProvider("dataExplorer.codePreview", codePreview, {
+    vscode.window.registerWebviewViewProvider("openWrangler.codePreview", codePreview, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("dataExplorer.openSourceFile", async () => {
+    vscode.commands.registerCommand("openWrangler.openSourceFile", async () => {
       const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 30_000));
       const source = snapshot ? sourceUri(snapshot) : undefined;
       if (!source) {
-        void vscode.window.showInformationMessage("The active Data Explorer session has no reopenable source.");
+        void vscode.window.showInformationMessage("The active Open Wrangler session has no reopenable source.");
         return;
       }
       await vscode.commands.executeCommand("vscode.open", source);
     }),
-    vscode.commands.registerCommand("dataExplorer.openWalkthrough", () =>
-      vscode.commands.executeCommand("workbench.action.openWalkthrough", "Matt17BR.data-explorer#gettingStarted", false)
+    vscode.commands.registerCommand("openWrangler.openWalkthrough", () =>
+      vscode.commands.executeCommand("workbench.action.openWalkthrough", "Matt17BR.openwrangler#gettingStarted", false)
     ),
-    vscode.commands.registerCommand("dataExplorer.openSettings", () =>
-      vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.data-explorer")
+    vscode.commands.registerCommand("openWrangler.openSettings", () =>
+      vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.openwrangler")
     ),
-    vscode.commands.registerCommand("dataExplorer.reportIssue", () =>
+    vscode.commands.registerCommand("openWrangler.reportIssue", () =>
       vscode.env.openExternal(
         vscode.Uri.parse(
-          `https://github.com/Matt17BR/data-explorer/issues/new?title=${encodeURIComponent("Data Explorer issue")}&body=${encodeURIComponent(`VS Code: ${vscode.version}\nOS: ${process.platform}\n\nSteps to reproduce:\n`)}`
+          `https://github.com/Matt17BR/openwrangler/issues/new?title=${encodeURIComponent("Open Wrangler issue")}&body=${encodeURIComponent(`VS Code: ${vscode.version}\nOS: ${process.platform}\n\nSteps to reproduce:\n`)}`
         )
       )
     )
@@ -385,7 +384,7 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
         operation.icon,
         editable
           ? {
-              command: "dataExplorer.startOperation",
+              command: "openWrangler.startOperation",
               title: `Start ${operation.title}`,
               arguments: [operation.kind]
             }
@@ -404,7 +403,7 @@ function cleaningStepNodes(metadata: SessionMetadata): ViewNode[] {
       operation.icon,
       isLatest
         ? {
-            command: "dataExplorer.editLatestStep",
+            command: "openWrangler.editLatestStep",
             title: "Edit latest step"
           }
         : undefined
@@ -471,7 +470,7 @@ function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string): vsco
 
 async function requireTrustedWorkspace(action: string): Promise<boolean> {
   if (vscode.workspace.isTrusted) return true;
-  await vscode.window.showWarningMessage(`Trust this workspace before Data Explorer can ${action}.`);
+  await vscode.window.showWarningMessage(`Trust this workspace before Open Wrangler can ${action}.`);
   return false;
 }
 

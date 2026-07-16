@@ -3,7 +3,7 @@ import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const pythonCandidates = [
-  process.env.DATA_EXPLORER_PYTHON,
+  process.env.OPEN_WRANGLER_PYTHON,
   join(process.cwd(), ".venv", process.platform === "win32" ? "Scripts" : "bin", "python"),
   "python3",
   "python"
@@ -26,7 +26,7 @@ function resolveCommand(command) {
 
 const python = pythonCandidates.map(resolveCommand).find(Boolean);
 if (!python) {
-  throw new Error("Python was not found. Set DATA_EXPLORER_PYTHON or create .venv.");
+  throw new Error("Python was not found. Set OPEN_WRANGLER_PYTHON or create .venv.");
 }
 
 const pyright = join(process.cwd(), "node_modules", ".bin", process.platform === "win32" ? "pyright.cmd" : "pyright");

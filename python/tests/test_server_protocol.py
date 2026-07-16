@@ -21,7 +21,7 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
         },
     ]
     process = subprocess.run(
-        [sys.executable, "-m", "data_wrangler_runtime.server"],
+        [sys.executable, "-m", "openwrangler_runtime.server"],
         input="".join(f"{json.dumps(request)}\n" for request in requests),
         text=True,
         capture_output=True,

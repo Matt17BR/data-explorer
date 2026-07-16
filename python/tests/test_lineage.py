@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from data_wrangler_runtime.lineage import derive_lineage, schema_with_lineage, source_lineage
+from openwrangler_runtime.lineage import derive_lineage, schema_with_lineage, source_lineage
 
 
 def schema(*names: str):

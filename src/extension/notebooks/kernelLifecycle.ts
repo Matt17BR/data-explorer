@@ -51,7 +51,7 @@ export async function withKernelTimeout<TResult>(
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           onTimeout();
-          reject(new Error(`Data Explorer kernel request timed out after ${timeoutMs} ms.`));
+          reject(new Error(`Open Wrangler kernel request timed out after ${timeoutMs} ms.`));
         }, timeoutMs);
       })
     ]);

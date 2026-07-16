@@ -4,8 +4,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-import data_wrangler_runtime.notebook as notebook
-from data_wrangler_runtime.engines import EngineError
+import openwrangler_runtime.notebook as notebook
+from openwrangler_runtime.engines import EngineError
 
 
 @pytest.mark.parametrize(
@@ -38,17 +38,6 @@ def test_show_emits_complete_mime_v2_snapshot(value, backend, monkeypatch):
     assert snapshot["metadata"]["mode"] == "viewing"
     assert snapshot["metadata"]["steps"] == []
     assert snapshot["page"]["rows"][1]["values"][0]["display"] == "2"
-
-
-def test_legacy_mime_v1_output_remains_available(monkeypatch):
-    captured = []
-    monkeypatch.setattr(notebook, "display", lambda payload, raw: captured.append(payload))
-    notebook.show(pd.DataFrame({"value": [1]}), mime_version=1)
-
-    snapshot = captured[0][notebook.MIME_TYPE_V1]
-    assert "mimeVersion" not in snapshot
-    assert "protocolVersion" not in snapshot["metadata"]
-    assert snapshot["metadata"]["shape"] == {"rows": 1, "columns": 1}
 
 
 def test_notebook_snapshot_validates_options():

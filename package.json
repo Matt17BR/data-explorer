@@ -1,23 +1,23 @@
 {
-  "name": "data-explorer",
-  "displayName": "Data Explorer",
-  "description": "A visualization-first dataframe explorer for VS Code-compatible editors with native Polars and Pandas support.",
-  "version": "0.2.0-alpha.1",
+  "name": "openwrangler",
+  "displayName": "Open Wrangler",
+  "description": "An open-source dataframe wrangler for VS Code and Cursor with native Polars and Pandas support.",
+  "version": "0.2.0-alpha.2",
   "publisher": "Matt17BR",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Matt17BR/data-explorer.git"
+    "url": "https://github.com/Matt17BR/openwrangler.git"
   },
-  "homepage": "https://github.com/Matt17BR/data-explorer#readme",
+  "homepage": "https://github.com/Matt17BR/openwrangler#readme",
   "bugs": {
-    "url": "https://github.com/Matt17BR/data-explorer/issues"
+    "url": "https://github.com/Matt17BR/openwrangler/issues"
   },
   "keywords": [
     "dataframe",
     "polars",
     "pandas",
-    "data-explorer",
+    "openwrangler",
     "vscode",
     "cursor"
   ],
@@ -35,7 +35,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "Data Explorer executes dataframe operations in the selected Python environment. Trust the workspace before opening data."
+      "description": "Open Wrangler executes dataframe operations in the selected Python environment. Trust the workspace before opening data."
     },
     "virtualWorkspaces": {
       "supported": false,
@@ -70,7 +70,7 @@
     "test:packaged-editors": "npm run build:test-extension && node scripts/run-packaged-editor-tests.mjs",
     "test:coverage": "npm run test:coverage:ts && npm run test:coverage:python",
     "test:coverage:ts": "vitest run --coverage",
-    "test:coverage:python": "node scripts/run-python.mjs -m pytest python/tests -q --cov=data_wrangler_runtime --cov-report=term --cov-report=xml:tmp/coverage/python.xml --cov-fail-under=78",
+    "test:coverage:python": "node scripts/run-python.mjs -m pytest python/tests -q --cov=openwrangler_runtime --cov-report=term --cov-report=xml:tmp/coverage/python.xml --cov-fail-under=78",
     "license:check": "node scripts/check-licenses.mjs",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "test:visual": "npm run build && node scripts/capture-screenshots.mjs --verify",
@@ -82,212 +82,212 @@
     "verify:vsix": "node scripts/verify-vsix.mjs"
   },
   "activationEvents": [
-    "onCommand:dataExplorer.openFile",
-    "onCommand:dataExplorer.openPath",
-    "onCommand:dataExplorer.launchDataViewer",
-    "onCommand:dataExplorer.openNotebookVariable",
-    "onCommand:dataExplorer.checkJupyterIntegration",
-    "onCommand:dataExplorer.changeRuntime",
-    "onCommand:dataExplorer.clearRuntime",
-    "onCommand:dataExplorer.installRuntimeDependencies",
-    "onCommand:dataExplorer.startOperation",
-    "onCommand:dataExplorer.applyStep",
-    "onCommand:dataExplorer.discardStep",
-    "onCommand:dataExplorer.editLatestStep",
-    "onCommand:dataExplorer.undoStep",
-    "onCommand:dataExplorer.copyCode",
-    "onCommand:dataExplorer.exportCode",
-    "onCommand:dataExplorer.insertNotebookCode",
-    "onCommand:dataExplorer.exportData",
-    "onCommand:dataExplorer.openSourceFile",
-    "onCommand:dataExplorer.openWalkthrough",
-    "onCommand:dataExplorer.openSettings",
-    "onCommand:dataExplorer.reportIssue",
-    "onCustomEditor:dataExplorer.viewer",
-    "onView:dataExplorer.operations",
-    "onView:dataExplorer.summary",
-    "onView:dataExplorer.filters",
-    "onView:dataExplorer.cleaningSteps",
-    "onView:dataExplorer.codePreview",
+    "onCommand:openWrangler.openFile",
+    "onCommand:openWrangler.openPath",
+    "onCommand:openWrangler.launchDataViewer",
+    "onCommand:openWrangler.openNotebookVariable",
+    "onCommand:openWrangler.checkJupyterIntegration",
+    "onCommand:openWrangler.changeRuntime",
+    "onCommand:openWrangler.clearRuntime",
+    "onCommand:openWrangler.installRuntimeDependencies",
+    "onCommand:openWrangler.startOperation",
+    "onCommand:openWrangler.applyStep",
+    "onCommand:openWrangler.discardStep",
+    "onCommand:openWrangler.editLatestStep",
+    "onCommand:openWrangler.undoStep",
+    "onCommand:openWrangler.copyCode",
+    "onCommand:openWrangler.exportCode",
+    "onCommand:openWrangler.insertNotebookCode",
+    "onCommand:openWrangler.exportData",
+    "onCommand:openWrangler.openSourceFile",
+    "onCommand:openWrangler.openWalkthrough",
+    "onCommand:openWrangler.openSettings",
+    "onCommand:openWrangler.reportIssue",
+    "onCustomEditor:openWrangler.viewer",
+    "onView:openWrangler.operations",
+    "onView:openWrangler.summary",
+    "onView:openWrangler.filters",
+    "onView:openWrangler.cleaningSteps",
+    "onView:openWrangler.codePreview",
     "onNotebook:jupyter-notebook"
   ],
   "contributes": {
     "commands": [
       {
-        "command": "dataExplorer.openFile",
-        "title": "Data Explorer: Open Current File"
+        "command": "openWrangler.openFile",
+        "title": "Open Wrangler: Open Current File"
       },
       {
-        "command": "dataExplorer.openPath",
-        "title": "Data Explorer: Open File Path"
+        "command": "openWrangler.openPath",
+        "title": "Open Wrangler: Open File Path"
       },
       {
-        "command": "dataExplorer.launchDataViewer",
-        "title": "Open in Data Explorer"
+        "command": "openWrangler.launchDataViewer",
+        "title": "Open in Open Wrangler"
       },
       {
-        "command": "dataExplorer.openNotebookVariable",
-        "title": "Data Explorer: Open Notebook Variable"
+        "command": "openWrangler.openNotebookVariable",
+        "title": "Open Wrangler: Open Notebook Variable"
       },
       {
-        "command": "dataExplorer.checkJupyterIntegration",
-        "title": "Data Explorer: Check Jupyter Integration"
+        "command": "openWrangler.checkJupyterIntegration",
+        "title": "Open Wrangler: Check Jupyter Integration"
       },
       {
-        "command": "dataExplorer.changeRuntime",
-        "title": "Data Explorer: Change Runtime"
+        "command": "openWrangler.changeRuntime",
+        "title": "Open Wrangler: Change Runtime"
       },
       {
-        "command": "dataExplorer.clearRuntime",
-        "title": "Data Explorer: Clear Runtime Override"
+        "command": "openWrangler.clearRuntime",
+        "title": "Open Wrangler: Clear Runtime Override"
       },
       {
-        "command": "dataExplorer.installRuntimeDependencies",
-        "title": "Data Explorer: Install Runtime Dependencies"
+        "command": "openWrangler.installRuntimeDependencies",
+        "title": "Open Wrangler: Install Runtime Dependencies"
       },
       {
-        "command": "dataExplorer.startOperation",
-        "title": "Data Explorer: Add Cleaning Step"
+        "command": "openWrangler.startOperation",
+        "title": "Open Wrangler: Add Cleaning Step"
       },
       {
-        "command": "dataExplorer.applyStep",
-        "title": "Data Explorer: Apply Draft Step",
+        "command": "openWrangler.applyStep",
+        "title": "Open Wrangler: Apply Draft Step",
         "icon": "$(check)"
       },
       {
-        "command": "dataExplorer.discardStep",
-        "title": "Data Explorer: Discard Draft Step",
+        "command": "openWrangler.discardStep",
+        "title": "Open Wrangler: Discard Draft Step",
         "icon": "$(close)"
       },
       {
-        "command": "dataExplorer.editLatestStep",
-        "title": "Data Explorer: Edit Latest Step",
+        "command": "openWrangler.editLatestStep",
+        "title": "Open Wrangler: Edit Latest Step",
         "icon": "$(edit)"
       },
       {
-        "command": "dataExplorer.undoStep",
-        "title": "Data Explorer: Undo Latest Step",
+        "command": "openWrangler.undoStep",
+        "title": "Open Wrangler: Undo Latest Step",
         "icon": "$(discard)"
       },
       {
-        "command": "dataExplorer.copyCode",
-        "title": "Data Explorer: Copy Generated Code",
+        "command": "openWrangler.copyCode",
+        "title": "Open Wrangler: Copy Generated Code",
         "icon": "$(copy)"
       },
       {
-        "command": "dataExplorer.exportCode",
-        "title": "Data Explorer: Export Python Script",
+        "command": "openWrangler.exportCode",
+        "title": "Open Wrangler: Export Python Script",
         "icon": "$(save-as)"
       },
       {
-        "command": "dataExplorer.insertNotebookCode",
-        "title": "Data Explorer: Insert Function into Originating Notebook",
+        "command": "openWrangler.insertNotebookCode",
+        "title": "Open Wrangler: Insert Function into Originating Notebook",
         "icon": "$(notebook)"
       },
       {
-        "command": "dataExplorer.exportData",
-        "title": "Data Explorer: Export Cleaned Data",
+        "command": "openWrangler.exportData",
+        "title": "Open Wrangler: Export Cleaned Data",
         "icon": "$(export)"
       },
       {
-        "command": "dataExplorer.openSourceFile",
-        "title": "Data Explorer: Open Source File",
+        "command": "openWrangler.openSourceFile",
+        "title": "Open Wrangler: Open Source File",
         "icon": "$(go-to-file)"
       },
       {
-        "command": "dataExplorer.openWalkthrough",
-        "title": "Data Explorer: Open Getting Started",
+        "command": "openWrangler.openWalkthrough",
+        "title": "Open Wrangler: Open Getting Started",
         "icon": "$(book)"
       },
       {
-        "command": "dataExplorer.openSettings",
-        "title": "Data Explorer: Open Settings",
+        "command": "openWrangler.openSettings",
+        "title": "Open Wrangler: Open Settings",
         "icon": "$(settings-gear)"
       },
       {
-        "command": "dataExplorer.reportIssue",
-        "title": "Data Explorer: Report Issue",
+        "command": "openWrangler.reportIssue",
+        "title": "Open Wrangler: Report Issue",
         "icon": "$(github)"
       }
     ],
     "keybindings": [
       {
-        "command": "dataExplorer.applyStep",
+        "command": "openWrangler.applyStep",
         "key": "ctrl+enter",
         "mac": "cmd+enter",
-        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
-        "command": "dataExplorer.discardStep",
+        "command": "openWrangler.discardStep",
         "key": "escape",
-        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
-        "command": "dataExplorer.editLatestStep",
+        "command": "openWrangler.editLatestStep",
         "key": "ctrl+shift+e",
         "mac": "cmd+shift+e",
-        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
       },
       {
-        "command": "dataExplorer.undoStep",
+        "command": "openWrangler.undoStep",
         "key": "ctrl+alt+z",
         "mac": "cmd+alt+z",
-        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+        "when": "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "dataExplorer",
-          "title": "Data Explorer",
+          "id": "openWrangler",
+          "title": "Open Wrangler",
           "icon": "media/activity-icon.svg"
         }
       ],
       "panel": [
         {
-          "id": "dataExplorerCode",
-          "title": "Data Explorer Code",
+          "id": "openWranglerCode",
+          "title": "Open Wrangler Code",
           "icon": "media/activity-icon.svg"
         }
       ]
     },
     "views": {
-      "dataExplorer": [
+      "openWrangler": [
         {
-          "id": "dataExplorer.operations",
+          "id": "openWrangler.operations",
           "name": "Operations"
         },
         {
-          "id": "dataExplorer.summary",
+          "id": "openWrangler.summary",
           "name": "Summary"
         },
         {
-          "id": "dataExplorer.filters",
+          "id": "openWrangler.filters",
           "name": "Filters / Sorts"
         },
         {
-          "id": "dataExplorer.cleaningSteps",
+          "id": "openWrangler.cleaningSteps",
           "name": "Cleaning Steps"
         }
       ],
-      "dataExplorerCode": [
+      "openWranglerCode": [
         {
           "type": "webview",
-          "id": "dataExplorer.codePreview",
+          "id": "openWrangler.codePreview",
           "name": "Code Preview"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "dataExplorer.operations",
-        "contents": "Open a data file or notebook dataframe to start exploring.\n[Open a data file](command:dataExplorer.openPath)"
+        "view": "openWrangler.operations",
+        "contents": "Open a data file or notebook dataframe to start exploring.\n[Open a data file](command:openWrangler.openPath)"
       }
     ],
     "jupyterVariableViewers": [
       {
-        "command": "dataExplorer.launchDataViewer",
-        "title": "Open in Data Explorer",
+        "command": "openWrangler.launchDataViewer",
+        "title": "Open in Open Wrangler",
         "dataTypes": [
           "DataFrame",
           "Series",
@@ -302,8 +302,8 @@
     ],
     "customEditors": [
       {
-        "viewType": "dataExplorer.viewer",
-        "displayName": "Data Explorer",
+        "viewType": "openWrangler.viewer",
+        "displayName": "Open Wrangler",
         "selector": [
           {
             "filenamePattern": "*.csv"
@@ -329,26 +329,25 @@
     ],
     "notebookRenderer": [
       {
-        "id": "dataExplorer.renderer",
-        "displayName": "Data Explorer Renderer",
+        "id": "openWrangler.renderer",
+        "displayName": "Open Wrangler Renderer",
         "entrypoint": "./media/notebookRenderer.js",
         "requiresMessaging": "always",
         "mimeTypes": [
-          "application/vnd.data-explorer.viewer.v1+json",
-          "application/vnd.data-explorer.viewer.v2+json"
+          "application/vnd.openwrangler.viewer.v2+json"
         ]
       }
     ],
     "walkthroughs": [
       {
         "id": "gettingStarted",
-        "title": "Get started with Data Explorer",
+        "title": "Get started with Open Wrangler",
         "description": "Explore, clean, and export Pandas or Polars dataframes without modifying the source.",
         "steps": [
           {
             "id": "openData",
             "title": "Open a data source",
-            "description": "Use [Open File Path](command:dataExplorer.openPath) for CSV, TSV, Parquet, JSONL, or Excel, or launch Data Explorer from a notebook dataframe."
+            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL, or Excel, or launch Open Wrangler from a notebook dataframe."
           },
           {
             "id": "explore",
@@ -358,7 +357,7 @@
           {
             "id": "clean",
             "title": "Preview a cleaning step",
-            "description": "Choose [Add Cleaning Step](command:dataExplorer.startOperation), inspect its diff and generated code, then apply or discard it."
+            "description": "Choose [Add Cleaning Step](command:openWrangler.startOperation), inspect its diff and generated code, then apply or discard it."
           },
           {
             "id": "export",
@@ -371,60 +370,60 @@
     "menus": {
       "explorer/context": [
         {
-          "command": "dataExplorer.openFile",
+          "command": "openWrangler.openFile",
           "when": "resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/",
           "group": "navigation@50"
         }
       ],
       "notebook/title": [
         {
-          "command": "dataExplorer.openNotebookVariable",
+          "command": "openWrangler.openNotebookVariable",
           "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
           "group": "navigation@50"
         }
       ],
       "view/title": [
         {
-          "command": "dataExplorer.copyCode",
-          "when": "view == dataExplorer.codePreview",
+          "command": "openWrangler.copyCode",
+          "when": "view == openWrangler.codePreview",
           "group": "navigation@10"
         },
         {
-          "command": "dataExplorer.exportCode",
-          "when": "view == dataExplorer.codePreview",
+          "command": "openWrangler.exportCode",
+          "when": "view == openWrangler.codePreview",
           "group": "navigation@11"
         },
         {
-          "command": "dataExplorer.insertNotebookCode",
-          "when": "view == dataExplorer.codePreview",
+          "command": "openWrangler.insertNotebookCode",
+          "when": "view == openWrangler.codePreview",
           "group": "navigation@12"
         },
         {
-          "command": "dataExplorer.openSourceFile",
-          "when": "viewContainer == dataExplorer",
+          "command": "openWrangler.openSourceFile",
+          "when": "viewContainer == openWrangler",
           "group": "navigation@80"
         },
         {
-          "command": "dataExplorer.openWalkthrough",
-          "when": "viewContainer == dataExplorer",
+          "command": "openWrangler.openWalkthrough",
+          "when": "viewContainer == openWrangler",
           "group": "navigation@89"
         },
         {
-          "command": "dataExplorer.openSettings",
-          "when": "viewContainer == dataExplorer",
+          "command": "openWrangler.openSettings",
+          "when": "viewContainer == openWrangler",
           "group": "navigation@90"
         },
         {
-          "command": "dataExplorer.reportIssue",
-          "when": "viewContainer == dataExplorer",
+          "command": "openWrangler.reportIssue",
+          "when": "viewContainer == openWrangler",
           "group": "navigation@91"
         }
       ]
     },
     "configuration": {
-      "title": "Data Explorer",
+      "title": "Open Wrangler",
       "properties": {
-        "dataExplorer.defaultBackend": {
+        "openWrangler.defaultBackend": {
           "type": "string",
           "enum": [
             "auto",
@@ -434,7 +433,7 @@
           "default": "auto",
           "description": "Default backend for file-backed sessions. Auto prefers Polars and falls back to Pandas when required."
         },
-        "dataExplorer.fileStartMode": {
+        "openWrangler.fileStartMode": {
           "type": "string",
           "enum": [
             "editing",
@@ -443,7 +442,7 @@
           "default": "editing",
           "description": "Initial mode for file-backed sessions. Editing remains non-destructive until an explicit export."
         },
-        "dataExplorer.notebookStartMode": {
+        "openWrangler.notebookStartMode": {
           "type": "string",
           "enum": [
             "viewing",
@@ -452,7 +451,7 @@
           "default": "viewing",
           "description": "Initial mode for notebook dataframe sessions."
         },
-        "dataExplorer.enabledFileTypes": {
+        "openWrangler.enabledFileTypes": {
           "type": "array",
           "items": {
             "type": "string",
@@ -474,14 +473,14 @@
             "xlsx",
             "xls"
           ],
-          "description": "File types offered by Data Explorer file pickers. Explicit custom-editor selection remains available."
+          "description": "File types offered by Open Wrangler file pickers. Explicit custom-editor selection remains available."
         },
-        "dataExplorer.insightsOnOpen": {
+        "openWrangler.insightsOnOpen": {
           "type": "boolean",
           "default": true,
           "description": "Show progressive per-column insights when a grid opens."
         },
-        "dataExplorer.filterMode": {
+        "openWrangler.filterMode": {
           "type": "string",
           "enum": [
             "basic",
@@ -490,28 +489,28 @@
           "default": "basic",
           "description": "Default filter builder. Advanced mode exposes AND/OR condition composition."
         },
-        "dataExplorer.defaultColumnWidth": {
+        "openWrangler.defaultColumnWidth": {
           "type": "number",
           "default": 190,
           "minimum": 80,
           "maximum": 640,
           "description": "Initial grid column width in CSS pixels."
         },
-        "dataExplorer.fetchBlockSize": {
+        "openWrangler.fetchBlockSize": {
           "type": "number",
           "default": 200,
           "minimum": 25,
           "maximum": 2000,
           "description": "Number of rows fetched for each virtual grid block."
         },
-        "dataExplorer.pageSize": {
+        "openWrangler.pageSize": {
           "type": "number",
           "default": 200,
           "minimum": 25,
           "maximum": 2000,
           "description": "Deprecated alias for fetchBlockSize."
         },
-        "dataExplorer.panelRevealBehavior": {
+        "openWrangler.panelRevealBehavior": {
           "type": "string",
           "enum": [
             "onDraft",
@@ -521,17 +520,17 @@
           "default": "onDraft",
           "description": "When to reveal the bottom-panel Code Preview."
         },
-        "dataExplorer.renderer.enabled": {
+        "openWrangler.renderer.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Data Explorer notebook MIME renderer messaging. Saved v1 and v2 outputs remain readable."
+          "description": "Enable Open Wrangler notebook MIME v2 renderer messaging."
         },
-        "dataExplorer.pythonPath": {
+        "openWrangler.pythonPath": {
           "type": "string",
           "default": "",
-          "description": "Optional Python 3.10-3.14 executable override. When empty, Data Explorer uses the selected Python extension environment, then a system interpreter."
+          "description": "Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter."
         },
-        "dataExplorer.requestTimeoutMs": {
+        "openWrangler.requestTimeoutMs": {
           "type": "number",
           "default": 30000,
           "minimum": 1000,

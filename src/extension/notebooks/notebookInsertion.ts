@@ -18,7 +18,7 @@ export async function insertGeneratedNotebookCell(
   }
   const cell = new vscode.NotebookCellData(vscode.NotebookCellKind.Code, code, "python");
   cell.metadata = {
-    dataExplorer: {
+    openWrangler: {
       source: metadata.source,
       backend: metadata.backend,
       generated: true

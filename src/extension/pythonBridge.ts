@@ -5,14 +5,15 @@ import * as readline from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import type {
-  DataExplorerRequest,
-  DataExplorerResponse,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
   ErrorResponse,
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope
 } from "../shared/protocol";
 import { PROTOCOL_VERSION } from "../shared/protocol";
-import type { BridgeRequestOptions, DataExplorerBridge } from "./dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import { getSetting } from "./configuration";
 import {
   probeDependencies,
   requiredModules,
@@ -21,7 +22,7 @@ import {
 } from "./pythonEnvironment";
 
 interface PendingRequest {
-  resolve: (response: DataExplorerResponse) => void;
+  resolve: (response: OpenWranglerResponse) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
   cancellation?: { dispose(): void };
@@ -29,13 +30,13 @@ interface PendingRequest {
 
 const execFileAsync = promisify(execFile);
 
-export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
+export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private process: ChildProcessWithoutNullStreams | undefined;
   private processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
   private runtimeExitError: Error | undefined;
   private stderrBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly output = vscode.window.createOutputChannel("Data Explorer");
+  private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private generation = 0;
   private runtimeEpoch = 0;
   private disposed = false;
@@ -53,9 +54,9 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     return Boolean((this.process && !this.process.killed) || this.processStart);
   }
 
-  async request(request: DataExplorerRequest, options: BridgeRequestOptions = {}): Promise<DataExplorerResponse> {
+  async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
     if (this.disposed) {
-      throw new Error("Data Explorer runtime bridge has been disposed.");
+      throw new Error("Open Wrangler runtime bridge has been disposed.");
     }
     if (options.cancellation?.isCancellationRequested) {
       return { kind: "cancelled", targetRequestId: "not-started" };
@@ -78,7 +79,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     };
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs();
 
-    return new Promise<DataExplorerResponse>((resolve, reject) => {
+    return new Promise<OpenWranglerResponse>((resolve, reject) => {
       if (this.runtimeExitError) {
         reject(this.runtimeExitError);
         return;
@@ -93,7 +94,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
         if (!pending) return;
         this.sendCancellation(requestId);
         pending.reject(
-          new Error(`Data Explorer runtime request ${runtimeRequest.kind} timed out after ${timeoutMs} ms.`)
+          new Error(`Open Wrangler runtime request ${runtimeRequest.kind} timed out after ${timeoutMs} ms.`)
         );
         this.restart("Runtime request timed out; restarting so sessions can be replayed.");
       }, timeoutMs);
@@ -118,7 +119,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     });
   }
 
-  restart(reason = "Data Explorer runtime restarted."): void {
+  restart(reason = "Open Wrangler runtime restarted."): void {
     this.output.appendLine(reason);
     this.runtimeEpoch += 1;
     const proc = this.process;
@@ -130,7 +131,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
 
   onIdle(): void {
     if (this.runtimeRunning) {
-      this.restart("Data Explorer runtime stopped after its last session closed.");
+      this.restart("Open Wrangler runtime stopped after its last session closed.");
     }
   }
 
@@ -143,7 +144,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
   async installMissingDependencies(confirmed?: boolean): Promise<boolean> {
     const missing = this.lastMissingDependencies;
     if (!missing || missing.modules.length === 0) {
-      await vscode.window.showInformationMessage("Data Explorer has no unresolved runtime dependencies.");
+      await vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
       return false;
     }
     if (!vscode.workspace.isTrusted) {
@@ -154,14 +155,14 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
       if (confirmed === false) return false;
       const choice = await vscode.window.showWarningMessage(
         `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
-        { modal: true, detail: "Data Explorer never installs packages without this confirmation." },
+        { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
         "Install"
       );
       if (choice !== "Install") return false;
     }
 
     await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Installing Data Explorer dependencies" },
+      { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
       async () => {
         await execFileAsync(missing.environment.executable, ["-m", "pip", "install", ...missing.modules], {
           timeout: 10 * 60_000
@@ -170,18 +171,18 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     );
     this.lastMissingDependencies = undefined;
     this.dependencyCache.clear();
-    this.restart("Python dependencies changed; restarting the Data Explorer runtime.");
-    await vscode.window.showInformationMessage("Data Explorer runtime dependencies were installed.");
+    this.restart("Python dependencies changed; restarting the Open Wrangler runtime.");
+    await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
     return true;
   }
 
   dispose(): void {
     this.disposed = true;
-    this.restart("Data Explorer runtime stopped.");
+    this.restart("Open Wrangler runtime stopped.");
     this.output.dispose();
   }
 
-  private async ensureProcess(request: DataExplorerRequest): Promise<ChildProcessWithoutNullStreams> {
+  private async ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams> {
     if (this.process && !this.process.killed) {
       return this.process;
     }
@@ -197,7 +198,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     }
   }
 
-  private async startProcess(request: DataExplorerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams> {
+  private async startProcess(request: OpenWranglerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams> {
     if (this.process && !this.process.killed) return this.process;
 
     this.runtimeExitError = undefined;
@@ -207,13 +208,13 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
       request.kind === "openSession" && request.source.path ? vscode.Uri.file(request.source.path) : undefined;
     const environment = await this.environment(resource);
     if (this.disposed || epoch !== this.runtimeEpoch) {
-      throw new Error("Data Explorer runtime start was cancelled.");
+      throw new Error("Open Wrangler runtime start was cancelled.");
     }
     if (this.process && !this.process.killed) return this.process;
     const pythonPath = environment.executable;
     const runtimeRoot = path.join(this.context.extensionPath, "python");
 
-    const proc = spawn(pythonPath, ["-m", "data_wrangler_runtime.server"], {
+    const proc = spawn(pythonPath, ["-m", "openwrangler_runtime.server"], {
       cwd: this.context.extensionPath,
       env: {
         ...process.env,
@@ -302,7 +303,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
   }
 
   private defaultTimeoutMs(): number {
-    return vscode.workspace.getConfiguration("dataExplorer").get<number>("requestTimeoutMs", 30_000);
+    return getSetting<number>("requestTimeoutMs", 30_000);
   }
 
   private environment(resource?: vscode.Uri): Promise<PythonEnvironment> {
@@ -310,7 +311,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     return this.environmentPromise;
   }
 
-  private async prepareRequest(request: DataExplorerRequest): Promise<DataExplorerRequest | ErrorResponse> {
+  private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
     if (request.kind !== "openSession" || request.source.kind !== "file") return request;
     const environment = await this.environment(vscode.Uri.file(request.source.path ?? request.source.label));
     const encoding = request.source.importOptions?.encoding?.toLowerCase();
@@ -338,7 +339,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
       kind: "error",
       code: "missing_dependencies",
       message: `The selected Python ${environment.version} environment cannot open this source. Missing: ${missing.join(", ")}.`,
-      detail: "Use Data Explorer: Install Runtime Dependencies to review and confirm installation.",
+      detail: "Use Open Wrangler: Install Runtime Dependencies to review and confirm installation.",
       recoverable: true
     };
   }
@@ -349,8 +350,8 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     const pathHint = pythonPath ? ` Python executable: ${pythonPath}.` : "";
     const stderrHint = stderr ? ` Runtime stderr: ${stderr}` : "";
     return new Error(
-      `Data Explorer could not talk to its Python runtime (${reason}).${pathHint}${stderrHint} ` +
-        "Select a compatible Python 3.10-3.14 environment with the Data Explorer: Change Runtime command."
+      `Open Wrangler could not talk to its Python runtime (${reason}).${pathHint}${stderrHint} ` +
+        "Select a compatible Python 3.10-3.14 environment with the Open Wrangler: Change Runtime command."
     );
   }
 }

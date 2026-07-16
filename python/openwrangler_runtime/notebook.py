@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from IPython.core.getipython import get_ipython
 from IPython.display import display
@@ -8,8 +8,7 @@ from IPython.display import display
 from .engines import EngineError
 from .session import SessionManager
 
-MIME_TYPE_V1 = "application/vnd.data-explorer.viewer.v1+json"
-MIME_TYPE_V2 = "application/vnd.data-explorer.viewer.v2+json"
+MIME_TYPE_V2 = "application/vnd.openwrangler.viewer.v2+json"
 MIME_TYPE = MIME_TYPE_V2
 
 
@@ -20,11 +19,10 @@ def show(
     page_size: int = 200,
     *,
     variable_name: str | None = None,
-    mime_version: Literal[1, 2] = 2,
 ) -> None:
-    """Display a deterministic dataframe snapshot using the Data Explorer renderer."""
-    payload = build_payload(value, label, backend, page_size, variable_name=variable_name, mime_version=mime_version)
-    display({MIME_TYPE_V2 if mime_version == 2 else MIME_TYPE_V1: payload}, raw=True)
+    """Display a deterministic dataframe snapshot using the Open Wrangler renderer."""
+    payload = build_payload(value, label, backend, page_size, variable_name=variable_name)
+    display({MIME_TYPE_V2: payload}, raw=True)
 
 
 def build_payload(
@@ -34,7 +32,6 @@ def build_payload(
     page_size: int = 200,
     *,
     variable_name: str | None = None,
-    mime_version: Literal[1, 2] = 2,
 ) -> dict[str, Any]:
     if not isinstance(label, str) or not label:
         raise EngineError("Notebook output label must be a non-empty string.")
@@ -50,7 +47,7 @@ def build_payload(
         else next((candidate for candidate in manager.engines.values() if candidate.detect(value)), None)
     )
     if engine is None:
-        raise EngineError("Data Explorer notebook output supports Pandas and Polars dataframe or series values.")
+        raise EngineError("Open Wrangler notebook output supports Pandas and Polars dataframe or series values.")
     frame = getattr(engine, "normalize", lambda item: item)(value)
     filter_model = {"filters": [], "sort": []}
     filtered = engine.apply_filter_model(frame, filter_model)
@@ -80,19 +77,12 @@ def build_payload(
         "steps": [],
         "stats": engine.header_stats(filtered),
     }
-    payload = {
+    return {
+        "mimeVersion": 2,
         "metadata": metadata,
         "page": engine.page(filtered, 0, page_size),
         "summaries": engine.summaries(filtered),
     }
-    if mime_version == 2:
-        return {"mimeVersion": 2, **payload}
-
-    legacy_metadata = {
-        key: metadata[key]
-        for key in ("sessionId", "backend", "source", "shape", "filteredShape", "schema", "filterModel", "stats")
-    }
-    return {**payload, "metadata": legacy_metadata}
 
 
 def register_formatters(shell: Any | None = None) -> bool:

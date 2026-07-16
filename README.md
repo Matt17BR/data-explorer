@@ -1,18 +1,20 @@
-# Data Explorer
+# Open Wrangler
 
-Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, explicit exports, and notebook code insertion.
+Open Wrangler is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, explicit exports, and notebook code insertion.
 
-It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
+Open Wrangler is an independent, clean-room project explicitly inspired by Microsoft Data Wrangler for VS Code and deliberately targets parity with its documented viewing and cleaning workflows. It does not copy Microsoft code or assets. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or add backend-native capabilities such as first-class Polars support. Open Wrangler exists to make that workflow open, hackable, portable across VS Code-compatible editors, and engine-friendly from the start.
+
+The extension package identity is `Matt17BR.openwrangler`. Commands, settings, editor views, notebook output, runtime modules, and release artifacts all use the Open Wrangler name and `openWrangler.*` namespace.
 
 ## Screenshots
 
-The full-workbench screenshots come from the real packaged VSIX installed into isolated VS Code and Cursor profiles. The focused UI screenshots are generated from the same production webview/notebook bundles using `npm run capture:screenshots`; the capture loads `fixtures/sample.csv` through Polars and executes `fixtures/example.ipynb` with `nbclient`.
+The workbench screenshots come from the real packaged VSIX installed into isolated VS Code and Cursor profiles; only the native test-host title strip is omitted. The focused UI screenshots are generated from the same production webview/notebook bundles using `npm run capture:screenshots`; the capture loads `fixtures/sample.csv` through Polars and executes `fixtures/example.ipynb` with `nbclient`.
 
-![Packaged Data Explorer in VS Code](docs/images/editor-acceptance/vscode-dark.png)
+![Packaged Open Wrangler in VS Code](docs/images/editor-acceptance/vscode-dark.png)
 
-![Packaged Data Explorer in Cursor](docs/images/editor-acceptance/cursor-light.png)
+![Packaged Open Wrangler in Cursor](docs/images/editor-acceptance/cursor-light.png)
 
-![Data Explorer grid view](docs/images/grid-view.png)
+![Open Wrangler grid view](docs/images/grid-view.png)
 
 ![Searchable cleaning operation catalog](docs/images/acceptance/operation-dialog-dark-1280.png)
 
@@ -42,7 +44,7 @@ The full-workbench screenshots come from the real packaged VSIX installed into i
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
-- MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters, while saved MIME v1 outputs remain renderable.
+- MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters.
 - Notebook-origin sessions can insert the edited generated cleaning function back into the exact originating notebook.
 
 ## Example Usage
@@ -51,18 +53,18 @@ The full-workbench screenshots come from the real packaged VSIX installed into i
 
 1. Install the extension in Cursor or VS Code.
 2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
-3. Choose **Data Explorer: Open Current File**.
+3. Choose **Open Wrangler: Open Current File**.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
 5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, an optional draft, and viewing query are restored when the same source is reopened in the workspace.
-6. Run **Data Explorer: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
+6. Run **Open Wrangler: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
 
-CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `dataExplorer.*` settings.
+CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `openWrangler.*` settings.
 
-File-backed sessions use `auto` by default: Data Explorer prefers Polars and falls back to Pandas when the selected environment or format requires it. You can pin either engine with `dataExplorer.defaultBackend`.
+File-backed sessions use `auto` by default: Open Wrangler prefers Polars and falls back to Pandas when the selected environment or format requires it. You can pin either engine with `openWrangler.defaultBackend`.
 
 ### Open a notebook variable
 
-Run a cell that leaves a Pandas or Polars dataframe available in the active Jupyter kernel. Jupyter can surface **Open in Data Explorer** for supported variables via the variable viewer integration, or you can use **Data Explorer: Open Notebook Variable** and enter the dataframe variable name:
+Run a cell that leaves a Pandas or Polars dataframe available in the active Jupyter kernel. Jupyter can surface **Open in Open Wrangler** for supported variables via the variable viewer integration, or you can use **Open Wrangler: Open Notebook Variable** and enter the dataframe variable name:
 
 ```python
 import polars as pl
@@ -70,19 +72,19 @@ import polars as pl
 df = pl.read_csv("sales.csv")
 ```
 
-Data Explorer detects Polars and Pandas dataframe variables and opens them with the matching backend. For notebook variables, paging, filtering, sorting, and Quick Insights execute against the live kernel variable rather than a static snapshot.
+Open Wrangler detects Polars and Pandas dataframe variables and opens them with the matching backend. For notebook variables, paging, filtering, sorting, and Quick Insights execute against the live kernel variable rather than a static snapshot.
 
 ### Render an inline notebook preview
 
 ```python
 import polars as pl
-from data_wrangler_runtime.notebook import show
+from openwrangler_runtime.notebook import show
 
 df = pl.read_csv("sales.csv")
 show(df, label="sales")
 ```
 
-This emits `application/vnd.data-explorer.viewer.v2+json`, which the bundled notebook renderer displays as a compact, typed grid preview. Saved `application/vnd.data-explorer.viewer.v1+json` output remains supported. Pass `variable_name="df"` when the **Open Data Explorer** button should reconnect the snapshot to a live kernel variable; otherwise it opens the immutable saved snapshot.
+This emits `application/vnd.openwrangler.viewer.v2+json`, which the bundled notebook renderer displays as a compact, typed grid preview. Pass `variable_name="df"` when the **Open in Open Wrangler** button should reconnect the snapshot to a live kernel variable; otherwise it opens the immutable saved snapshot.
 
 ## Polars Support
 
@@ -105,16 +107,16 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
 npm run build
 npm run package
-cursor --install-extension data-explorer-0.2.0-alpha.1.vsix --force
+cursor --install-extension openwrangler-0.2.0-alpha.2.vsix --force
 ```
 
 Reload the editor after installing the VSIX. Then:
 
-- Open `fixtures/sample.csv`, right-click the editor tab or Explorer item, and run **Data Explorer: Open Current File**.
+- Open `fixtures/sample.csv`, right-click the editor tab or Explorer item, and run **Open Wrangler: Open Current File**.
 - Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. The dataframe is a real Polars dataframe.
-- From the notebook, use **Open in Data Explorer** when Jupyter offers it for `df`, or run **Data Explorer: Open Notebook Variable** and enter `df`. The full Data Explorer webview should page, filter, sort, and summarize the live kernel dataframe.
+- From the notebook, use **Open in Open Wrangler** when Jupyter offers it for `df`, or run **Open Wrangler: Open Notebook Variable** and enter `df`. The full Open Wrangler webview should page, filter, sort, and summarize the live kernel dataframe.
 
-For development, set `dataExplorer.pythonPath` to the workspace `.venv/bin/python` if it is not already the environment selected by the Python extension. In normal use the setting is empty: Data Explorer resolves the selected Python extension environment first and then a system Python. It validates Python 3.10-3.14 and asks before installing any missing engine or format dependency.
+For development, set `openWrangler.pythonPath` to the workspace `.venv/bin/python` if it is not already the environment selected by the Python extension. In normal use the setting is empty: Open Wrangler resolves the selected Python extension environment first and then a system Python. It validates Python 3.10-3.14 and asks before installing any missing engine or format dependency.
 
 ## Development
 
@@ -136,7 +138,7 @@ npm run benchmark:runtime
 npm run reference:check
 npm run build
 npm run package
-npm run test:packaged-editors -- data-explorer.vsix
+npm run test:packaged-editors -- openwrangler.vsix
 ```
 
 The generated [interface reference](docs/reference.md) lists every public command, setting, transformation, protocol message, and notebook MIME type. Run `npm run generate:reference` after changing any of those registries; CI rejects stale output.
@@ -149,7 +151,7 @@ npm run package
 
 ## Current Scope
 
-Data Explorer currently prioritizes the release-grade viewing and editing core:
+Open Wrangler currently prioritizes the release-grade viewing and editing core:
 
 - grid viewing
 - file-backed sessions

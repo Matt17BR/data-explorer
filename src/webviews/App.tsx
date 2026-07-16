@@ -3,7 +3,7 @@ import type {
   ColumnSummary,
   DataDiff,
   DataRow,
-  DataExplorerResponse,
+  OpenWranglerResponse,
   GridPage,
   OperationKind,
   SessionMetadata,
@@ -41,7 +41,7 @@ export function App() {
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
 
   useEffect(() => {
-    const listener = (event: MessageEvent<DataExplorerResponse | EditorActionMessage>) => {
+    const listener = (event: MessageEvent<OpenWranglerResponse | EditorActionMessage>) => {
       const response = event.data;
       if (response.kind === "editorAction") {
         if (response.action === "openOperation") {
@@ -281,7 +281,7 @@ export function App() {
   if (error && !metadata) {
     return (
       <main className="app app-error">
-        <h1>Data Explorer</h1>
+        <h1>Open Wrangler</h1>
         <p role="alert">{error}</p>
       </main>
     );
@@ -316,12 +316,12 @@ export function App() {
             <label className="goToColumn">
               <span>Column</span>
               <input
-                list="data-explorer-columns"
+                list="openwrangler-columns"
                 value={goToColumn}
                 placeholder="Search columns"
                 onChange={(event) => setGoToColumn(event.target.value)}
               />
-              <datalist id="data-explorer-columns">
+              <datalist id="openwrangler-columns">
                 {metadata.schema.map((column) => (
                   <option key={column.id} value={column.name} />
                 ))}

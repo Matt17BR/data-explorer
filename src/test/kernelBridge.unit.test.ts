@@ -4,11 +4,11 @@ import { buildKernelBootstrapCode } from "../extension/notebooks/kernelRuntimeBu
 describe("remote kernel runtime bootstrap", () => {
   it("embeds a deterministic runtime bundle without referencing the extension filesystem", () => {
     const code = buildKernelBootstrapCode({
-      "data_wrangler_runtime/__init__.py": "VERSION = 2\n",
-      "data_wrangler_runtime/kernel_agent.py": "def dispatch_json(value): return value\n"
+      "openwrangler_runtime/__init__.py": "VERSION = 2\n",
+      "openwrangler_runtime/kernel_agent.py": "def dispatch_json(value): return value\n"
     });
 
-    expect(code).toContain('Path(__de_bundle_tempfile.gettempdir()) / "data-explorer-runtime"');
+    expect(code).toContain('Path(__ow_bundle_tempfile.gettempdir()) / "openwrangler-runtime"');
     expect(code).toContain("base64.b64decode");
     expect(code).toContain(".complete");
     expect(code).not.toContain("VERSION = 2");
@@ -16,13 +16,13 @@ describe("remote kernel runtime bootstrap", () => {
   });
 
   it("rejects incomplete or unsafe bundles", () => {
-    expect(() => buildKernelBootstrapCode({ "data_wrangler_runtime/kernel_agent.py": "" })).toThrow(
-      "missing data_wrangler_runtime/__init__.py"
+    expect(() => buildKernelBootstrapCode({ "openwrangler_runtime/kernel_agent.py": "" })).toThrow(
+      "missing openwrangler_runtime/__init__.py"
     );
     expect(() =>
       buildKernelBootstrapCode({
-        "data_wrangler_runtime/__init__.py": "",
-        "data_wrangler_runtime/../escape.py": ""
+        "openwrangler_runtime/__init__.py": "",
+        "openwrangler_runtime/../escape.py": ""
       })
     ).toThrow("Unsafe bundled kernel runtime path");
   });

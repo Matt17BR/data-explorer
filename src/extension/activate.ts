@@ -7,7 +7,7 @@ import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
 import { registerNativeViews } from "./nativeViews";
 
-export interface DataExplorerTestApi {
+export interface OpenWranglerTestApi {
   request: ReturnType<SessionCoordinator["createBridge"]>["request"];
   setActiveSession(sessionId: string | undefined): void;
   activeSession: SessionCoordinator["activeSession"];
@@ -18,11 +18,11 @@ export interface DataExplorerTestApi {
   setCodeForExport(code: string): void;
 }
 
-export interface DataExplorerExtensionApi {
-  testing?: DataExplorerTestApi;
+export interface OpenWranglerExtensionApi {
+  testing?: OpenWranglerTestApi;
 }
 
-export function activate(context: vscode.ExtensionContext): DataExplorerExtensionApi | undefined {
+export function activate(context: vscode.ExtensionContext): OpenWranglerExtensionApi | undefined {
   const bridge = new PythonBridge(context);
   const coordinator = new SessionCoordinator(context.workspaceState);
   const coordinatedBridge = coordinator.createBridge(bridge);
@@ -34,7 +34,7 @@ export function activate(context: vscode.ExtensionContext): DataExplorerExtensio
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinatedBridge, coordinator);
 
-  if (process.env.DATA_EXPLORER_EXTENSION_TESTS === "1") {
+  if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") {
     return {
       testing: {
         request: (request, options) => coordinatedBridge.request(request, options),

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import polars as pl
 
-from data_wrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
 

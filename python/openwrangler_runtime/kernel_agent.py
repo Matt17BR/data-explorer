@@ -12,7 +12,7 @@ _manager = SessionManager()
 
 
 def dispatch_json(payload: str) -> str:
-    """Dispatch a Data Explorer request inside the active Jupyter kernel."""
+    """Dispatch an Open Wrangler request inside the active Jupyter kernel."""
     try:
         decoded = json.loads(payload)
         if isinstance(decoded, dict) and "protocolVersion" in decoded:

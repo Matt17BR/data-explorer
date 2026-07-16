@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from data_wrangler_runtime.protocol import ProtocolError, decode_envelope
+from openwrangler_runtime.protocol import ProtocolError, decode_envelope
 
 
 def test_protocol_v2_decodes_correlated_request() -> None:

@@ -20,7 +20,7 @@ const localPython =
   process.platform === "win32"
     ? resolve(root, ".venv", "Scripts", "python.exe")
     : resolve(root, ".venv", "bin", "python");
-process.env.DATA_EXPLORER_TEST_PYTHON ??=
+process.env.OPEN_WRANGLER_TEST_PYTHON ??=
   hostedPython && existsSync(hostedPython)
     ? hostedPython
     : existsSync(localPython)
@@ -28,8 +28,8 @@ process.env.DATA_EXPLORER_TEST_PYTHON ??=
       : process.platform === "win32"
         ? "python"
         : "python3";
-process.env.DATA_EXPLORER_EXTENSION_TESTS = "1";
-const profile = mkdtempSync(join(tmpdir(), "data-explorer-extension-host-"));
+process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+const profile = mkdtempSync(join(tmpdir(), "openwrangler-extension-host-"));
 const requestedVersion = process.env.VSCODE_TEST_VERSION;
 const installedExecutable = "/usr/share/code/code";
 const vscodeExecutablePath = requestedVersion
@@ -41,7 +41,7 @@ const fakeJupyter = resolve(profile, "fake-jupyter");
 writeFakeJupyterExtension(fakeJupyter);
 
 try {
-  process.env.DATA_EXPLORER_TEST_PHASE = "single";
+  process.env.OPEN_WRANGLER_TEST_PHASE = "single";
   await runTests({
     vscodeExecutablePath,
     extensionDevelopmentPath: [root, fakeJupyter],
@@ -75,7 +75,7 @@ try {
       extensions,
       developmentPaths: [root, harness, fakeJupyter],
       testModule,
-      python: process.env.DATA_EXPLORER_TEST_PYTHON,
+      python: process.env.OPEN_WRANGLER_TEST_PYTHON,
       phase,
       resultPath
     });

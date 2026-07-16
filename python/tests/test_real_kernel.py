@@ -28,9 +28,9 @@ def live_kernel():
 def test_real_kernel_transport_handles_both_engines_and_restart(live_kernel) -> None:
     manager, client = live_kernel
     bootstrap = """
-import data_wrangler_runtime.kernel_agent as __de_kernel_agent
-import data_wrangler_runtime.notebook as __de_notebook
-__de_notebook.register_formatters()
+import openwrangler_runtime.kernel_agent as __ow_kernel_agent
+import openwrangler_runtime.notebook as __ow_notebook
+__ow_notebook.register_formatters()
 """
     _execute(client, bootstrap)
 
@@ -45,7 +45,7 @@ __de_notebook.register_formatters()
     )
     _, pandas_mime = _execute_with_data(client, "pandas_frame")
     _, polars_mime = _execute_with_data(client, "polars_frame")
-    mime_type = "application/vnd.data-explorer.viewer.v2+json"
+    mime_type = "application/vnd.openwrangler.viewer.v2+json"
     assert pandas_mime[mime_type]["metadata"]["backend"] == "pandas"
     assert polars_mime[mime_type]["metadata"]["backend"] == "polars"
     pandas_opened = _dispatch(
@@ -94,16 +94,16 @@ def _dispatch(client: Any, request_id: str, request: Mapping[str, Any]) -> dict[
     output = _execute(
         client,
         f"""
-import base64 as __de_base64
-import data_wrangler_runtime.kernel_agent as __de_kernel_agent
-__de_payload = __de_base64.b64decode({payload!r}).decode("utf-8")
-print("__DATA_EXPLORER_START_{marker}__")
-print(__de_kernel_agent.dispatch_json(__de_payload))
-print("__DATA_EXPLORER_END_{marker}__")
+import base64 as __ow_base64
+import openwrangler_runtime.kernel_agent as __ow_kernel_agent
+__ow_payload = __ow_base64.b64decode({payload!r}).decode("utf-8")
+print("__OPEN_WRANGLER_START_{marker}__")
+print(__ow_kernel_agent.dispatch_json(__ow_payload))
+print("__OPEN_WRANGLER_END_{marker}__")
 """,
     )
-    start = f"__DATA_EXPLORER_START_{marker}__"
-    end = f"__DATA_EXPLORER_END_{marker}__"
+    start = f"__OPEN_WRANGLER_START_{marker}__"
+    end = f"__OPEN_WRANGLER_END_{marker}__"
     return json.loads(output.split(start, 1)[1].split(end, 1)[0].strip())
 
 

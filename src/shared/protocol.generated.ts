@@ -1,12 +1,12 @@
-/* Generated from protocol/data-explorer.v2.schema.json. Do not edit. */
+/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */
 
 /**
- * Canonical standalone and Jupyter transport contract for Data Explorer protocol v2.
+ * Canonical standalone and Jupyter transport contract for Open Wrangler protocol v2.
  */
-export type DataExplorerTransportMessage = RuntimeRequestEnvelope | RuntimeResponseEnvelope;
+export type OpenWranglerTransportMessage = RuntimeRequestEnvelope | RuntimeResponseEnvelope;
 export type ProtocolVersion = 2;
 export type RequestPriority = "interactive" | "background";
-export type DataExplorerRequest =
+export type OpenWranglerRequest =
   | InitializeRequest
   | OpenSessionRequest
   | PageRequest
@@ -71,7 +71,7 @@ export type OperationKind =
   | "groupBy"
   | "byExample"
   | "customCode";
-export type DataExplorerResponse =
+export type OpenWranglerResponse =
   | InitializedResponse
   | SessionOpenedResponse
   | PageResponse
@@ -129,7 +129,7 @@ export interface RuntimeRequestEnvelope {
   protocolVersion: ProtocolVersion;
   requestId: string;
   priority: RequestPriority;
-  request: DataExplorerRequest;
+  request: OpenWranglerRequest;
 }
 export interface InitializeRequest {
   kind: "initialize";
@@ -280,7 +280,7 @@ export interface CancelRequest {
 export interface RuntimeResponseEnvelope {
   protocolVersion: ProtocolVersion;
   requestId: string;
-  response: DataExplorerResponse;
+  response: OpenWranglerResponse;
 }
 export interface InitializedResponse {
   kind: "initialized";

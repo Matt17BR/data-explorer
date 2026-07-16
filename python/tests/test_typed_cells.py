@@ -7,7 +7,7 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 
-from data_wrangler_runtime.engines.base import normalize_cell
+from openwrangler_runtime.engines.base import normalize_cell
 
 
 def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
