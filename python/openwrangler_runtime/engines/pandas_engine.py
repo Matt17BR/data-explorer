@@ -322,16 +322,25 @@ class PandasEngine(DataFrameEngine):
         kind = str(step["kind"])
         params = step["params"]
         if kind == "sortRows":
-            return self.apply_filter_model(df, {"filters": [], "sort": params["rules"]})
+            return self._apply_bound_sort_rules(df, params["rules"], kind)
         if kind == "filterRows":
-            return self.apply_filter_model(df, params["filterModel"])
+            return self._apply_bound_filter_model(df, params["filterModel"])
         if kind == "dropMissingRows":
-            return df.dropna(subset=params.get("columns") or self._visible_columns(df), how=params.get("how", "any"))
+            positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
+            if not positions:
+                return df
+            valid = [df.iloc[:, position].notna() for position in positions]
+            keep = valid[0]
+            for current in valid[1:]:
+                keep = keep | current if params.get("how", "any") == "all" else keep & current
+            return df.iloc[keep.fillna(False).to_numpy(dtype=bool)]
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
-            return df.drop_duplicates(
-                subset=params.get("columns") or self._visible_columns(df), keep=False if keep == "none" else keep
-            )
+            positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
+            if not positions:
+                return df
+            duplicated = df.iloc[:, positions].duplicated(keep=False if keep == "none" else keep)
+            return df.iloc[(~duplicated).to_numpy(dtype=bool)]
         if kind == "selectColumns":
             selected = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
             row_id_position = self._row_id_position(df)
@@ -493,6 +502,76 @@ class PandasEngine(DataFrameEngine):
             raise EngineError(f"{operation} column binding no longer matches its input schema.")
         return frame_position
 
+    def _bound_or_all_visible_positions(
+        self,
+        frame: Any,
+        references: Any,
+        operation: str,
+    ) -> list[int]:
+        if not references:
+            return self._visible_positions(frame)
+        if not isinstance(references, list):
+            raise EngineError(f"{operation} requires an array of bound column references.")
+        return [self._bound_frame_position(frame, reference, operation) for reference in references]
+
+    def _apply_bound_sort_rules(self, frame: Any, rules: Any, operation: str) -> Any:
+        if not isinstance(rules, list) or not rules:
+            raise EngineError(f"{operation} requires bound sort rules.")
+        result = frame
+        for rule in reversed(rules):
+            if not isinstance(rule, Mapping):
+                raise EngineError(f"{operation} requires bound sort rules.")
+            position = self._bound_frame_position(result, rule.get("column"), operation)
+            order = (
+                result.iloc[:, position]
+                .reset_index(drop=True)
+                .sort_values(
+                    ascending=rule.get("direction", "asc") == "asc",
+                    na_position=rule.get("nulls", "last"),
+                    kind="stable",
+                )
+                .index.to_numpy()
+            )
+            result = result.iloc[order]
+        return result
+
+    def _apply_bound_filter_model(self, frame: Any, model: Any) -> Any:
+        if not isinstance(model, Mapping):
+            raise EngineError("filterRows requires a bound filter model.")
+        column_masks = []
+        for column_filter in model.get("filters", []):
+            if not isinstance(column_filter, Mapping):
+                raise EngineError("filterRows requires bound column filters.")
+            position = self._bound_frame_position(frame, column_filter.get("column"), "filterRows")
+            series = frame.iloc[:, position]
+            conditions = []
+            value_filter = column_filter.get("valueFilter")
+            if value_filter and (
+                value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
+            ):
+                selected = [str(value) for value in value_filter.get("selectedValues", [])]
+                current = series.astype(str).isin(selected)
+                if value_filter.get("includeNulls"):
+                    current = current | _null_mask(series)
+                if value_filter.get("includeNaN"):
+                    current = current | _nan_mask(series)
+                conditions.append(current)
+            conditions.extend(self._predicate_mask(series, predicate) for predicate in column_filter["predicates"])
+            if conditions:
+                mask = conditions[0]
+                for condition in conditions[1:]:
+                    mask = mask | condition if column_filter.get("logic") == "or" else mask & condition
+                column_masks.append(mask)
+
+        filtered = frame
+        if column_masks:
+            mask = column_masks[0]
+            for column_mask in column_masks[1:]:
+                mask = mask | column_mask if model.get("logic") == "or" else mask & column_mask
+            filtered = frame.iloc[mask.fillna(False).to_numpy(dtype=bool)]
+        sort = model.get("sort", [])
+        return self._apply_bound_sort_rules(filtered, sort, "filterRows") if sort else filtered
+
     def _resolve_visible_position(self, frame: Any, requested: Any) -> int | None:
         requested_name = str(requested)
         return next(
@@ -580,24 +659,52 @@ class PandasEngine(DataFrameEngine):
         if kind == "sortRows":
             rules = params["rules"]
             lines = []
-            for rule in reversed(rules):
-                lines.append(
-                    f"{prefix}df = df.sort_values(by={rule['column']!r}, "
-                    f"ascending={rule.get('direction', 'asc') == 'asc'!r}, "
-                    f"na_position={rule.get('nulls', 'last')!r}, kind='stable')"
+            for rule_index, rule in enumerate(reversed(rules)):
+                position = bound_column_position(rule["column"], kind)
+                order = f"_sort_order_{index}_{rule_index}"
+                lines.extend(
+                    [
+                        f"{prefix}{order} = df.iloc[:, {position}].reset_index(drop=True).sort_values(",
+                        f"{prefix}    ascending={rule.get('direction', 'asc') == 'asc'!r},",
+                        f"{prefix}    na_position={rule.get('nulls', 'last')!r}, kind='stable').index.to_numpy()",
+                        f"{prefix}df = df.iloc[{order}]",
+                    ]
                 )
             return lines
         if kind == "filterRows":
             return _compile_pandas_filter(params["filterModel"], index)
         if kind == "dropMissingRows":
+            positions = (
+                [bound_column_position(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
             return [
-                f"{prefix}df = df.dropna(subset={params.get('columns') or None!r}, how={params.get('how', 'any')!r})"
+                f"{prefix}_missing_positions_{index} = {positions!r} or list(range(df.shape[1]))",
+                f"{prefix}if _missing_positions_{index}:",
+                (
+                    f"{prefix}    _missing_valid_{index} = "
+                    f"[df.iloc[:, position].notna() for position in _missing_positions_{index}]"
+                ),
+                f"{prefix}    _missing_keep_{index} = _missing_valid_{index}[0]",
+                f"{prefix}    for _missing_current_{index} in _missing_valid_{index}[1:]:",
+                (
+                    f"{prefix}        _missing_keep_{index} = _missing_keep_{index} "
+                    f"{'|' if params.get('how', 'any') == 'all' else '&'} _missing_current_{index}"
+                ),
+                (f"{prefix}    df = df.iloc[_missing_keep_{index}.fillna(False).to_numpy(dtype=bool)]"),
             ]
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
+            positions = (
+                [bound_column_position(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
             return [
-                f"{prefix}df = df.drop_duplicates(subset={params.get('columns') or None!r}, "
-                f"keep={False if keep == 'none' else keep!r})"
+                f"{prefix}_duplicate_positions_{index} = {positions!r} or list(range(df.shape[1]))",
+                f"{prefix}if _duplicate_positions_{index}:",
+                (
+                    f"{prefix}    _duplicated_{index} = df.iloc[:, _duplicate_positions_{index}].duplicated("
+                    f"keep={False if keep == 'none' else keep!r})"
+                ),
+                f"{prefix}    df = df.iloc[(~_duplicated_{index}).to_numpy(dtype=bool)]",
             ]
         if kind == "selectColumns":
             positions = [bound_column_position(column, kind) for column in params["columns"]]
@@ -892,8 +999,8 @@ def _pandas_formula(left: Any, right: Any, operator: str) -> Any:
 def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     column_masks: list[str] = []
     for column_filter in model.get("filters", []):
-        column = column_filter["column"]
-        series = f"df[{column!r}]"
+        position = bound_column_position(column_filter["column"], "filterRows")
+        series = f"df.iloc[:, {position}]"
         conditions: list[str] = []
         value_filter = column_filter.get("valueFilter")
         if value_filter and (
@@ -917,14 +1024,19 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     if column_masks:
         operator = " | " if model.get("logic") == "or" else " & "
         lines.append(f"    _filter_mask_{index} = " + operator.join(column_masks))
-        lines.append(f"    df = df[_filter_mask_{index}]")
+        lines.append(f"    df = df.iloc[_filter_mask_{index}.fillna(False).to_numpy(dtype=bool)]")
     rules = model.get("sort", [])
     if rules:
-        for rule in reversed(rules):
-            lines.append(
-                f"    df = df.sort_values(by={rule['column']!r}, "
-                f"ascending={rule.get('direction', 'asc') == 'asc'!r}, "
-                f"na_position={rule.get('nulls', 'last')!r}, kind='stable')"
+        for rule_index, rule in enumerate(reversed(rules)):
+            position = bound_column_position(rule["column"], "filterRows")
+            order = f"_filter_sort_order_{index}_{rule_index}"
+            lines.extend(
+                [
+                    f"    {order} = df.iloc[:, {position}].reset_index(drop=True).sort_values(",
+                    f"        ascending={rule.get('direction', 'asc') == 'asc'!r},",
+                    f"        na_position={rule.get('nulls', 'last')!r}, kind='stable').index.to_numpy()",
+                    f"    df = df.iloc[{order}]",
+                ]
             )
     return lines
 

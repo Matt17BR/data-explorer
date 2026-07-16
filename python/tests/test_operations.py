@@ -75,25 +75,80 @@ def test_operation_registry_is_complete_and_validation_is_strict():
 
 
 @pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "id": "sort",
+            "kind": "sortRows",
+            "params": {"rules": [{"column": "value", "direction": "asc", "nulls": "last"}]},
+        },
+        {
+            "id": "filter",
+            "kind": "filterRows",
+            "params": {
+                "filterModel": {
+                    "filters": [
+                        {
+                            "column": "value",
+                            "type": "integer",
+                            "predicates": [{"kind": "predicate", "operator": "gt", "value": 1}],
+                        }
+                    ],
+                    "sort": [],
+                }
+            },
+        },
+        {"id": "missing", "kind": "dropMissingRows", "params": {"columns": ["value"]}},
+        {"id": "duplicates", "kind": "dropDuplicates", "params": {"columns": ["value"]}},
+    ],
+)
+def test_row_order_operations_reject_name_only_transform_columns(operation) -> None:
+    with pytest.raises(OperationError, match="column reference"):
+        validate_step(operation)
+
+
+def test_optional_row_column_lists_have_strict_empty_semantics() -> None:
+    missing = validate_step({"id": "missing", "kind": "dropMissingRows", "params": {"columns": [], "how": "any"}})
+    omitted = validate_step({"id": "all", "kind": "dropMissingRows", "params": {}})
+
+    assert missing["params"]["columns"] == []
+    assert "columns" not in omitted["params"]
+    with pytest.raises(OperationError, match="non-empty array"):
+        validate_step({"id": "duplicates", "kind": "dropDuplicates", "params": {"columns": []}})
+
+
+@pytest.mark.parametrize(
     ("kind", "params"),
     [
-        ("sortRows", {"rules": [{"column": PRIVATE_COLUMN, "direction": "asc"}]}),
+        (
+            "sortRows",
+            {
+                "rules": [
+                    {
+                        "column": public_ref("private", PRIVATE_COLUMN),
+                        "direction": "asc",
+                        "nulls": "last",
+                    }
+                ]
+            },
+        ),
         (
             "filterRows",
             {
                 "filterModel": {
                     "filters": [
                         {
-                            "column": PRIVATE_COLUMN,
-                            "predicates": [{"operator": "equals", "value": "x"}],
+                            "column": public_ref("private", PRIVATE_COLUMN),
+                            "type": "string",
+                            "predicates": [{"kind": "predicate", "operator": "equals", "value": "x"}],
                         }
                     ],
                     "sort": [],
                 }
             },
         ),
-        ("dropMissingRows", {"columns": [PRIVATE_COLUMN]}),
-        ("dropDuplicates", {"columns": [PRIVATE_COLUMN]}),
+        ("dropMissingRows", {"columns": [public_ref("private", PRIVATE_COLUMN)]}),
+        ("dropDuplicates", {"columns": [public_ref("private", PRIVATE_COLUMN)]}),
         ("selectColumns", {"columns": [public_ref("private", PRIVATE_COLUMN)]}),
         ("dropColumns", {"columns": [public_ref("private", PRIVATE_COLUMN)]}),
         (
@@ -168,24 +223,30 @@ def test_rows_and_order_operations(engine_and_frame):
     engine, frame = engine_and_frame
     sorted_frame = engine.apply_transform(
         frame,
-        step(
+        bound_step(
             "sort",
             "sortRows",
-            rules=[{"column": "value", "direction": "desc", "nulls": "last"}],
+            rules=[
+                {
+                    "column": bound_ref("c:source:3", "value", 3),
+                    "direction": "desc",
+                    "nulls": "last",
+                }
+            ],
         ),
     )
     assert [record["value"] for record in records(sorted_frame)[:2]] == [2.8, 2.8]
 
     filtered = engine.apply_transform(
         frame,
-        step(
+        bound_step(
             "filter",
             "filterRows",
             filterModel={
                 "logic": "and",
                 "filters": [
                     {
-                        "column": "text",
+                        "column": bound_ref("c:source:1", "text", 1),
                         "type": "string",
                         "logic": "and",
                         "predicates": [{"kind": "predicate", "operator": "contains", "value": "alpha"}],
@@ -197,12 +258,28 @@ def test_rows_and_order_operations(engine_and_frame):
     )
     assert len(records(filtered)) == 2
 
-    without_missing = engine.apply_transform(frame, step("missing", "dropMissingRows", columns=["value"], how="any"))
+    without_missing = engine.apply_transform(
+        frame,
+        bound_step(
+            "missing",
+            "dropMissingRows",
+            columns=[bound_ref("c:source:3", "value", 3)],
+            how="any",
+        ),
+    )
     assert len(records(without_missing)) == 3
 
     duplicates = engine.apply_transform(
         frame,
-        step("duplicates", "dropDuplicates", columns=["value", "other"], keep="first"),
+        bound_step(
+            "duplicates",
+            "dropDuplicates",
+            columns=[
+                bound_ref("c:source:3", "value", 3),
+                bound_ref("c:source:4", "other", 4),
+            ],
+            keep="first",
+        ),
     )
     assert len(records(duplicates)) == 3
 

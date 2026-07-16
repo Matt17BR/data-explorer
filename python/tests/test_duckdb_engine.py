@@ -254,6 +254,36 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
     engine.close()
 
 
+def test_duckdb_non_float_include_nan_value_filter_is_an_explicit_false_condition() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql("SELECT * FROM (VALUES (1), (2)) AS source(value)")
+    operation = bound_step(
+        "filterRows",
+        filterModel={
+            "filters": [
+                {
+                    "column": bound_ref("c:source:0", "value", 0),
+                    "type": "integer",
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [],
+                        "includeNulls": False,
+                        "includeNaN": True,
+                    },
+                    "predicates": [],
+                }
+            ],
+            "sort": [],
+        },
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+    generated = execute_generated(engine, frame, [operation])
+
+    assert transformed.fetchall() == []
+    assert_same_relation(transformed, generated)
+
+
 def first_page_ids(page: dict[str, Any]) -> list[str]:
     return [row["id"] for row in page["rows"]]
 
@@ -263,14 +293,23 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
     engine = DuckDBEngine()
     source = source_relation()
     row_plan = [
-        step("sortRows", rules=[{"column": "value", "direction": "desc", "nulls": "last"}]),
-        step(
+        bound_step(
+            "sortRows",
+            rules=[
+                {
+                    "column": bound_ref("c:source:3", "value", 3),
+                    "direction": "desc",
+                    "nulls": "last",
+                }
+            ],
+        ),
+        bound_step(
             "filterRows",
             filterModel={
                 "logic": "and",
                 "filters": [
                     {
-                        "column": "text",
+                        "column": bound_ref("c:source:1", "text", 1),
                         "type": "string",
                         "logic": "and",
                         "predicates": [{"operator": "contains", "value": "alpha"}],
@@ -279,8 +318,19 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
                 "sort": [],
             },
         ),
-        step("dropMissingRows", columns=["value"], how="any"),
-        step("dropDuplicates", columns=["value", "other"], keep="first"),
+        bound_step(
+            "dropMissingRows",
+            columns=[bound_ref("c:source:3", "value", 3)],
+            how="any",
+        ),
+        bound_step(
+            "dropDuplicates",
+            columns=[
+                bound_ref("c:source:3", "value", 3),
+                bound_ref("c:source:4", "other", 4),
+            ],
+            keep="first",
+        ),
     ]
     column_plan = [
         bound_step(
@@ -411,19 +461,39 @@ def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
         "SELECT * FROM (VALUES (1.0, NULL), (NULL, 2.0), (NULL, NULL), "
         "(CAST('NaN' AS DOUBLE), 3.0), (4.0, 4.0)) AS source(left_value, right_value)"
     )
-    drop_any = step("dropMissingRows", columns=["left_value", "right_value"], how="any")
-    drop_all = step("dropMissingRows", columns=["left_value", "right_value"], how="all")
+    missing_columns = [
+        bound_ref("c:source:0", "left_value", 0),
+        bound_ref("c:source:1", "right_value", 1),
+    ]
+    drop_any = bound_step("dropMissingRows", columns=missing_columns, how="any")
+    drop_all = bound_step("dropMissingRows", columns=missing_columns, how="all")
     assert len(engine.apply_transform(missing, drop_any).fetchall()) == 1
     assert len(engine.apply_transform(missing, drop_all).fetchall()) == 4
     assert_same_relation(engine.apply_transform(missing, drop_any), execute_generated(engine, missing, [drop_any]))
+    drop_all_columns = bound_step("dropMissingRows", columns=[], how="any")
+    assert len(engine.apply_transform(missing, drop_all_columns).fetchall()) == 1
+    assert_same_relation(
+        engine.apply_transform(missing, drop_all_columns),
+        execute_generated(engine, missing, [drop_all_columns]),
+    )
 
     duplicate = duckdb.sql(
         "SELECT * FROM (VALUES ('a', 1.0), ('a', 1.0), ('b', NULL), ('b', NULL), ('c', 3.0)) AS source(key, value)"
     )
-    keep_last = step("dropDuplicates", columns=["key", "value"], keep="last")
-    keep_none = step("dropDuplicates", columns=["key", "value"], keep="none")
+    duplicate_columns = [
+        bound_ref("c:source:0", "key", 0),
+        bound_ref("c:source:1", "value", 1),
+    ]
+    keep_last = bound_step("dropDuplicates", columns=duplicate_columns, keep="last")
+    keep_none = bound_step("dropDuplicates", columns=duplicate_columns, keep="none")
     assert [row[0] for row in engine.apply_transform(duplicate, keep_last).fetchall()] == ["a", "b", "c"]
     assert [row[0] for row in engine.apply_transform(duplicate, keep_none).fetchall()] == ["c"]
+    keep_all = bound_step("dropDuplicates", keep="first")
+    assert [row[0] for row in engine.apply_transform(duplicate, keep_all).fetchall()] == ["a", "b", "c"]
+    assert_same_relation(
+        engine.apply_transform(duplicate, keep_all),
+        execute_generated(engine, duplicate, [keep_all]),
+    )
 
     collision = duckdb.sql("SELECT 'a' AS group_name, 7 AS group_name_a")
     operation = step("oneHotEncode", columns=["group_name"], prefixSeparator="_", dropOriginal=False)

@@ -126,16 +126,12 @@ export type DropDuplicatesTransformStep = TransformStepTemplate & {
 /**
  * @minItems 1
  */
-export type NonEmptyStringArray = [string, ...string[]];
+export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type SelectColumnsTransformStep = TransformStepTemplate & {
   kind: "selectColumns";
   params: ColumnsParams;
   [k: string]: unknown;
 };
-/**
- * @minItems 1
- */
-export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type DropColumnsTransformStep = TransformStepTemplate & {
   kind: "dropColumns";
   params: ColumnsParams;
@@ -181,6 +177,10 @@ export type OneHotEncodeTransformStep = TransformStepTemplate & {
   params: OneHotEncodeParams;
   [k: string]: unknown;
 };
+/**
+ * @minItems 1
+ */
+export type NonEmptyStringArray = [string, ...string[]];
 export type MultiLabelBinarizeTransformStep = TransformStepTemplate & {
   kind: "multiLabelBinarize";
   params: MultiLabelBinarizeParams;
@@ -497,25 +497,48 @@ export interface SortRowsParams {
   /**
    * @minItems 1
    */
-  rules: [SortRule, ...SortRule[]];
+  rules: [TransformSortRule, ...TransformSortRule[]];
 }
-export interface FilterRowsParams {
-  filterModel: FilterModel;
-}
-export interface DropMissingRowsParams {
-  columns?: string[];
-  how?: "any" | "all";
-}
-export interface DropDuplicatesParams {
-  columns?: NonEmptyStringArray;
-  keep?: "first" | "last" | "none";
-}
-export interface ColumnsParams {
-  columns: NonEmptyColumnReferenceArray;
+export interface TransformSortRule {
+  column: ColumnReference;
+  direction: "asc" | "desc";
+  nulls: "first" | "last";
 }
 export interface ColumnReference {
   id: string;
   name: string;
+}
+export interface FilterRowsParams {
+  filterModel: TransformFilterModel;
+}
+export interface TransformFilterModel {
+  logic?: "and" | "or";
+  filters: TransformColumnFilter[];
+  sort: TransformSortRule[];
+}
+export interface TransformColumnFilter {
+  column: ColumnReference;
+  type: ColumnType;
+  logic?: "and" | "or";
+  valueFilter?: {
+    kind: "values";
+    selectedValues: unknown[];
+    includeNulls: boolean;
+    includeNaN: boolean;
+    search?: string;
+  };
+  predicates: PredicateFilter[];
+}
+export interface DropMissingRowsParams {
+  columns?: ColumnReference[];
+  how?: "any" | "all";
+}
+export interface DropDuplicatesParams {
+  columns?: NonEmptyColumnReferenceArray;
+  keep?: "first" | "last" | "none";
+}
+export interface ColumnsParams {
+  columns: NonEmptyColumnReferenceArray;
 }
 export interface RenameColumnParams {
   column: ColumnReference;

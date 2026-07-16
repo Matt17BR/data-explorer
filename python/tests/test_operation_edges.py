@@ -28,6 +28,14 @@ def step(kind: str, **params: Any) -> dict[str, Any]:
     return validate_step({"id": f"edge-{kind}", "kind": kind, "params": params})
 
 
+def bound_ref(identifier: str, name: str, position: int) -> dict[str, str | int]:
+    return {"id": identifier, "name": name, "position": position}
+
+
+def bound_step(kind: str, **params: Any) -> dict[str, Any]:
+    return {"id": f"edge-{kind}", "kind": kind, "params": params}
+
+
 def frame_for(engine: PandasEngine | PolarsEngine, data: dict[str, list[Any]]) -> Any:
     return pd.DataFrame(data) if isinstance(engine, PandasEngine) else pl.DataFrame(data)
 
@@ -70,11 +78,19 @@ def test_multi_sort_honors_per_column_null_order_and_stable_ties(engine) -> None
             "secondary": [2, 1, None, 2, None, 1],
         },
     )
-    operation = step(
+    operation = bound_step(
         "sortRows",
         rules=[
-            {"column": "primary", "direction": "asc", "nulls": "last"},
-            {"column": "secondary", "direction": "desc", "nulls": "first"},
+            {
+                "column": bound_ref("c:source:1", "primary", 1),
+                "direction": "asc",
+                "nulls": "last",
+            },
+            {
+                "column": bound_ref("c:source:2", "secondary", 2),
+                "direction": "desc",
+                "nulls": "first",
+            },
         ],
     )
 
@@ -82,10 +98,42 @@ def test_multi_sort_honors_per_column_null_order_and_stable_ties(engine) -> None
     assert [row["id"] for row in records(transformed)] == [2, 0, 3, 5, 4, 1]
     assert_records_equal(transformed, execute_generated(engine, frame, operation))
 
-    filter_operation = step("filterRows", filterModel={"filters": [], "sort": operation["params"]["rules"]})
+    filter_operation = bound_step(
+        "filterRows",
+        filterModel={"filters": [], "sort": operation["params"]["rules"]},
+    )
     filtered = engine.apply_transform(frame, filter_operation)
     assert [row["id"] for row in records(filtered)] == [2, 0, 3, 5, 4, 1]
     assert_records_equal(filtered, execute_generated(engine, frame, filter_operation))
+
+
+def test_non_float_include_nan_value_filter_is_an_explicit_false_condition(engine) -> None:
+    frame = frame_for(engine, {"value": [1, 2]})
+    operation = bound_step(
+        "filterRows",
+        filterModel={
+            "filters": [
+                {
+                    "column": bound_ref("c:source:0", "value", 0),
+                    "type": "integer",
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [],
+                        "includeNulls": False,
+                        "includeNaN": True,
+                    },
+                    "predicates": [],
+                }
+            ],
+            "sort": [],
+        },
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+    generated = execute_generated(engine, frame, operation)
+
+    assert records(transformed) == []
+    assert_records_equal(transformed, generated)
 
 
 def test_min_max_scale_preserves_null_and_nan_for_constant_columns(engine) -> None:
@@ -130,8 +178,12 @@ def test_missing_and_duplicate_row_modes_match_generated_code(engine) -> None:
             "right": [None, 2.0, None, 3.0, 4.0],
         },
     )
-    drop_any = step("dropMissingRows", columns=["left", "right"], how="any")
-    drop_all = step("dropMissingRows", columns=["left", "right"], how="all")
+    missing_columns = [
+        bound_ref("c:source:0", "left", 0),
+        bound_ref("c:source:1", "right", 1),
+    ]
+    drop_any = bound_step("dropMissingRows", columns=missing_columns, how="any")
+    drop_all = bound_step("dropMissingRows", columns=missing_columns, how="all")
     any_result = engine.apply_transform(missing_frame, drop_any)
     all_result = engine.apply_transform(missing_frame, drop_all)
 
@@ -139,13 +191,21 @@ def test_missing_and_duplicate_row_modes_match_generated_code(engine) -> None:
     assert len(records(all_result)) == 4
     assert_records_equal(any_result, execute_generated(engine, missing_frame, drop_any))
     assert_records_equal(all_result, execute_generated(engine, missing_frame, drop_all))
+    all_columns = bound_step("dropMissingRows", columns=[], how="any")
+    all_columns_result = engine.apply_transform(missing_frame, all_columns)
+    assert len(records(all_columns_result)) == 1
+    assert_records_equal(all_columns_result, execute_generated(engine, missing_frame, all_columns))
 
     duplicate_frame = frame_for(
         engine,
         {"key": ["a", "a", "b", "b", "c"], "value": [1.0, 1.0, None, None, 3.0]},
     )
-    keep_last = step("dropDuplicates", columns=["key", "value"], keep="last")
-    keep_none = step("dropDuplicates", columns=["key", "value"], keep="none")
+    duplicate_columns = [
+        bound_ref("c:source:0", "key", 0),
+        bound_ref("c:source:1", "value", 1),
+    ]
+    keep_last = bound_step("dropDuplicates", columns=duplicate_columns, keep="last")
+    keep_none = bound_step("dropDuplicates", columns=duplicate_columns, keep="none")
     last_result = engine.apply_transform(duplicate_frame, keep_last)
     none_result = engine.apply_transform(duplicate_frame, keep_none)
 
@@ -153,6 +213,115 @@ def test_missing_and_duplicate_row_modes_match_generated_code(engine) -> None:
     assert [row["key"] for row in records(none_result)] == ["c"]
     assert_records_equal(last_result, execute_generated(engine, duplicate_frame, keep_last))
     assert_records_equal(none_result, execute_generated(engine, duplicate_frame, keep_none))
+    keep_all = bound_step("dropDuplicates", keep="first")
+    keep_all_result = engine.apply_transform(duplicate_frame, keep_all)
+    assert [row["key"] for row in records(keep_all_result)] == ["a", "b", "c"]
+    assert_records_equal(keep_all_result, execute_generated(engine, duplicate_frame, keep_all))
+
+
+def test_pandas_row_order_operations_target_duplicate_and_integer_labels_positionally() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        [
+            [1, 20.0, "x", "r0"],
+            [1, 10.0, "x", "r1"],
+            [2, None, "y", "r2"],
+            [1, 10.0, "x", "r3"],
+        ],
+        columns=["duplicate", "duplicate", 7, "label"],
+    )
+    plan = [
+        bound_step(
+            "sortRows",
+            rules=[
+                {
+                    "column": bound_ref("c:source:1", "duplicate", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        ),
+        bound_step(
+            "filterRows",
+            filterModel={
+                "filters": [
+                    {
+                        "column": bound_ref("c:source:0", "duplicate", 0),
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "equals", "value": 1}],
+                    }
+                ],
+                "sort": [
+                    {
+                        "column": bound_ref("c:source:2", "7", 2),
+                        "direction": "asc",
+                        "nulls": "last",
+                    }
+                ],
+            },
+        ),
+        bound_step(
+            "dropMissingRows",
+            columns=[bound_ref("c:source:1", "duplicate", 1)],
+            how="any",
+        ),
+        bound_step(
+            "dropDuplicates",
+            columns=[
+                bound_ref("c:source:1", "duplicate", 1),
+                bound_ref("c:source:2", "7", 2),
+            ],
+            keep="first",
+        ),
+    ]
+
+    transformed = frame
+    for operation in plan:
+        transformed = engine.apply_transform(transformed, operation)
+    code = engine.compile_plan(plan)
+    namespace: dict[str, Any] = {}
+    exec(code, namespace, namespace)
+    generated = namespace["clean_data"](frame)
+
+    pd.testing.assert_frame_equal(transformed, generated)
+    assert transformed["label"].tolist() == ["r1", "r0"]
+    assert list(transformed.columns) == ["duplicate", "duplicate", 7, "label"]
+    assert code.count(".iloc") >= 4
+
+
+def test_pandas_optional_all_column_row_operations_exclude_no_visible_data() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame([[1, "a"], [1, "a"], [None, "b"]], columns=[7, "label"])
+    missing = bound_step("dropMissingRows", columns=[], how="any")
+    duplicates = bound_step("dropDuplicates", keep="first")
+
+    transformed = engine.apply_transform(engine.apply_transform(frame, missing), duplicates)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([missing, duplicates]), namespace, namespace)
+    generated = namespace["clean_data"](frame)
+
+    pd.testing.assert_frame_equal(transformed, generated)
+    assert transformed.to_dict(orient="records") == [{7: 1.0, "label": "a"}]
+
+
+def test_polars_all_column_row_operations_are_safe_for_a_zero_column_frame() -> None:
+    engine = PolarsEngine()
+    source = pl.DataFrame()
+    runtime = engine.ensure_row_ids(source, "zero-columns")
+    plan = [
+        bound_step("dropMissingRows", columns=[], how="any"),
+        bound_step("dropDuplicates", keep="first"),
+    ]
+
+    transformed = runtime
+    for operation in plan:
+        transformed = engine.apply_transform(transformed, operation)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan(plan), namespace, namespace)
+    generated = namespace["clean_data"](source)
+
+    assert engine.shape(transformed) == {"rows": 0, "columns": 0}
+    assert generated.shape == (0, 0)
 
 
 def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(engine) -> None:
@@ -308,8 +477,9 @@ def test_group_aliases_are_unique_and_cannot_replace_keys() -> None:
                 "filterModel": {
                     "filters": [
                         {
-                            "column": "value",
-                            "predicates": [{"operator": "between", "value": 1}],
+                            "column": {"id": "c:source:0", "name": "value"},
+                            "type": "integer",
+                            "predicates": [{"kind": "predicate", "operator": "between", "value": 1}],
                         }
                     ],
                     "sort": [],
@@ -321,7 +491,13 @@ def test_group_aliases_are_unique_and_cannot_replace_keys() -> None:
             "filterRows",
             {
                 "filterModel": {
-                    "filters": [{"column": "value", "predicates": [{"operator": "mystery"}]}],
+                    "filters": [
+                        {
+                            "column": {"id": "c:source:0", "name": "value"},
+                            "type": "integer",
+                            "predicates": [{"kind": "predicate", "operator": "mystery"}],
+                        }
+                    ],
                     "sort": [],
                 }
             },

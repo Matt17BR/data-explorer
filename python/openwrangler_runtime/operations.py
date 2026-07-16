@@ -99,6 +99,20 @@ FILTER_OPERATORS = {
     "isNaN",
     "isNotNaN",
 }
+COLUMN_TYPES = {
+    "string",
+    "integer",
+    "float",
+    "decimal",
+    "boolean",
+    "datetime",
+    "date",
+    "duration",
+    "binary",
+    "list",
+    "struct",
+    "unknown",
+}
 _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "renameColumn": ("column",),
     "cloneColumn": ("column",),
@@ -163,6 +177,13 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     for key in _COLUMN_REFERENCE_LIST_FIELDS.get(kind, ()):
         params[key] = _normalize_column_reference_list(params[key], f"{kind}.{key}")
 
+    if kind == "dropMissingRows" and "columns" in params:
+        params["columns"] = _normalize_column_reference_list(
+            params["columns"], "dropMissingRows.columns", allow_empty=True
+        )
+    elif kind == "dropDuplicates" and "columns" in params:
+        params["columns"] = _normalize_column_reference_list(params["columns"], "dropDuplicates.columns")
+
     for key in ("column", "newColumn", "newName", "leftColumn", "rightColumn"):
         if key in reference_fields:
             continue
@@ -171,6 +192,8 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     for key in ("columns", "keys"):
         if key in _COLUMN_REFERENCE_LIST_FIELDS.get(kind, ()):
             continue
+        if key == "columns" and kind in {"dropMissingRows", "dropDuplicates"}:
+            continue
         if key in params and not _is_string_list(params[key], allow_empty=kind == "dropMissingRows"):
             raise OperationError(f"{kind}.{key} must be an array of column names.")
     for key in ("dropOriginal", "regex"):
@@ -178,9 +201,9 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError(f"{kind}.{key} must be a boolean.")
 
     if kind == "sortRows":
-        _validate_sort_rules(params["rules"], "sortRows.rules", allow_empty=False)
+        params["rules"] = _normalize_transform_sort_rules(params["rules"], "sortRows.rules", allow_empty=False)
     elif kind == "filterRows":
-        _validate_filter_model(params["filterModel"])
+        params["filterModel"] = _normalize_transform_filter_model(params["filterModel"])
     elif kind == "dropMissingRows" and params.get("how", "any") not in {"any", "all"}:
         raise OperationError("dropMissingRows.how must be any or all.")
     elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
@@ -259,43 +282,99 @@ def _normalize_column_reference(value: Any, label: str) -> dict[str, str]:
     return {"id": reference_id, "name": name}
 
 
-def _normalize_column_reference_list(value: Any, label: str) -> list[dict[str, str]]:
-    if not isinstance(value, list) or not value:
-        raise OperationError(f"{label} must be a non-empty array of column references.")
+def _normalize_column_reference_list(
+    value: Any,
+    label: str,
+    *,
+    allow_empty: bool = False,
+) -> list[dict[str, str]]:
+    if not isinstance(value, list) or (not allow_empty and not value):
+        qualifier = "an array" if allow_empty else "a non-empty array"
+        raise OperationError(f"{label} must be {qualifier} of column references.")
     return [_normalize_column_reference(item, f"{label}[{index}]") for index, item in enumerate(value)]
 
 
-def _validate_sort_rules(value: Any, label: str, *, allow_empty: bool) -> None:
+def _normalize_transform_sort_rules(value: Any, label: str, *, allow_empty: bool) -> list[dict[str, Any]]:
     if not isinstance(value, list) or (not allow_empty and not value):
         qualifier = "an array" if allow_empty else "a non-empty array"
         raise OperationError(f"{label} must be {qualifier}.")
-    for rule in value:
-        if not isinstance(rule, Mapping) or not isinstance(rule.get("column"), str) or not rule.get("column"):
-            raise OperationError("Each sort rule must name a column.")
-        if rule.get("direction") not in {"asc", "desc"} or rule.get("nulls", "last") not in {"first", "last"}:
+    normalized: list[dict[str, Any]] = []
+    for index, rule in enumerate(value):
+        rule_label = f"{label}[{index}]"
+        if not isinstance(rule, Mapping):
+            raise OperationError(f"{rule_label} must be an object.")
+        fields = set(rule)
+        missing = {"column", "direction", "nulls"} - fields
+        if missing:
+            raise OperationError(f"{rule_label} is missing required fields: {', '.join(sorted(missing))}.")
+        unexpected = fields - {"column", "direction", "nulls"}
+        if unexpected:
+            raise OperationError(f"{rule_label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}.")
+        if rule.get("direction") not in {"asc", "desc"} or rule.get("nulls") not in {"first", "last"}:
             raise OperationError("Sort directions and null ordering are invalid.")
+        normalized.append(
+            {
+                "column": _normalize_column_reference(rule.get("column"), f"{rule_label}.column"),
+                "direction": rule["direction"],
+                "nulls": rule["nulls"],
+            }
+        )
+    return normalized
 
 
-def _validate_filter_model(value: Any) -> None:
-    if not isinstance(value, Mapping) or not isinstance(value.get("filters"), list):
-        raise OperationError("filterRows.filterModel must contain a filters array.")
+def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise OperationError("filterRows.filterModel must be an object.")
+    fields = set(value)
+    missing = {"filters", "sort"} - fields
+    if missing:
+        raise OperationError(f"filterRows.filterModel is missing required fields: {', '.join(sorted(missing))}.")
+    unexpected = fields - {"logic", "filters", "sort"}
+    if unexpected:
+        raise OperationError(
+            f"filterRows.filterModel contains unknown fields: {', '.join(sorted(map(str, unexpected)))}."
+        )
+    if not isinstance(value.get("filters"), list):
+        raise OperationError("filterRows.filterModel.filters must be an array.")
     if value.get("logic", "and") not in {"and", "or"}:
         raise OperationError("filterRows.filterModel.logic must be either 'and' or 'or'.")
-    _validate_sort_rules(value.get("sort", []), "filterRows.filterModel.sort", allow_empty=True)
+    sort = _normalize_transform_sort_rules(value["sort"], "filterRows.filterModel.sort", allow_empty=True)
 
-    for column_filter in value["filters"]:
-        if (
-            not isinstance(column_filter, Mapping)
-            or not isinstance(column_filter.get("column"), str)
-            or not column_filter.get("column")
-        ):
-            raise OperationError("Each column filter must name a column.")
+    filters: list[dict[str, Any]] = []
+    for index, column_filter in enumerate(value["filters"]):
+        label = f"filterRows.filterModel.filters[{index}]"
+        if not isinstance(column_filter, Mapping):
+            raise OperationError(f"{label} must be an object.")
+        filter_fields = set(column_filter)
+        missing = {"column", "type", "predicates"} - filter_fields
+        if missing:
+            raise OperationError(f"{label} is missing required fields: {', '.join(sorted(missing))}.")
+        unexpected = filter_fields - {"column", "type", "logic", "valueFilter", "predicates"}
+        if unexpected:
+            raise OperationError(f"{label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}.")
+        if column_filter.get("type") not in COLUMN_TYPES:
+            raise OperationError(f"{label}.type is not a supported column type.")
         if column_filter.get("logic", "and") not in {"and", "or"}:
             raise OperationError("Column filter logic must be either 'and' or 'or'.")
-        predicates = column_filter.get("predicates", [])
+        predicates = column_filter["predicates"]
         if not isinstance(predicates, list):
             raise OperationError("Column filter predicates must be an array.")
-        for predicate in predicates:
+        normalized_predicates: list[dict[str, Any]] = []
+        for predicate_index, predicate in enumerate(predicates):
+            predicate_label = f"{label}.predicates[{predicate_index}]"
+            if not isinstance(predicate, Mapping):
+                raise OperationError(f"{predicate_label} must be an object.")
+            predicate_fields = set(predicate)
+            missing = {"kind", "operator"} - predicate_fields
+            if missing:
+                raise OperationError(f"{predicate_label} is missing required fields: {', '.join(sorted(missing))}.")
+            unexpected = predicate_fields - {"kind", "operator", "value", "secondValue"}
+            if unexpected:
+                raise OperationError(
+                    f"{predicate_label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}."
+                )
+            if predicate.get("kind") != "predicate":
+                raise OperationError(f"{predicate_label}.kind must be 'predicate'.")
             operator = predicate.get("operator") if isinstance(predicate, Mapping) else None
             if operator not in FILTER_OPERATORS:
                 raise OperationError(f"Unsupported filter operator: {operator!r}.")
@@ -303,14 +382,42 @@ def _validate_filter_model(value: Any) -> None:
                 raise OperationError(f"Filter operator {operator} requires a value.")
             if operator == "between" and "secondValue" not in predicate:
                 raise OperationError("Filter operator between requires a secondValue.")
+            normalized_predicates.append(dict(predicate))
 
         value_filter = column_filter.get("valueFilter")
         if value_filter is not None:
-            if not isinstance(value_filter, Mapping) or not isinstance(value_filter.get("selectedValues", []), list):
-                raise OperationError("Column valueFilter must contain a selectedValues array.")
+            if not isinstance(value_filter, Mapping):
+                raise OperationError("Column valueFilter must be an object.")
+            value_fields = set(value_filter)
+            missing = {"kind", "selectedValues", "includeNulls", "includeNaN"} - value_fields
+            if missing:
+                raise OperationError(f"Column valueFilter is missing required fields: {', '.join(sorted(missing))}.")
+            unexpected = value_fields - {"kind", "selectedValues", "includeNulls", "includeNaN", "search"}
+            if unexpected:
+                raise OperationError(
+                    f"Column valueFilter contains unknown fields: {', '.join(sorted(map(str, unexpected)))}."
+                )
+            if value_filter.get("kind") != "values" or not isinstance(value_filter.get("selectedValues"), list):
+                raise OperationError("Column valueFilter must contain kind 'values' and a selectedValues array.")
             for key in ("includeNulls", "includeNaN"):
-                if key in value_filter and not isinstance(value_filter[key], bool):
+                if not isinstance(value_filter[key], bool):
                     raise OperationError(f"Column valueFilter.{key} must be a boolean.")
+            if "search" in value_filter and not isinstance(value_filter["search"], str):
+                raise OperationError("Column valueFilter.search must be a string.")
+
+        normalized_filter = {
+            **dict(column_filter),
+            "column": _normalize_column_reference(column_filter.get("column"), f"{label}.column"),
+            "predicates": normalized_predicates,
+        }
+        if value_filter is not None:
+            normalized_filter["valueFilter"] = dict(value_filter)
+        filters.append(normalized_filter)
+
+    normalized: dict[str, Any] = {"filters": filters, "sort": sort}
+    if "logic" in value:
+        normalized["logic"] = value["logic"]
+    return normalized
 
 
 def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> None:
@@ -318,12 +425,16 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
 
     references: list[tuple[str, Any]] = []
     if kind == "sortRows":
-        references.extend(("rules.column", rule.get("column")) for rule in params["rules"])
+        references.extend(("rules.column.name", rule["column"].get("name")) for rule in params["rules"])
     elif kind == "filterRows":
         model = params["filterModel"]
-        references.extend(("filterModel.filters.column", item.get("column")) for item in model["filters"])
-        references.extend(("filterModel.sort.column", item.get("column")) for item in model.get("sort", []))
-    elif kind in {"dropMissingRows", "dropDuplicates", "oneHotEncode"}:
+        references.extend(("filterModel.filters.column.name", item["column"].get("name")) for item in model["filters"])
+        references.extend(
+            ("filterModel.sort.column.name", item["column"].get("name")) for item in model.get("sort", [])
+        )
+    elif kind in {"dropMissingRows", "dropDuplicates"}:
+        references.extend(("columns.name", item.get("name")) for item in params.get("columns", []))
+    elif kind == "oneHotEncode":
         references.extend(("columns", name) for name in params.get("columns", []))
     elif kind in {"selectColumns", "dropColumns"}:
         references.extend(("columns.name", item.get("name")) for item in params["columns"])

@@ -68,6 +68,12 @@ function columnReference(metadata: SessionMetadata, name: string): ColumnReferen
   return { id: column.id, name: column.name };
 }
 
+function columnReferenceAt(metadata: SessionMetadata, position: number): ColumnReference {
+  const column = metadata.schema[position];
+  assert.ok(column, `Expected a column at position ${position} in the opened session schema.`);
+  return { id: column.id, name: column.name };
+}
+
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The Open Wrangler extension must be discoverable.");
@@ -381,6 +387,11 @@ async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.
 
 async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {
   const started = Date.now();
+  // The coordinator snapshot can become active before the newly mounted Electron
+  // webview reports its browser-quantized physical scroll position. Wait across
+  // the webview debounce and a full render quiet period so inspection compares
+  // two confirmed UI states rather than racing that initial report.
+  const stableForMs = 1_200;
   let previous = "";
   let unchangedSince = started;
   while (Date.now() - started <= 10_000) {
@@ -389,7 +400,7 @@ async function waitForSettledViewState(testing: TestApi, expectation: string): P
     if (current !== previous) {
       previous = current;
       unchangedSince = Date.now();
-    } else if (active && Date.now() - unchangedSince >= 300) {
+    } else if (active && Date.now() - unchangedSince >= stableForMs) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -993,6 +1004,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "import pandas as pd",
       "import polars as pl",
       "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
+      "duplicate_frame = pd.DataFrame([[2, 10, 'a'], [1, 20, 'b'], [2, 10, 'c'], [2, None, 'd']], columns=['duplicate', 'duplicate', 7])",
       "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})"
     ].join("\n");
     await jupyter.testing.execute(notebook.uri, setupCode);
@@ -1076,6 +1088,185 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(pandasClosed.kind, "sessionClosed");
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
+
+    await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
+      variableName: "duplicate_frame",
+      notebookUri: notebook.uri
+    });
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.variableName === "duplicate_frame",
+      30_000,
+      "the packaged duplicate-column Pandas notebook variable session"
+    );
+    active = testing.activeSession();
+    assert.equal(active?.metadata.backend, "pandas");
+    if (!active) throw new Error("Duplicate-column Pandas notebook session did not become active.");
+    assert.deepEqual(
+      active.metadata.schema.map((column) => column.name),
+      ["duplicate", "duplicate", "7"]
+    );
+    const firstDuplicate = columnReferenceAt(active.metadata, 0);
+    const secondDuplicate = columnReferenceAt(active.metadata, 1);
+    const integerLabel = columnReferenceAt(active.metadata, 2);
+    assert.notEqual(firstDuplicate.id, secondDuplicate.id, "Duplicate labels must retain distinct stable identities.");
+    assert.equal(integerLabel.name, "7");
+
+    let duplicateRevision = active.metadata.revision;
+    const duplicateSteps: TransformStep[] = [
+      {
+        id: "duplicate-sort-second",
+        kind: "sortRows",
+        params: {
+          rules: [
+            { column: secondDuplicate, direction: "desc", nulls: "last" },
+            { column: integerLabel, direction: "desc", nulls: "last" }
+          ]
+        }
+      },
+      {
+        id: "duplicate-filter-first",
+        kind: "filterRows",
+        params: {
+          filterModel: {
+            logic: "and",
+            filters: [
+              {
+                column: firstDuplicate,
+                type: "integer",
+                predicates: [{ kind: "predicate", operator: "equals", value: 2 }]
+              }
+            ],
+            sort: []
+          }
+        }
+      },
+      {
+        id: "duplicate-drop-missing-second",
+        kind: "dropMissingRows",
+        params: { columns: [secondDuplicate], how: "any" }
+      },
+      {
+        id: "duplicate-drop-duplicates-pair",
+        kind: "dropDuplicates",
+        params: { columns: [firstDuplicate, secondDuplicate], keep: "first" }
+      }
+    ];
+    const expectedThirdColumnAfterStep = [["b", "c", "a", "d"], ["c", "a", "d"], ["c", "a"], ["c"]];
+    const expectedCodeMarkerAfterStep = [
+      /_sort_order_/u,
+      /_filter_mask_/u,
+      /_missing_positions_/u,
+      /_duplicate_positions_/u
+    ];
+
+    for (const [index, step] of duplicateSteps.entries()) {
+      const duplicatePreview = await testing.request({
+        kind: "previewStep",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: active.sessionId,
+        revision: duplicateRevision,
+        step,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(duplicatePreview.kind, "stepPreview", `Packaged ${step.kind} must preview duplicate labels.`);
+      if (duplicatePreview.kind !== "stepPreview") {
+        throw new Error(`Packaged ${step.kind} duplicate-label preview did not resolve.`);
+      }
+      assert.match(duplicatePreview.code, /\.iloc\b/u, `${step.kind} generated code must address Pandas positionally.`);
+      assert.match(
+        duplicatePreview.code,
+        expectedCodeMarkerAfterStep[index],
+        `${step.kind} generated code must contain its operation-specific positional implementation.`
+      );
+      assert.doesNotMatch(
+        JSON.stringify(duplicatePreview.metadata.draftStep),
+        /"position"\s*:/u,
+        "Private bound positions must not leak into the public draft step."
+      );
+      assert.deepEqual(
+        duplicatePreview.page.rows.map((row) => row.values[2]?.display),
+        expectedThirdColumnAfterStep[index],
+        `${step.kind} must target the selected duplicate or integer-labelled column before apply.`
+      );
+      const duplicateApplied = await testing.request({
+        kind: "applyDraft",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: active.sessionId,
+        revision: duplicatePreview.revision,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(duplicateApplied.kind, "planUpdated", `Packaged ${step.kind} must apply duplicate labels.`);
+      if (duplicateApplied.kind !== "planUpdated") {
+        throw new Error(`Packaged ${step.kind} duplicate-label apply did not resolve.`);
+      }
+      assert.equal(duplicateApplied.metadata.steps.length, index + 1);
+      assert.doesNotMatch(
+        JSON.stringify(duplicateApplied.metadata.steps),
+        /"position"\s*:/u,
+        "Private bound positions must not leak into persisted cleaning steps."
+      );
+      duplicateRevision = duplicateApplied.revision;
+    }
+
+    const duplicateSourceBeforeRestart = await jupyter.testing.execute(
+      notebook.uri,
+      "print(duplicate_frame.iloc[:, 0].tolist(), duplicate_frame.iloc[:, 1].tolist(), duplicate_frame.iloc[:, 2].tolist())"
+    );
+    assert.match(
+      duplicateSourceBeforeRestart,
+      /\[2, 1, 2, 2\] \[10\.0, 20\.0, 10\.0, nan\] \['a', 'b', 'c', 'd'\]/u,
+      "Cleaning steps must not mutate the originating notebook dataframe before kernel recovery."
+    );
+
+    const duplicateGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
+    const duplicateReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
+    assert.ok(duplicateReplacementGeneration > duplicateGeneration);
+    const duplicateReplayed = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "notebook-pandas-duplicate-row-operations-replay",
+      sessionId: active.sessionId,
+      revision: duplicateRevision,
+      offset: 0,
+      limit: 10,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(duplicateReplayed.kind, "page", "Duplicate/non-string row operations must replay after restart.");
+    if (duplicateReplayed.kind !== "page") throw new Error("Duplicate/non-string row-operation replay failed.");
+    assert.equal(jupyter.testing.stats(notebook.uri)?.generation, duplicateReplacementGeneration);
+    assert.equal(duplicateReplayed.page.totalRows, 1);
+    assert.deepEqual(
+      duplicateReplayed.page.rows[0]?.values.map((value) => value.display),
+      ["2", "10.0", "c"],
+      "Every operation must target the exact selected duplicate-column identity."
+    );
+    assert.deepEqual(
+      duplicateReplayed.metadata.schema.map((column) => column.name),
+      ["duplicate", "duplicate", "7"]
+    );
+    const duplicateClosed = await testing.request({
+      kind: "closeSession",
+      sessionId: active.sessionId,
+      revision: duplicateReplayed.revision
+    });
+    assert.equal(duplicateClosed.kind, "sessionClosed");
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0,
+      10_000,
+      "the duplicate-column Pandas notebook session to close"
+    );
+    const duplicateSourceState = await jupyter.testing.execute(
+      notebook.uri,
+      "print(duplicate_frame.iloc[:, 0].tolist(), duplicate_frame.iloc[:, 1].tolist(), duplicate_frame.iloc[:, 2].tolist())"
+    );
+    assert.match(
+      duplicateSourceState,
+      /\[2, 1, 2, 2\] \[10\.0, 20\.0, 10\.0, nan\] \['a', 'b', 'c', 'd'\]/u,
+      "Cleaning steps must not mutate the originating notebook dataframe."
+    );
 
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "polars_frame",
@@ -1935,7 +2126,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         {
           id: `${backend}-sort`,
           kind: "sortRows",
-          params: { rules: [{ column: "sales", direction: "desc", nulls: "last" }] }
+          params: { rules: [{ column: columnReference(opened.metadata, "sales"), direction: "desc", nulls: "last" }] }
         },
         {
           id: `${backend}-formula`,

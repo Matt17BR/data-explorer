@@ -112,7 +112,7 @@ describe("OperationBuilder", () => {
           predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "Milan" }]
         }
       ],
-      sort: []
+      sort: [{ column: "sales", direction: "desc" as const, nulls: "first" as const }]
     };
     render(
       <OperationBuilder
@@ -125,7 +125,229 @@ describe("OperationBuilder", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({ filterModel });
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      filterModel: {
+        logic: "and",
+        filters: [
+          {
+            column: { id: "c:0", name: "city" },
+            type: "string",
+            predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
+          }
+        ],
+        sort: [{ column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "first" }]
+      }
+    });
+  });
+
+  it("edits a saved stable filter step independently from an empty current view", () => {
+    const onPreview = vi.fn();
+    const duplicateColumns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+    ];
+    const initialStep = {
+      id: "filter-first-sort-second",
+      kind: "filterRows" as const,
+      params: {
+        filterModel: {
+          logic: "and" as const,
+          filters: [
+            {
+              column: { id: "c:0", name: "value" },
+              type: "string" as const,
+              predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "Milan" }]
+            }
+          ],
+          sort: [{ column: { id: "c:1", name: "value" }, direction: "desc" as const, nulls: "first" as const }]
+        }
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: duplicateColumns,
+          latestStepInputSchema: duplicateColumns,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("group", { name: "Saved cleaning query" })).toBeInTheDocument();
+    expect(screen.getByText("1 filters")).toBeInTheDocument();
+    expect(screen.getByText("1 sorts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("replaces a saved filter step with the current viewing query only when explicitly selected", () => {
+    const onPreview = vi.fn();
+    const initialStep = {
+      id: "saved-filter",
+      kind: "filterRows" as const,
+      params: {
+        filterModel: {
+          filters: [
+            {
+              column: { id: "c:0", name: "city" },
+              type: "string" as const,
+              predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "Milan" }]
+            }
+          ],
+          sort: []
+        }
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{
+          filters: [],
+          sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+        }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: /Replace it with the current viewing query/u }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: "saved-filter",
+        kind: "filterRows",
+        params: {
+          filterModel: {
+            filters: [],
+            sort: [{ column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "last" }]
+          }
+        }
+      },
+      "saved-filter"
+    );
+  });
+
+  it.each([
+    [
+      "ambiguous",
+      [
+        { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+        { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+      ],
+      "Viewing query column “value” is ambiguous because 2 input columns share that name."
+    ],
+    ["missing", metadata.schema, "Viewing query column “value” is no longer available in the operation input."]
+  ] as const)(
+    "rejects a %s viewing-query column instead of guessing a transform reference",
+    (_case, schema, message) => {
+      const onPreview = vi.fn();
+      render(
+        <OperationBuilder
+          metadata={{ ...metadata, schema: [...schema], shape: { rows: 2, columns: schema.length } }}
+          filterModel={{
+            filters: [{ column: "value", type: "string", predicates: [] }],
+            sort: []
+          }}
+          initialKind="filterRows"
+          onClose={() => undefined}
+          onPreview={onPreview}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+      expect(screen.getByRole("alert")).toHaveTextContent(message);
+      expect(onPreview).not.toHaveBeenCalled();
+    }
+  );
+
+  it("uses stable duplicate-safe references when adding and editing row sorts", () => {
+    const onPreview = vi.fn();
+    const duplicateColumns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: duplicateColumns,
+          latestStepInputSchema: duplicateColumns,
+          steps: [
+            {
+              id: "sort-second",
+              kind: "sortRows",
+              params: { rules: [{ column: { id: "c:1", name: "value" }, direction: "desc", nulls: "first" }] }
+            }
+          ]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={{
+          id: "sort-second",
+          kind: "sortRows",
+          params: { rules: [{ column: { id: "c:1", name: "value" }, direction: "desc", nulls: "first" }] }
+        }}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("option", { name: "value — column 1" })).toHaveValue("c:0");
+    expect((screen.getByRole("option", { name: "value — column 2" }) as HTMLOptionElement).selected).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      rules: [{ column: { id: "c:1", name: "value" }, direction: "desc", nulls: "first" }]
+    });
+  });
+
+  it("emits an explicit empty reference list when drop-missing applies to all columns", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="dropMissingRows"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({ columns: [], how: "any" });
+  });
+
+  it("uses stable duplicate-safe references for drop-duplicates columns", () => {
+    const onPreview = vi.fn();
+    const duplicateColumns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: duplicateColumns }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="dropDuplicates"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const select = screen.getByRole("listbox") as HTMLSelectElement;
+    select.options[1].selected = true;
+    fireEvent.change(select);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      columns: [{ id: "c:1", name: "value" }],
+      keep: "first"
+    });
   });
 
   it("edits structural steps against their original input schema", () => {

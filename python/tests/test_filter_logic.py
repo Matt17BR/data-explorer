@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import pandas as pd
@@ -93,7 +94,23 @@ def _filtered_labels(frame: Any, backend: str) -> list[str]:
 
 def _execute_generated_filter(engine: Any, frame: Any, model: dict[str, Any]) -> Any:
     namespace: dict[str, Any] = {}
-    step = {"id": "filter", "kind": "filterRows", "params": {"filterModel": model}}
+    bound_model = deepcopy(model)
+    positions = {str(name): position for position, name in enumerate(frame.columns)}
+    for column_filter in bound_model["filters"]:
+        name = str(column_filter["column"])
+        column_filter["column"] = {
+            "id": f"c:source:{positions[name]}",
+            "name": name,
+            "position": positions[name],
+        }
+    for rule in bound_model["sort"]:
+        name = str(rule["column"])
+        rule["column"] = {
+            "id": f"c:source:{positions[name]}",
+            "name": name,
+            "position": positions[name],
+        }
+    step = {"id": "filter", "kind": "filterRows", "params": {"filterModel": bound_model}}
     exec(engine.compile_plan([step]), namespace, namespace)
     return namespace["clean_data"](frame)
 

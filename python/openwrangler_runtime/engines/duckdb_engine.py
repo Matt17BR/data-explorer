@@ -392,13 +392,20 @@ class DuckDBEngine(DataFrameEngine):
         kind = str(step["kind"])
         params = step["params"]
         if kind == "sortRows":
-            return self.apply_filter_model(frame, {"filters": [], "sort": params["rules"]})
+            rules = [{**rule, "column": bound_column_name(rule["column"], kind)} for rule in params["rules"]]
+            return self.apply_filter_model(frame, {"filters": [], "sort": rules})
         if kind == "filterRows":
-            return self.apply_filter_model(frame, params["filterModel"])
+            return self.apply_filter_model(frame, _bound_duckdb_filter_model(params["filterModel"]))
         if kind == "dropMissingRows":
-            return self._drop_missing(frame, params.get("columns"), params.get("how", "any"))
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
+            return self._drop_missing(frame, columns, params.get("how", "any"))
         if kind == "dropDuplicates":
-            return self._drop_duplicates(frame, params.get("columns"), params.get("keep", "first"))
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
+            return self._drop_duplicates(frame, columns, params.get("keep", "first"))
         if kind == "selectColumns":
             row_id = self._row_id_column(frame)
             columns = [bound_column_name(value, kind) for value in params["columns"]]
@@ -520,15 +527,23 @@ class DuckDBEngine(DataFrameEngine):
         params = step["params"]
         prefix = "    "
         if kind == "sortRows":
-            return [f"{prefix}df = _ow_query(df, {_filter_query([], {'filters': [], 'sort': params['rules']})!r})"]
+            rules = [{**rule, "column": bound_column_name(rule["column"], kind)} for rule in params["rules"]]
+            return [f"{prefix}df = _ow_query(df, {_filter_query([], {'filters': [], 'sort': rules})!r})"]
         if kind == "filterRows":
             # The runtime helper receives the current columns so unknown saved
             # filters remain ignorable after an earlier drop/rename step.
-            return [f"{prefix}df = _ow_filter(df, {dict(params['filterModel'])!r})"]
+            model = _bound_duckdb_filter_model(params["filterModel"])
+            return [f"{prefix}df = _ow_filter(df, {model!r})"]
         if kind == "dropMissingRows":
-            return [f"{prefix}df = _ow_drop_missing(df, {params.get('columns')!r}, {params.get('how', 'any')!r})"]
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
+            return [f"{prefix}df = _ow_drop_missing(df, {columns!r}, {params.get('how', 'any')!r})"]
         if kind == "dropDuplicates":
-            return [f"{prefix}df = _ow_drop_duplicates(df, {params.get('columns')!r}, {params.get('keep', 'first')!r})"]
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
+            return [f"{prefix}df = _ow_drop_duplicates(df, {columns!r}, {params.get('keep', 'first')!r})"]
         if kind == "selectColumns":
             columns = [bound_column_name(value, kind) for value in params["columns"]]
             return [f"{prefix}df = _ow_select(df, {columns!r})"]
@@ -980,6 +995,17 @@ def _unique_internal(existing: Iterable[str], base: str) -> str:
     return candidate
 
 
+def _bound_duckdb_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **model,
+        "filters": [
+            {**column_filter, "column": bound_column_name(column_filter["column"], "filterRows")}
+            for column_filter in model.get("filters", [])
+        ],
+        "sort": [{**rule, "column": bound_column_name(rule["column"], "filterRows")} for rule in model.get("sort", [])],
+    }
+
+
 def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
     available = set(columns)
     column_conditions: list[str] = []
@@ -1003,6 +1029,8 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
                 alternatives.append(f"{identifier} IS NULL")
             if value_filter.get("includeNaN") and column_filter.get("type") == "float":
                 alternatives.append(f"coalesce(isnan({identifier}), FALSE)")
+            if not alternatives:
+                alternatives.append("FALSE")
             conditions.append("(" + " OR ".join(alternatives) + ")")
         conditions.extend(
             _predicate_expression(identifier, predicate, column_filter.get("type"))
@@ -1268,6 +1296,8 @@ def _ow_filter(df, model):
                 alternatives.append(identifier + " IS NULL")
             if values.get("includeNaN") and column_filter.get("type") == "float":
                 alternatives.append("coalesce(isnan(" + identifier + "), FALSE)")
+            if not alternatives:
+                alternatives.append("FALSE")
             conditions.append("(" + " OR ".join(alternatives) + ")")
         for predicate in column_filter.get("predicates", []):
             conditions.append(_ow_predicate(identifier, predicate, column_filter.get("type")))

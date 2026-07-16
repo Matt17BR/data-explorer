@@ -6,6 +6,7 @@ import type {
   ColumnSchema,
   OperationKind,
   SessionMetadata,
+  TransformFilterModel,
   TransformStep
 } from "../../shared/protocol";
 import { operationCatalog, operationGroups, operationByKind } from "../../shared/operations";
@@ -50,13 +51,14 @@ export function OperationBuilder({
   const activeInitial = initialStep?.kind === selectedKind ? initialStep : undefined;
   const availableColumns =
     activeInitial && metadata.latestStepInputSchema ? metadata.latestStepInputSchema : metadata.schema;
+  const savedFilterModel = activeInitial?.kind === "filterRows" ? activeInitial.params.filterModel : undefined;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy || !selectedKind) return;
     try {
       const form = new FormData(event.currentTarget);
-      const params = buildParams(selectedKind, form, filterModel, availableColumns);
+      const params = buildParams(selectedKind, form, filterModel, availableColumns, savedFilterModel);
       const step = {
         id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
         kind: selectedKind,
@@ -170,7 +172,9 @@ export function OperationBuilder({
                   <button
                     type="submit"
                     disabled={
-                      selectedKind === "filterRows" && filterModel.filters.length === 0 && filterModel.sort.length === 0
+                      selectedKind === "filterRows" &&
+                      (savedFilterModel ?? filterModel).filters.length === 0 &&
+                      (savedFilterModel ?? filterModel).sort.length === 0
                     }
                   >
                     Preview changes
@@ -230,11 +234,11 @@ function OperationFields({
       <Fieldset legend="Sort rules">
         {Array.from({ length: Math.max(sortRows, rules.length) }, (_, index) => (
           <div className="compoundRow" key={index}>
-            <ColumnSelect
+            <ColumnReferenceSelect
               name="sortColumn"
               label={`Column ${index + 1}`}
-              columns={columnNames}
-              defaultValue={String(rules[index]?.column ?? columnNames[0] ?? "")}
+              columns={columns}
+              defaultValue={columnReferenceId(rules[index]?.column) ?? columns[0]?.id}
             />
             <SelectField
               name="sortDirection"
@@ -263,27 +267,47 @@ function OperationFields({
     );
   }
   if (kind === "filterRows") {
+    const savedFilterModel = initialStep?.kind === "filterRows" ? initialStep.params.filterModel : undefined;
+    const displayedFilterModel = savedFilterModel ?? filterModel;
+    const currentQueryIsEmpty = filterModel.filters.length === 0 && filterModel.sort.length === 0;
     return (
-      <Fieldset legend="Current viewing query">
+      <Fieldset legend={savedFilterModel ? "Saved cleaning query" : "Current viewing query"}>
         <p className="panelNote">
-          This explicit action copies the current viewing filters and sorts into the cleaning plan. Later viewing
-          changes remain independent.
+          {savedFilterModel
+            ? "This edit previews the stable filters and sorts already stored in the cleaning step. Current viewing changes remain independent."
+            : "This explicit action copies the current viewing filters and sorts into the cleaning plan. Later viewing changes remain independent."}
         </p>
         <div className="querySummary">
-          <strong>{filterModel.filters.length} filters</strong>
-          <strong>{filterModel.sort.length} sorts</strong>
+          <strong>{displayedFilterModel.filters.length} filters</strong>
+          <strong>{displayedFilterModel.sort.length} sorts</strong>
         </div>
+        {savedFilterModel && (
+          <div className="formField" role="radiogroup" aria-label="Filter step source">
+            <label className="checkboxField">
+              <input name="filterSource" type="radio" value="saved" defaultChecked />
+              <span>Keep the saved cleaning query</span>
+            </label>
+            <label className="checkboxField">
+              <input name="filterSource" type="radio" value="current" disabled={currentQueryIsEmpty} />
+              <span>
+                Replace it with the current viewing query ({filterModel.filters.length} filters,{" "}
+                {filterModel.sort.length} sorts)
+              </span>
+            </label>
+            {currentQueryIsEmpty && <small>Add a viewing filter or sort before replacing the saved query.</small>}
+          </div>
+        )}
       </Fieldset>
     );
   }
   if (kind === "dropMissingRows") {
     return (
       <>
-        <ColumnsSelect
+        <ColumnReferencesSelect
           name="columns"
           label="Columns (none means all)"
-          columns={columnNames}
-          defaultValue={initialColumns("columns")}
+          columns={columns}
+          defaultValue={initialColumnReferences("columns")}
           required={false}
         />
         <SelectField
@@ -301,11 +325,11 @@ function OperationFields({
   if (kind === "dropDuplicates") {
     return (
       <>
-        <ColumnsSelect
+        <ColumnReferencesSelect
           name="columns"
           label="Compare columns (none means all)"
-          columns={columnNames}
-          defaultValue={initialColumns("columns")}
+          columns={columns}
+          defaultValue={initialColumnReferences("columns")}
           required={false}
         />
         <SelectField
@@ -639,7 +663,8 @@ function buildParams(
   kind: OperationKind,
   form: FormData,
   filterModel: FilterModel,
-  availableColumns: ColumnSchema[]
+  availableColumns: ColumnSchema[],
+  savedFilterModel?: TransformFilterModel
 ): Record<string, unknown> {
   const value = (name: string) => String(form.get(name) ?? "");
   const optional = (target: Record<string, unknown>, name: string, transformed = value(name)) => {
@@ -652,16 +677,19 @@ function buildParams(
       .map(String)
       .map((id) => referenceForId(id, availableColumns));
   if (kind === "sortRows") {
-    const columns = form.getAll("sortColumn").map(String);
+    const columns = columnReferences("sortColumn");
     const directions = form.getAll("sortDirection").map(String);
     const nulls = form.getAll("sortNulls").map(String);
     return { rules: columns.map((column, index) => ({ column, direction: directions[index], nulls: nulls[index] })) };
   }
-  if (kind === "filterRows") return { filterModel };
-  if (kind === "dropMissingRows") return { columns: form.getAll("columns").map(String), how: value("how") };
+  if (kind === "filterRows") {
+    const useSaved = savedFilterModel !== undefined && value("filterSource") !== "current";
+    return { filterModel: useSaved ? savedFilterModel : transformFilterModel(filterModel, availableColumns) };
+  }
+  if (kind === "dropMissingRows") return { columns: columnReferences("columns"), how: value("how") };
   if (kind === "dropDuplicates") {
     const params: Record<string, unknown> = { keep: value("keep") };
-    const columns = form.getAll("columns").map(String);
+    const columns = columnReferences("columns");
     if (columns.length) params.columns = columns;
     return params;
   }
@@ -773,6 +801,27 @@ function referenceForId(id: string, columns: ColumnSchema[]): ColumnReference {
   const column = columns.find((candidate) => candidate.id === id);
   if (!column) throw new Error("The selected column is no longer available.");
   return { id: column.id, name: column.name };
+}
+
+function transformFilterModel(filterModel: FilterModel, columns: ColumnSchema[]): TransformFilterModel {
+  const referenceForName = (name: string): ColumnReference => {
+    const matches = columns.filter((column) => column.name === name);
+    if (matches.length === 0) {
+      throw new Error(`Viewing query column “${name}” is no longer available in the operation input.`);
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Viewing query column “${name}” is ambiguous because ${matches.length} input columns share that name.`
+      );
+    }
+    return { id: matches[0].id, name: matches[0].name };
+  };
+
+  return {
+    ...(filterModel.logic === undefined ? {} : { logic: filterModel.logic }),
+    filters: filterModel.filters.map((filter) => ({ ...filter, column: referenceForName(filter.column) })),
+    sort: filterModel.sort.map((rule) => ({ ...rule, column: referenceForName(rule.column) }))
+  };
 }
 
 function Fieldset({ legend, children }: { legend: string; children: ReactNode }) {

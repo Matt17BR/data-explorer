@@ -591,6 +591,30 @@ describe("protocol-v2 request validation", () => {
   });
 
   it.each([
+    {
+      id: "sort-rows",
+      kind: "sortRows",
+      params: { rules: [{ column: valueReference, direction: "asc", nulls: "last" }] }
+    },
+    {
+      id: "filter-rows",
+      kind: "filterRows",
+      params: {
+        filterModel: {
+          logic: "and",
+          filters: [
+            {
+              column: valueReference,
+              type: "integer",
+              predicates: [{ kind: "predicate", operator: "gte", value: 1 }]
+            }
+          ],
+          sort: [{ column: otherReference, direction: "desc", nulls: "first" }]
+        }
+      }
+    },
+    { id: "drop-missing", kind: "dropMissingRows", params: { columns: [], how: "any" } },
+    { id: "drop-duplicates", kind: "dropDuplicates", params: { columns: [valueReference], keep: "first" } },
     { id: "select", kind: "selectColumns", params: { columns: [valueReference, otherReference] } },
     { id: "drop", kind: "dropColumns", params: { columns: [valueReference] } },
     { id: "rename", kind: "renameColumn", params: { column: valueReference, newName: "amount" } },
@@ -612,6 +636,24 @@ describe("protocol-v2 request validation", () => {
   });
 
   it.each([
+    {
+      id: "sort-legacy-name",
+      kind: "sortRows",
+      params: { rules: [{ column: "value", direction: "asc", nulls: "last" }] }
+    },
+    {
+      id: "filter-legacy-name",
+      kind: "filterRows",
+      params: {
+        filterModel: {
+          filters: [{ column: "value", type: "integer", predicates: [] }],
+          sort: []
+        }
+      }
+    },
+    { id: "drop-missing-legacy", kind: "dropMissingRows", params: { columns: ["value"] } },
+    { id: "drop-duplicates-empty", kind: "dropDuplicates", params: { columns: [] } },
+    { id: "drop-duplicates-legacy", kind: "dropDuplicates", params: { columns: ["value"] } },
     { id: "select-string", kind: "selectColumns", params: { columns: ["value"] } },
     { id: "drop-empty", kind: "dropColumns", params: { columns: [] } },
     { id: "rename-string", kind: "renameColumn", params: { column: "value", newName: "amount" } },

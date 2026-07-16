@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from openwrangler_runtime._column_binding import ColumnBindingError, bind_step
@@ -20,7 +22,7 @@ def ref(identifier: str, name: str) -> dict[str, str]:
     return {"id": identifier, "name": name}
 
 
-def step(kind: str, **params: object) -> dict[str, object]:
+def step(kind: str, **params: Any) -> dict[str, Any]:
     return {"id": f"test-{kind}", "kind": kind, "params": params}
 
 
@@ -158,3 +160,147 @@ def test_binding_copies_operations_outside_the_id_backed_set() -> None:
     assert bound == public
     assert bound is not public
     assert bound["params"] is not public["params"]
+
+
+def test_binding_recursively_resolves_row_and_order_references() -> None:
+    public = step(
+        "filterRows",
+        filterModel={
+            "logic": "and",
+            "filters": [
+                {
+                    "column": ref("c:source:1", "duplicate"),
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gt", "value": 1}],
+                }
+            ],
+            "sort": [
+                {
+                    "column": ref("c:source:2", "value"),
+                    "direction": "desc",
+                    "nulls": "last",
+                }
+            ],
+        },
+    )
+
+    bound = bind_step(public, SCHEMA, LINEAGE)
+
+    assert bound["params"]["filterModel"]["filters"][0]["column"] == {
+        "id": "c:source:1",
+        "name": "duplicate",
+        "position": 1,
+    }
+    assert bound["params"]["filterModel"]["sort"][0]["column"] == {
+        "id": "c:source:2",
+        "name": "value",
+        "position": 2,
+    }
+    assert public["params"]["filterModel"]["filters"][0]["column"] == ref("c:source:1", "duplicate")
+
+
+def test_binding_rejects_a_filter_type_that_does_not_match_the_referenced_schema() -> None:
+    public = step(
+        "filterRows",
+        filterModel={
+            "filters": [
+                {
+                    "column": ref("c:source:2", "value"),
+                    "type": "string",
+                    "predicates": [{"kind": "predicate", "operator": "isNaN"}],
+                }
+            ],
+            "sort": [],
+        },
+    )
+
+    with pytest.raises(ColumnBindingError, match="Column type mismatch.*'integer'.*'string'"):
+        bind_step(public, SCHEMA, LINEAGE)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        step(
+            "sortRows",
+            rules=[
+                {
+                    "column": ref("c:source:99", "value"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        ),
+        step(
+            "filterRows",
+            filterModel={
+                "filters": [
+                    {
+                        "column": ref("c:source:2", "stale-value"),
+                        "type": "integer",
+                        "predicates": [],
+                    }
+                ],
+                "sort": [],
+            },
+        ),
+        step("dropMissingRows", columns=[ref("c:source:99", "value")]),
+        step("dropDuplicates", columns=[ref("c:source:2", "stale-value")]),
+    ],
+)
+def test_binding_rejects_stale_or_mismatched_row_order_references(operation) -> None:
+    with pytest.raises(ColumnBindingError, match="Unknown or stale|name mismatch"):
+        bind_step(operation, SCHEMA, LINEAGE)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        step(
+            "sortRows",
+            rules=[
+                {"column": ref("c:source:2", "value"), "direction": "asc", "nulls": "last"},
+                {"column": ref("c:source:2", "value"), "direction": "desc", "nulls": "first"},
+            ],
+        ),
+        step(
+            "filterRows",
+            filterModel={
+                "filters": [
+                    {
+                        "column": ref("c:source:2", "value"),
+                        "type": "integer",
+                        "predicates": [],
+                    },
+                    {
+                        "column": ref("c:source:2", "value"),
+                        "type": "integer",
+                        "predicates": [],
+                    },
+                ],
+                "sort": [],
+            },
+        ),
+        step(
+            "dropMissingRows",
+            columns=[ref("c:source:2", "value"), ref("c:source:2", "value")],
+        ),
+        step(
+            "dropDuplicates",
+            columns=[ref("c:source:2", "value"), ref("c:source:2", "value")],
+        ),
+    ],
+)
+def test_binding_rejects_duplicate_row_order_references(operation) -> None:
+    with pytest.raises(ColumnBindingError, match="duplicate column identity"):
+        bind_step(operation, SCHEMA, LINEAGE)
+
+
+def test_binding_preserves_optional_all_column_semantics() -> None:
+    omitted_missing = bind_step(step("dropMissingRows", how="any"), SCHEMA, LINEAGE)
+    empty_missing = bind_step(step("dropMissingRows", columns=[], how="all"), SCHEMA, LINEAGE)
+    omitted_duplicates = bind_step(step("dropDuplicates", keep="first"), SCHEMA, LINEAGE)
+
+    assert "columns" not in omitted_missing["params"]
+    assert empty_missing["params"]["columns"] == []
+    assert "columns" not in omitted_duplicates["params"]

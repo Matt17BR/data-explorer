@@ -239,7 +239,17 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
     sorted_preview = manager.preview_step(
         session_id,
         0,
-        transform("sort", "sortRows", rules=[{"column": "value", "direction": "desc", "nulls": "last"}]),
+        transform(
+            "sort",
+            "sortRows",
+            rules=[
+                {
+                    "column": source_ref(1, "value"),
+                    "direction": "desc",
+                    "nulls": "last",
+                }
+            ],
+        ),
         0,
         10,
     )
@@ -258,9 +268,9 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
             filterModel={
                 "filters": [
                     {
-                        "column": "value",
+                        "column": source_ref(1, "value"),
                         "type": "integer",
-                        "predicates": [{"operator": "gt", "value": 1}],
+                        "predicates": [{"kind": "predicate", "operator": "gt", "value": 1}],
                     }
                 ],
                 "sort": [],
@@ -323,6 +333,175 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
     assert grouped["diff"]["removedColumns"] == ["value"]
     assert grouped["diff"]["addedRows"] == 2
     assert grouped["diff"]["removedRows"] == 3
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_row_order_binding_replays_after_an_earlier_column_reorder(tmp_path, backend):
+    path = tmp_path / f"row-order-replay-{backend}.csv"
+    path.write_text("a,b\n3,z\n1,x\n2,y\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+
+    manager.preview_step(
+        session_id,
+        0,
+        transform(
+            "reorder",
+            "selectColumns",
+            columns=[source_ref(1, "b"), source_ref(0, "a")],
+        ),
+        0,
+        10,
+    )
+    reordered = manager.apply_draft(session_id, 1, 0, 10)
+    assert [column["id"] for column in reordered["metadata"]["schema"]] == [
+        "c:source:1",
+        "c:source:0",
+    ]
+
+    sorted_preview = manager.preview_step(
+        session_id,
+        2,
+        transform(
+            "sort-a",
+            "sortRows",
+            rules=[
+                {
+                    "column": source_ref(0, "a"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        ),
+        0,
+        10,
+    )
+    assert [row["values"][0]["display"] for row in sorted_preview["page"]["rows"]] == ["x", "y", "z"]
+    applied = manager.apply_draft(session_id, 3, 0, 10)
+    inspection = manager.inspect_step(session_id, 4, "sort-a", 0, 10)
+
+    assert [row["id"] for row in inspection["outputPage"]["rows"]] == [row["id"] for row in applied["page"]["rows"]]
+    assert [row["values"][0]["display"] for row in inspection["outputPage"]["rows"]] == ["x", "y", "z"]
+    if backend == "pandas":
+        assert ".iloc" in inspection["code"]
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_filter_binding_rejects_a_stale_semantic_type_before_engine_dispatch(tmp_path, backend):
+    path = tmp_path / f"filter-type-{backend}.csv"
+    path.write_text("value\n1.0\n2.0\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    actual_type = opened["metadata"]["schema"][0]["type"]
+    stale_type = "string" if actual_type != "string" else "integer"
+
+    with pytest.raises(EngineError, match=f"Column type mismatch.*'{actual_type}'.*'{stale_type}'"):
+        manager.preview_step(
+            opened["metadata"]["sessionId"],
+            0,
+            transform(
+                "stale-filter-type",
+                "filterRows",
+                filterModel={
+                    "filters": [
+                        {
+                            "column": source_ref(0, "value"),
+                            "type": stale_type,
+                            "predicates": [{"kind": "predicate", "operator": "isNaN"}],
+                        }
+                    ],
+                    "sort": [],
+                },
+            ),
+            0,
+            10,
+        )
+
+    assert manager.sessions[opened["metadata"]["sessionId"]].revision == 0
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_all_column_row_operations_exclude_the_private_row_identity(tmp_path, backend):
+    path = tmp_path / f"all-visible-columns-{backend}.csv"
+    path.write_text("a,b\n1,x\n1,x\n,\n,\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+
+    missing = manager.preview_step(
+        session_id,
+        0,
+        transform("drop-all-missing", "dropMissingRows", columns=[], how="all"),
+        0,
+        10,
+    )
+    assert missing["page"]["totalRows"] == 2
+    manager.discard_draft(session_id, 1, 0, 10)
+
+    duplicates = manager.preview_step(
+        session_id,
+        2,
+        transform("deduplicate-all", "dropDuplicates", keep="first"),
+        0,
+        10,
+    )
+    assert duplicates["page"]["totalRows"] == 2
+    assert all("open_wrangler_internal" not in column["name"] for column in duplicates["metadata"]["schema"])
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_non_float_include_nan_value_filter_previews_an_empty_result(tmp_path, backend):
+    path = tmp_path / f"integer-include-nan-{backend}.csv"
+    path.write_text("value\n1\n2\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+
+    preview = manager.preview_step(
+        opened["metadata"]["sessionId"],
+        0,
+        transform(
+            "integer-nan-filter",
+            "filterRows",
+            filterModel={
+                "filters": [
+                    {
+                        "column": source_ref(0, "value"),
+                        "type": opened["metadata"]["schema"][0]["type"],
+                        "valueFilter": {
+                            "kind": "values",
+                            "selectedValues": [],
+                            "includeNulls": False,
+                            "includeNaN": True,
+                        },
+                        "predicates": [],
+                    }
+                ],
+                "sort": [],
+            },
+        ),
+        0,
+        10,
+    )
+
+    assert opened["metadata"]["schema"][0]["type"] != "float"
+    assert preview["page"]["totalRows"] == 0
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

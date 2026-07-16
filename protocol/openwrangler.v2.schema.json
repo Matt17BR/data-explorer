@@ -333,6 +333,49 @@
         "sort": { "type": "array", "items": { "$ref": "#/definitions/SortRule" } }
       }
     },
+    "TransformSortRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "direction", "nulls"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "direction": { "type": "string", "enum": ["asc", "desc"] },
+        "nulls": { "type": "string", "enum": ["first", "last"] }
+      }
+    },
+    "TransformColumnFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "type", "predicates"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "type": { "$ref": "#/definitions/ColumnType" },
+        "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
+        "valueFilter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "selectedValues", "includeNulls", "includeNaN"],
+          "properties": {
+            "kind": { "const": "values" },
+            "selectedValues": { "type": "array", "items": {} },
+            "includeNulls": { "type": "boolean" },
+            "includeNaN": { "type": "boolean" },
+            "search": { "type": "string" }
+          }
+        },
+        "predicates": { "type": "array", "items": { "$ref": "#/definitions/PredicateFilter" } }
+      }
+    },
+    "TransformFilterModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filters", "sort"],
+      "properties": {
+        "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
+        "filters": { "type": "array", "items": { "$ref": "#/definitions/TransformColumnFilter" } },
+        "sort": { "type": "array", "items": { "$ref": "#/definitions/TransformSortRule" } }
+      }
+    },
     "OperationKind": {
       "type": "string",
       "enum": [
@@ -392,20 +435,20 @@
       "additionalProperties": false,
       "required": ["rules"],
       "properties": {
-        "rules": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/SortRule" } }
+        "rules": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/TransformSortRule" } }
       }
     },
     "FilterRowsParams": {
       "type": "object",
       "additionalProperties": false,
       "required": ["filterModel"],
-      "properties": { "filterModel": { "$ref": "#/definitions/FilterModel" } }
+      "properties": { "filterModel": { "$ref": "#/definitions/TransformFilterModel" } }
     },
     "DropMissingRowsParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "columns": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "columns": { "type": "array", "items": { "$ref": "#/definitions/ColumnReference" } },
         "how": { "type": "string", "enum": ["any", "all"] }
       }
     },
@@ -413,7 +456,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "columns": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "columns": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" },
         "keep": { "type": "string", "enum": ["first", "last", "none"] }
       }
     },

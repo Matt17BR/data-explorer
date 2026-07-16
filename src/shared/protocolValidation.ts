@@ -667,6 +667,38 @@ function isSortRule(value: unknown): boolean {
   );
 }
 
+function isTransformSortRule(value: unknown): boolean {
+  const candidate = exactRecord(value, ["column", "direction", "nulls"]);
+  return (
+    candidate !== undefined &&
+    isColumnReference(candidate.column) &&
+    isOneOf(candidate.direction, ["asc", "desc"]) &&
+    isOneOf(candidate.nulls, ["first", "last"])
+  );
+}
+
+function isTransformColumnFilter(value: unknown): boolean {
+  const candidate = exactRecord(value, ["column", "type", "predicates"], ["logic", "valueFilter"]);
+  return (
+    candidate !== undefined &&
+    isColumnReference(candidate.column) &&
+    isEnumMember(candidate.type, COLUMN_TYPES) &&
+    optional(candidate, "logic", (logic) => isOneOf(logic, ["and", "or"])) &&
+    optional(candidate, "valueFilter", isValueFilter) &&
+    isArrayOf(candidate.predicates, isPredicateFilter)
+  );
+}
+
+function isTransformFilterModel(value: unknown): boolean {
+  const candidate = exactRecord(value, ["filters", "sort"], ["logic"]);
+  return (
+    candidate !== undefined &&
+    optional(candidate, "logic", (logic) => isOneOf(logic, ["and", "or"])) &&
+    isArrayOf(candidate.filters, isTransformColumnFilter) &&
+    isArrayOf(candidate.sort, isTransformSortRule)
+  );
+}
+
 export function isTransformStep(value: unknown): value is TransformStep {
   const candidate = exactRecord(value, ["id", "kind", "params"]);
   if (
@@ -682,17 +714,17 @@ export function isTransformStep(value: unknown): value is TransformStep {
   switch (candidate.kind) {
     case "sortRows": {
       const decoded = exactRecord(params, ["rules"]);
-      return decoded !== undefined && isNonEmptyArrayOf(decoded.rules, isSortRule);
+      return decoded !== undefined && isNonEmptyArrayOf(decoded.rules, isTransformSortRule);
     }
     case "filterRows": {
       const decoded = exactRecord(params, ["filterModel"]);
-      return decoded !== undefined && isFilterModel(decoded.filterModel);
+      return decoded !== undefined && isTransformFilterModel(decoded.filterModel);
     }
     case "dropMissingRows": {
       const decoded = exactRecord(params, [], ["columns", "how"]);
       return (
         decoded !== undefined &&
-        optional(decoded, "columns", (columns) => isStringArray(columns, true)) &&
+        optional(decoded, "columns", (columns) => isArrayOf(columns, isColumnReference)) &&
         optional(decoded, "how", (how) => isOneOf(how, ["any", "all"]))
       );
     }
@@ -700,7 +732,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       const decoded = exactRecord(params, [], ["columns", "keep"]);
       return (
         decoded !== undefined &&
-        optional(decoded, "columns", (columns) => isStringArray(columns, false)) &&
+        optional(decoded, "columns", (columns) => isNonEmptyArrayOf(columns, isColumnReference)) &&
         optional(decoded, "keep", (keep) => isOneOf(keep, ["first", "last", "none"]))
       );
     }

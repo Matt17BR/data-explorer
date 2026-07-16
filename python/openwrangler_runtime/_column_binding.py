@@ -17,6 +17,7 @@ class _Column:
     identifier: str
     name: str
     position: int
+    semantic_type: str
 
     def bound_reference(self) -> dict[str, str | int]:
         return {"id": self.identifier, "name": self.name, "position": self.position}
@@ -39,8 +40,11 @@ class _BindingContext:
             if not isinstance(identity, Mapping):
                 raise ColumnBindingError(f"Column lineage at position {position} must be an object.")
             schema_name = str(schema_column["name"])
+            semantic_type = schema_column.get("type")
             identifier = identity.get("id")
             identity_name = identity.get("name")
+            if not isinstance(semantic_type, str) or not semantic_type:
+                raise ColumnBindingError(f"Column schema at position {position} has an invalid semantic type.")
             if not isinstance(identifier, str) or not identifier:
                 raise ColumnBindingError(f"Column lineage at position {position} has an invalid identity.")
             if not isinstance(identity_name, str):
@@ -52,7 +56,7 @@ class _BindingContext:
                 )
             if identifier in self.by_id:
                 raise ColumnBindingError(f"Duplicate column identity in the input schema: {identifier}")
-            column = _Column(identifier, schema_name, position)
+            column = _Column(identifier, schema_name, position, semantic_type)
             self.columns.append(column)
             self.by_id[identifier] = column
 
@@ -97,6 +101,16 @@ class _BindingContext:
             bound.append(item)
         return bound
 
+    def require_type(self, reference: Mapping[str, Any], semantic_type: Any, label: str) -> None:
+        column = self.by_id.get(str(reference.get("id", "")))
+        if column is None:
+            raise ColumnBindingError(f"Unknown or stale column identity for {label}.")
+        if not isinstance(semantic_type, str) or semantic_type != column.semantic_type:
+            raise ColumnBindingError(
+                f"Column type mismatch for {label}: identity {column.identifier} is "
+                f"{column.semantic_type!r}, not {semantic_type!r}."
+            )
+
     def reject_output_collision(
         self,
         output_name: Any,
@@ -135,6 +149,10 @@ def bind_step(
         "castColumn",
         "formula",
         "textLength",
+        "sortRows",
+        "filterRows",
+        "dropMissingRows",
+        "dropDuplicates",
     }:
         return bound
 
@@ -142,6 +160,48 @@ def bind_step(
     if not isinstance(params, dict):
         raise ColumnBindingError(f"{kind}.params must be an object.")
     context = _BindingContext(schema, lineage)
+
+    if kind == "sortRows":
+        rules = params.get("rules")
+        if not isinstance(rules, list):
+            raise ColumnBindingError("sortRows.rules must be an array.")
+        references = context.bind_many(_member_references(rules, "sortRows.rules"), "sortRows.rules")
+        params["rules"] = [{**rule, "column": reference} for rule, reference in zip(rules, references, strict=True)]
+        return bound
+
+    if kind == "filterRows":
+        model = params.get("filterModel")
+        if not isinstance(model, dict):
+            raise ColumnBindingError("filterRows.filterModel must be an object.")
+        filters = model.get("filters")
+        sort = model.get("sort")
+        if not isinstance(filters, list) or not isinstance(sort, list):
+            raise ColumnBindingError("filterRows.filterModel must contain filters and sort arrays.")
+        filter_references = context.bind_many(
+            _member_references(filters, "filterRows.filterModel.filters"),
+            "filterRows.filterModel.filters",
+        )
+        sort_references = context.bind_many(
+            _member_references(sort, "filterRows.filterModel.sort"),
+            "filterRows.filterModel.sort",
+        )
+        for index, (column_filter, reference) in enumerate(zip(filters, filter_references, strict=True)):
+            context.require_type(
+                reference,
+                column_filter.get("type"),
+                f"filterRows.filterModel.filters[{index}].type",
+            )
+        model["filters"] = [
+            {**column_filter, "column": reference}
+            for column_filter, reference in zip(filters, filter_references, strict=True)
+        ]
+        model["sort"] = [{**rule, "column": reference} for rule, reference in zip(sort, sort_references, strict=True)]
+        return bound
+
+    if kind in {"dropMissingRows", "dropDuplicates"}:
+        if "columns" in params:
+            params["columns"] = context.bind_many(params["columns"], f"{kind}.columns")
+        return bound
 
     if kind in {"selectColumns", "dropColumns"}:
         params["columns"] = context.bind_many(params.get("columns"), f"{kind}.columns")
@@ -165,3 +225,12 @@ def bind_step(
         context.reject_output_collision(params.get("newColumn"), "textLength.newColumn")
 
     return bound
+
+
+def _member_references(items: Sequence[Any], label: str) -> list[Any]:
+    references: list[Any] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            raise ColumnBindingError(f"{label}[{index}] must be an object.")
+        references.append(item.get("column"))
+    return references

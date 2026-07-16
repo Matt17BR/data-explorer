@@ -31,6 +31,19 @@ const metadata: SessionMetadata = {
   },
   steps: [
     {
+      id: "sort",
+      kind: "sortRows",
+      params: {
+        rules: [
+          {
+            column: { id: "c:source:1", name: "value" },
+            direction: "desc",
+            nulls: "last"
+          }
+        ]
+      }
+    },
+    {
       id: "rename",
       kind: "renameColumn",
       params: { column: { id: "c:source:0", name: "old" }, newName: "new" }
@@ -105,6 +118,28 @@ describe("session persistence", () => {
   });
 
   it("rejects malformed and unknown saved operations", () => {
+    expect(
+      decodePersistedSession({
+        backend: "pandas",
+        cleaning: {
+          steps: [
+            {
+              id: "legacy-sort",
+              kind: "sortRows",
+              params: { rules: [{ column: "value", direction: "desc", nulls: "last" }] }
+            }
+          ]
+        },
+        view: {
+          filterModel: {
+            filters: [],
+            sort: [{ column: "value", direction: "desc", nulls: "last" }]
+          },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      })
+    ).toBeUndefined();
     expect(
       decodePersistedSession({
         backend: "polars",

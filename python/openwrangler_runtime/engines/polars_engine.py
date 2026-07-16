@@ -693,18 +693,32 @@ class PolarsEngine(DataFrameEngine):
         kind = str(step["kind"])
         params = step["params"]
         if kind == "sortRows":
-            return self.apply_filter_model(df, {"filters": [], "sort": params["rules"]})
+            rules = [{**rule, "column": bound_column_name(rule["column"], kind)} for rule in params["rules"]]
+            return self.apply_filter_model(df, {"filters": [], "sort": rules})
         if kind == "filterRows":
-            return self.apply_filter_model(df, params["filterModel"])
+            return self.apply_filter_model(df, _bound_polars_filter_model(params["filterModel"]))
         if kind == "dropMissingRows":
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
-            columns = params.get("columns") or self._visible_columns(df)
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]]
+                if params.get("columns")
+                else self._visible_columns(df)
+            )
+            if not columns:
+                return df
             valid = [_polars_valid_value(pl.col(column), schema[column]) for column in columns]
             expression = pl.any_horizontal(valid) if params.get("how", "any") == "all" else pl.all_horizontal(valid)
             return df.filter(expression)
         if kind == "dropDuplicates":
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]]
+                if params.get("columns")
+                else self._visible_columns(df)
+            )
+            if not columns:
+                return df
             return df.unique(
-                subset=params.get("columns") or self._visible_columns(df),
+                subset=columns,
                 keep=params.get("keep", "first"),
                 maintain_order=True,
             )
@@ -880,35 +894,47 @@ class PolarsEngine(DataFrameEngine):
         prefix = "    "
         if kind == "sortRows":
             rules = params["rules"]
+            columns = [bound_column_name(rule["column"], kind) for rule in rules]
             return [
-                f"{prefix}df = df.sort({[rule['column'] for rule in rules]!r},",
+                f"{prefix}df = df.sort({columns!r},",
                 f"{prefix}    descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
                 f"{prefix}    nulls_last={[rule.get('nulls', 'last') == 'last' for rule in rules]!r},",
                 f"{prefix}    maintain_order=True)",
             ]
         if kind == "filterRows":
-            return _compile_polars_filter(params["filterModel"], index)
+            return _compile_polars_filter(_bound_polars_filter_model(params["filterModel"]), index)
         if kind == "dropMissingRows":
-            columns = params.get("columns")
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
             name = f"_columns_{index}"
             schema = f"_schema_{index}"
             horizontal = "all_horizontal" if params.get("how", "any") == "any" else "any_horizontal"
             return [
                 f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                 f"{prefix}{name} = {columns!r} or {schema}.names()",
+                f"{prefix}if {name}:",
                 (
-                    f"{prefix}_valid_{index} = [pl.col(column).is_not_null() & "
+                    f"{prefix}    _valid_{index} = [pl.col(column).is_not_null() & "
                     f"(~pl.col(column).is_nan() if {schema}[column].is_float() else pl.lit(True)) "
                     f"for column in {name}]"
                 ),
-                f"{prefix}df = df.filter(pl.{horizontal}(_valid_{index}))",
+                f"{prefix}    df = df.filter(pl.{horizontal}(_valid_{index}))",
             ]
         if kind == "dropDuplicates":
+            columns = (
+                [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
+            )
+            name = f"_duplicate_columns_{index}"
+            schema = f"_duplicate_schema_{index}"
             return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                f"{prefix}{name} = {columns!r} or {schema}.names()",
+                f"{prefix}if {name}:",
                 (
-                    f"{prefix}df = df.unique(subset={params.get('columns') or None!r}, "
+                    f"{prefix}    df = df.unique(subset={name}, "
                     f"keep={params.get('keep', 'first')!r}, maintain_order=True)"
-                )
+                ),
             ]
         if kind == "selectColumns":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
@@ -1265,6 +1291,17 @@ def _compile_polars_aggregation(aggregation: Mapping[str, Any]) -> str:
     return f"{expression}.{method}().alias({aggregation['alias']!r})"
 
 
+def _bound_polars_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **model,
+        "filters": [
+            {**column_filter, "column": bound_column_name(column_filter["column"], "filterRows")}
+            for column_filter in model.get("filters", [])
+        ],
+        "sort": [{**rule, "column": bound_column_name(rule["column"], "filterRows")} for rule in model.get("sort", [])],
+    }
+
+
 def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
     column_masks: list[str] = []
     for column_filter in model.get("filters", []):
@@ -1283,6 +1320,8 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
                 parts.append(f"{expression}.is_null()")
             if value_filter.get("includeNaN") and column_filter.get("type") == "float":
                 parts.append(f"{expression}.is_nan()")
+            if not parts:
+                parts.append("pl.lit(False)")
             conditions.append("(" + " | ".join(parts) + ")")
         for predicate in column_filter.get("predicates", []):
             conditions.append(_polars_predicate_expression(expression, predicate, column_filter.get("type")))

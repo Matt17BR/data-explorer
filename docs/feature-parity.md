@@ -11,7 +11,7 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Add packaged `.xls` and malformed-input UI evidence  |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Test against the released Jupyter extension          |
 | Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | Route full-view snapshots through active sessions    |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor native paint timing             |
+| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing        |
 | Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green     |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green           |
 | Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green          |
@@ -19,9 +19,9 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 | Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green      |
 | Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green   |
 | Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green       |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Native/code edges plus packaged preview/apply        |
+| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates  |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Finish duplicate/non-string packaged matrix          |
-| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Null/NaN, keep modes, generated-code parity          |
+| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates |
 | One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity       |
 | Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply        |
 | Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply            |
@@ -246,7 +246,7 @@ Packaged operation-group slice, 2026-07-15:
 - Both engine sessions force a standalone runtime restart immediately after applying custom code, then fetch the replayed plan before grouping. The final schema and seven-step history are asserted, source CSV bytes remain unchanged, and close waits for zero coordinator sessions and no Python process.
 - This matrix passes the development host plus the exact allowlisted VSIX in isolated VS Code 1.128.0 and Cursor 3.11.19 profiles. The production-bundle browser suite separately exercises the complete operation dialog, validated forms, draft/diff/code layout, by-example warnings, and apply/discard/edit/undo keyboard paths.
 
-This makes the editing catalog, draft/diff, every deterministic operation family, custom code, and by-example rows **Done**. Generated-code editing/export remains a separate **Partial** row until its clipboard/script/originating-notebook command matrix is fully recorded.
+This completes the ordinary-schema packaged operation-family checklist and keeps draft/diff and by-example **Done**. The broader editing catalog remains **Partial** for duplicate/non-string column addressing, and custom code remains **Partial** for installed Restricted Mode evidence. Generated-code editing/export was still a separate **Partial** row at this checkpoint until the later clipboard/script/originating-notebook command matrix.
 
 Packaged viewing-query slice, 2026-07-15:
 
@@ -255,7 +255,7 @@ Packaged viewing-query slice, 2026-07-15:
 - The same matrix passes the development extension host and the exact package in isolated VS Code 1.128.0 and Cursor 3.11.19. Native engine fixtures separately cover AND/OR, null/NaN predicates, value filters, per-column null ordering, stable ties, typed/nested summaries, and lazy Polars query pushdown.
 - The production-bundle Playwright gate covers row and column virtualization, bounded prefetch, column search, keyboard navigation/resizing, focus restoration, advanced-filter interaction, responsive layouts, all supported themes/zooms, and WCAG scans. Its wide-grid p95 is 31.6ms cached and 92.8ms uncached, below the 100ms/500ms limits; release-size runtime gates are also green.
 
-This makes virtual grid/navigation, summaries/Quick Insights, viewing filters, and multi-column viewing sorts **Done**. Import error-state interaction and editor chrome/theme sign-off remain tracked under their separate rows.
+This makes the production-bundle grid interaction, summaries/Quick Insights, viewing filters, and multi-column viewing sorts **Done** at the browser boundary. The combined virtual-grid row remains **Partial** until the installed editor reaches a measured first usable grid; import error-state interaction and editor chrome/theme sign-off remain tracked under their separate rows.
 
 Editable code and runtime-selection slice, 2026-07-15:
 
@@ -276,7 +276,7 @@ Packaged notebook and remote-kernel slice, 2026-07-15:
 - The acceptance kernel object is then replaced while a Polars variable session is active. The first request rejects on the stale object, the stable API is reacquired, the transferred runtime is bootstrapped again, the unknown session is replayed from the still-live variable, and the original public session returns the expected page. A separate denied-access attempt creates no coordinator session.
 - The production renderer/axe harness renders MIME v2 and clicks **Open in Open Wrangler**, asserting the full-view message contains the validated payload. Malformed versions remain accessible errors. This entire matrix runs from the allowlisted VSIX in isolated editor profiles.
 
-This makes notebook variable launch, inline v2 rendering and full-view expansion, and clipboard/script/originating-notebook code export **Done**.
+This completes the packaged stable-API acceptance-double and saved-snapshot flows plus clipboard/script/originating-notebook code export. The notebook variable row remains **Partial** until the released Jupyter extension is exercised, and inline full-view expansion remains **Partial** until expanded saved snapshots become coordinator-owned active sessions rather than a snapshot-only panel.
 
 Open Wrangler rename and packaged-editor visual acceptance refresh, 2026-07-16:
 
@@ -347,7 +347,7 @@ Applied-step inspection slice, 2026-07-16:
 - Focused runtime, coordinator, panel-decoder, React, and DataGrid tests cover all three engines, no Polars conversion, paging, strict mismatch rejection, supersession, local errors, mutation clearing, keyboard clear, confirmed-view restoration, transport-failure replay/retry, and diff accessibility.
 - Extension-host and installed-VSIX acceptance drive `openWrangler.selectStep` through the real custom editor, assert the selected input/output schema, added-column diff, prefix code, and unchanged revision, then select Original Data and verify exact restoration of filter/sort state, widths, selected column, vertical/horizontal viewport, metadata, and full-plan code.
 
-This makes cleaning-step history/edit/discard/undo **Done**. It does not make the overall release matrix green: broader duplicate/non-string operation acceptance, released-Jupyter integration, Restricted Mode, column-projected transport, installed-editor first-paint timing, and cross-platform packaged UI evidence remain explicitly **Partial** above.
+This makes cleaning-step history/edit/discard/undo **Done**. At this checkpoint, broader duplicate/non-string operation acceptance, released-Jupyter integration, Restricted Mode, column-projected transport, installed-editor first-grid timing, and cross-platform packaged UI evidence remained incomplete; the later projection slice below closes only the column-transport item.
 
 Stable-ID structural-operation slice, 2026-07-16:
 
@@ -381,7 +381,18 @@ Column-projected transport slice, 2026-07-16:
 - `npm run check`, all 30 TypeScript suites (327 tests), all 408 Python tests, extension-host/reload acceptance, browser acceptance, strict benchmark, and coverage are green. TypeScript coverage is 75.57% statements, 72.37% branches, 80.63% functions, and 78.82% lines; Python runtime coverage is 88.27%.
 - The fresh 63-entry allowlisted `openwrangler.vsix` has SHA-256 `573d55999a0588fb9d4ff9b832c884ccb96fceca55971bde0d29a6d4e65f0db1`. Those exact bytes passed the complete two-process packaged matrix in disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. A generated 300-column source was opened independently with Pandas, Polars, and DuckDB; each engine filtered and sorted on untransported columns, fetched columns 288–299 with exact endpoint values, preserved source bytes, closed all sessions, and stopped the standalone runtime.
 
-This makes column-projected grid-block transport **Done** for Pandas and Polars and records additive DuckDB evidence. The broader virtual-grid row remains **Partial** only for native installed-editor paint timing; installed-editor performance and cross-platform package acceptance likewise remain **Partial** until their separately named gates are measured beyond this Linux workstation.
+This makes column-projected grid-block transport **Done** for Pandas and Polars and records additive DuckDB evidence. The broader virtual-grid row remains **Partial** only for installed-editor first-usable-grid timing; installed-editor performance and cross-platform package acceptance likewise remain **Partial** until their separately named gates are measured beyond this Linux workstation.
+
+Stable-ID row/order-operation slice, 2026-07-16:
+
+- `sortRows`, `filterRows`, `dropMissingRows`, and `dropDuplicates` now require public `{id, name}` references for every selected input column. Legacy strings, malformed or private bound objects, stale IDs, ID/name mismatches, stale filter semantic types, and repeated identities fail before adapter dispatch. Transform filter/sort types remain deliberately separate from name-addressed viewing state; copying a current viewing query resolves every name against the exact step-input schema and reports a missing or duplicate-name ambiguity instead of selecting the first match. Editing a saved filter defaults to its exact stored query and exposes replacement from the current viewing query as a separate explicit choice.
+- The private binder adds exact input positions only to the executable plan. Pandas live execution and generated functions build filter masks, stable multi-sort orders, missing-value masks, and duplicate keys through `.iloc`, including duplicate labels and integer labels after an earlier reorder. Polars and DuckDB receive verified engine-native names only after binding and never convert through another dataframe engine. Omitted or explicitly empty missing-row keys and omitted duplicate-row keys mean all visible columns, exclude Open Wrangler's private row identity, and remain safe for a zero-column Polars frame.
+- Focused protocol/React tests cover duplicate-safe ID-backed controls, faithful and explicit latest-filter replacement, latest-step edit defaults, strict transform decoding, ambiguous viewing-query conversion, all-column form semantics, and persistence that accepts stable cleaning steps while rejecting name-only saved cleaning without rejecting name-only viewing state. Runtime tests cover every engine's live/generated parity, null/NaN and keep modes—including non-float NaN inclusion as an explicit-false value filter—stale/repeated/type-mismatched references, integer and duplicate Pandas labels, zero-column behavior, private-row-ID exclusion in all-column missing/deduplication modes, and replay after a structural reorder.
+- The installed VSIX's live-kernel acceptance creates a Pandas frame with two columns named `duplicate` plus integer label `7`. In disposable VS Code 1.128.1 and Cursor 3.11.19 profiles, the exact second duplicate and integer-labelled columns drive multi-sort, filter, missing-row, and duplicate-row drafts. Every intermediate preview is asserted before apply, public steps remain position-free, executable code is positional, an actual kernel replacement replays the one-row result, the originating variable remains unchanged, and final cleanup leaves zero sessions.
+- `npm run check`, all 30 TypeScript suites (343 tests), all 442 Python tests, extension-host/reload acceptance, 24 pixel/axe production webview harnesses, strict performance gates, and coverage are green. TypeScript coverage is 76.26% statements, 73.18% branches, 81.28% functions, and 79.50% lines; Python runtime coverage is 88.30%. Browser cached/uncached wide-grid p95 is 32.1/86.1ms. The strict Polars 100k×50 CSV cold stdio open, direct cached/cache-miss p95, stdio cache-miss p95, and active-profile page are 52.911, 0.135, 26.805, 30.425, and 33.782ms respectively; the 1M×20 Parquet values are 47.457, 0.082, 31.187, 40.962, and 14.242ms. Both retain native lazy frames, accepted source-cache eviction, active profile overlap, and zero sessions.
+- The final 63-entry allowlisted `openwrangler.vsix` has SHA-256 `8fd7a6d20eb585c01663be61cdd984ca7072d5ad1d594ec847444648f0a75a31`. Those exact bytes passed the complete two-process installed-package matrix in disposable VS Code 1.128.1 and Cursor 3.11.19 profiles and were then force-installed into both normal local editors as `matt17br.openwrangler@0.3.0`; neither `scratch.txt`, source/tests, retired product identity, nor a development compatibility alias appears in the archive.
+
+This keeps sort/filter cleaning steps and missing/duplicate-row operations **Done** with exact-identity evidence. It advances the editing catalog and duplicate/non-string Pandas rows but leaves them **Partial** until the remaining categorical, text, numeric, datetime, grouping, and by-example column parameters use the same stable-reference contract and complete their installed-editor matrix.
 
 ## Explicitly deferred from 1.0
 
