@@ -26,6 +26,19 @@ def step(kind: str, **params: Any) -> dict[str, Any]:
     return {"id": f"test-{kind}", "kind": kind, "params": params}
 
 
+def expression_column(reference: dict[str, str]) -> dict[str, Any]:
+    return {"kind": "column", "column": reference}
+
+
+def by_example_step(reference: dict[str, str], program: dict[str, Any]) -> dict[str, Any]:
+    return step(
+        "byExample",
+        sourceColumns=[reference],
+        newColumn="derived",
+        program=program,
+    )
+
+
 def test_binding_resolves_exact_duplicate_columns_and_keeps_public_step_unchanged() -> None:
     public = step(
         "selectColumns",
@@ -393,3 +406,401 @@ def test_binding_preserves_optional_all_column_semantics() -> None:
     assert "columns" not in omitted_missing["params"]
     assert empty_missing["params"]["columns"] == []
     assert "columns" not in omitted_duplicates["params"]
+
+
+@pytest.mark.parametrize(
+    "semantic_type",
+    ["string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"],
+)
+def test_group_keys_accept_only_portable_scalar_types(semantic_type: str) -> None:
+    key = ref("c:key", "key")
+    value = ref("c:value", "value")
+    public = step(
+        "groupBy",
+        keys=[key],
+        aggregations=[{"column": value, "operation": "count", "alias": "rows"}],
+    )
+
+    bound = bind_step(
+        public,
+        [{"name": "key", "type": semantic_type}, {"name": "value", "type": "string"}],
+        [key, value],
+    )
+
+    assert bound["params"]["keys"] == [{**key, "position": 0}]
+
+
+@pytest.mark.parametrize("semantic_type", ["null", "complex", "list", "struct", "unknown"])
+def test_group_keys_reject_nonportable_types_before_dispatch(semantic_type: str) -> None:
+    key = ref("c:key", "key")
+    value = ref("c:value", "value")
+
+    with pytest.raises(ColumnBindingError, match=rf"unsupported '{semantic_type}' type"):
+        bind_step(
+            step(
+                "groupBy",
+                keys=[key],
+                aggregations=[{"column": value, "operation": "count", "alias": "rows"}],
+            ),
+            [{"name": "key", "type": semantic_type}, {"name": "value", "type": "string"}],
+            [key, value],
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "semantic_type"),
+    [
+        ("sum", "integer"),
+        ("mean", "float"),
+        ("median", "decimal"),
+        ("min", "date"),
+        ("max", "duration"),
+        ("nUnique", "binary"),
+        ("count", "string"),
+        ("first", "boolean"),
+        ("last", "datetime"),
+    ],
+)
+def test_group_aggregations_accept_the_portable_type_matrix(operation: str, semantic_type: str) -> None:
+    key = ref("c:key", "key")
+    value = ref("c:value", "value")
+
+    bound = bind_step(
+        step(
+            "groupBy",
+            keys=[key],
+            aggregations=[
+                {"column": value, "operation": operation, "alias": "result"},
+                {"column": value, "operation": "count", "alias": "rows"},
+            ],
+        ),
+        [{"name": "key", "type": "string"}, {"name": "value", "type": semantic_type}],
+        [key, value],
+    )
+
+    assert [aggregation["column"] for aggregation in bound["params"]["aggregations"]] == [
+        {**value, "position": 1},
+        {**value, "position": 1},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("operation", "semantic_type"),
+    [
+        ("sum", "string"),
+        ("mean", "boolean"),
+        ("median", "date"),
+        ("min", "binary"),
+        ("max", "struct"),
+        ("nUnique", "list"),
+        ("count", "complex"),
+        ("first", "struct"),
+        ("last", "unknown"),
+    ],
+)
+def test_group_aggregations_reject_nonportable_type_pairs_before_dispatch(operation: str, semantic_type: str) -> None:
+    key = ref("c:key", "key")
+    value = ref("c:value", "value")
+
+    with pytest.raises(ColumnBindingError, match=rf"cannot apply '{operation}' to '{semantic_type}'"):
+        bind_step(
+            step(
+                "groupBy",
+                keys=[key],
+                aggregations=[{"column": value, "operation": operation, "alias": "result"}],
+            ),
+            [{"name": "key", "type": "string"}, {"name": "value", "type": semantic_type}],
+            [key, value],
+        )
+
+
+@pytest.mark.parametrize(
+    "semantic_type",
+    ["string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"],
+)
+def test_by_example_direct_columns_preserve_portable_scalar_types(semantic_type: str) -> None:
+    reference = ref("c:value", "value")
+    public = by_example_step(reference, expression_column(reference))
+
+    bound = bind_step(public, [{"name": "value", "type": semantic_type}], [reference])
+
+    expected = {"id": "c:value", "name": "value", "position": 0}
+    assert bound["params"]["sourceColumns"] == [expected]
+    assert bound["params"]["program"] == {"kind": "column", "column": expected}
+    assert public["params"]["program"] == expression_column(reference)
+
+
+@pytest.mark.parametrize(
+    ("semantic_type", "program"),
+    [
+        (
+            "string",
+            {
+                "kind": "case",
+                "style": "upper",
+                "input": expression_column(ref("c:value", "value")),
+            },
+        ),
+        (
+            "integer",
+            {
+                "kind": "slice",
+                "input": expression_column(ref("c:value", "value")),
+                "start": 0,
+                "stop": 2,
+            },
+        ),
+        (
+            "date",
+            {
+                "kind": "datetimeFormat",
+                "input": expression_column(ref("c:value", "value")),
+                "inputFormat": "%Y-%m-%d",
+                "outputFormat": "%d/%m/%Y",
+            },
+        ),
+    ],
+)
+def test_by_example_allows_portable_text_coercions(semantic_type: str, program: dict[str, Any]) -> None:
+    reference = ref("c:value", "value")
+
+    bound = bind_step(
+        by_example_step(reference, program),
+        [{"name": "value", "type": semantic_type}],
+        [reference],
+    )
+
+    assert bound["params"]["program"]["input"]["column"] == {
+        "id": "c:value",
+        "name": "value",
+        "position": 0,
+    }
+
+
+@pytest.mark.parametrize(("semantic_type", "literal"), [("integer", 1), ("float", 1.5)])
+def test_by_example_allows_portable_numeric_arithmetic(semantic_type: str, literal: int | float) -> None:
+    reference = ref("c:value", "value")
+    program = {
+        "kind": "arithmetic",
+        "left": expression_column(reference),
+        "operator": "add",
+        "right": {"kind": "literal", "value": literal},
+    }
+
+    bound = bind_step(
+        by_example_step(reference, program),
+        [{"name": "value", "type": semantic_type}],
+        [reference],
+    )
+
+    assert bound["params"]["program"]["left"]["column"] == {
+        "id": "c:value",
+        "name": "value",
+        "position": 0,
+    }
+    expected_type = "float" if semantic_type == "float" or isinstance(literal, float) else "integer"
+    assert {key: bound["params"]["program"][key] for key in ("_owLeftType", "_owRightType", "_owResultType")} == {
+        "_owLeftType": semantic_type,
+        "_owRightType": "float" if isinstance(literal, float) else "integer",
+        "_owResultType": expected_type,
+    }
+
+
+@pytest.mark.parametrize("semantic_type", ["float", "decimal", "boolean", "datetime", "duration", "binary"])
+def test_by_example_rejects_nonportable_text_coercions(semantic_type: str) -> None:
+    reference = ref("c:value", "value")
+    program = {
+        "kind": "case",
+        "style": "upper",
+        "input": expression_column(reference),
+    }
+
+    with pytest.raises(ColumnBindingError, match=rf"cannot apply 'case' to '{semantic_type}'"):
+        bind_step(
+            by_example_step(reference, program),
+            [{"name": "value", "type": semantic_type}],
+            [reference],
+        )
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        {
+            "kind": "slice",
+            "input": expression_column(ref("c:value", "value")),
+            "start": 0,
+            "stop": 1,
+        },
+        {
+            "kind": "split",
+            "input": expression_column(ref("c:value", "value")),
+            "delimiter": "-",
+            "index": 0,
+        },
+        {
+            "kind": "concat",
+            "parts": [expression_column(ref("c:value", "value")), {"kind": "literal", "value": "x"}],
+        },
+        {
+            "kind": "regexExtract",
+            "input": expression_column(ref("c:value", "value")),
+            "pattern": r"(\d+)",
+            "group": 1,
+        },
+        {
+            "kind": "regexReplace",
+            "input": expression_column(ref("c:value", "value")),
+            "pattern": "x",
+            "replacement": "y",
+        },
+        {
+            "kind": "case",
+            "style": "upper",
+            "input": expression_column(ref("c:value", "value")),
+        },
+        {
+            "kind": "datetimeFormat",
+            "input": expression_column(ref("c:value", "value")),
+            "inputFormat": "%Y-%m-%d",
+            "outputFormat": "%Y",
+        },
+    ],
+)
+@pytest.mark.parametrize("semantic_type", ["duration", "binary"])
+def test_every_by_example_text_node_rejects_duration_and_binary_sources(
+    semantic_type: str,
+    program: dict[str, Any],
+) -> None:
+    reference = ref("c:value", "value")
+
+    with pytest.raises(ColumnBindingError, match=rf"cannot apply .* to '{semantic_type}'"):
+        bind_step(
+            by_example_step(reference, program),
+            [{"name": "value", "type": semantic_type}],
+            [reference],
+        )
+
+
+@pytest.mark.parametrize("semantic_type", ["decimal", "string", "boolean", "date", "datetime", "duration", "binary"])
+def test_by_example_arithmetic_rejects_nonportable_operand_types(semantic_type: str) -> None:
+    reference = ref("c:value", "value")
+    program = {
+        "kind": "arithmetic",
+        "left": expression_column(reference),
+        "operator": "add",
+        "right": {"kind": "literal", "value": 1.0},
+    }
+
+    with pytest.raises(ColumnBindingError, match=rf"cannot apply 'arithmetic' to '{semantic_type}'"):
+        bind_step(
+            by_example_step(reference, program),
+            [{"name": "value", "type": semantic_type}],
+            [reference],
+        )
+
+
+@pytest.mark.parametrize("semantic_type", ["complex", "list", "struct", "unknown"])
+def test_by_example_rejects_non_scalar_sources_before_program_dispatch(semantic_type: str) -> None:
+    reference = ref("c:value", "value")
+
+    with pytest.raises(ColumnBindingError, match=rf"unsupported '{semantic_type}' type"):
+        bind_step(
+            by_example_step(reference, expression_column(reference)),
+            [{"name": "value", "type": semantic_type}],
+            [reference],
+        )
+
+
+@pytest.mark.parametrize(
+    ("program", "source_type", "semantic_type"),
+    [
+        (
+            {
+                "kind": "case",
+                "style": "upper",
+                "input": {"kind": "literal", "value": 1.5},
+            },
+            "string",
+            "float",
+        ),
+        (
+            {
+                "kind": "arithmetic",
+                "left": expression_column(ref("c:value", "value")),
+                "operator": "add",
+                "right": {"kind": "literal", "value": True},
+            },
+            "integer",
+            "boolean",
+        ),
+        (
+            {
+                "kind": "concat",
+                "parts": [expression_column(ref("c:value", "value")), {"kind": "literal", "value": None}],
+            },
+            "string",
+            "null",
+        ),
+    ],
+)
+def test_by_example_validates_nested_literal_types(
+    program: dict[str, Any],
+    source_type: str,
+    semantic_type: str,
+) -> None:
+    reference = ref("c:value", "value")
+
+    with pytest.raises(ColumnBindingError, match=rf"cannot apply .* to '{semantic_type}'"):
+        bind_step(
+            by_example_step(reference, program),
+            [{"name": "value", "type": source_type}],
+            [reference],
+        )
+
+
+def test_by_example_recursively_binds_only_exact_selected_source_identities() -> None:
+    selected = ref("c:selected", "duplicate")
+    other = ref("c:other", "duplicate")
+    schema = [{"name": "duplicate", "type": "string"}, {"name": "duplicate", "type": "string"}]
+    nested_other = {
+        "kind": "concat",
+        "parts": [
+            {"kind": "case", "style": "upper", "input": expression_column(other)},
+            {"kind": "literal", "value": "suffix"},
+        ],
+    }
+
+    with pytest.raises(ColumnBindingError, match="outside sourceColumns"):
+        bind_step(by_example_step(selected, nested_other), schema, [selected, other])
+
+    stale = {
+        "kind": "case",
+        "style": "upper",
+        "input": expression_column(ref("c:selected", "renamed")),
+    }
+    with pytest.raises(ColumnBindingError, match="name mismatch"):
+        bind_step(by_example_step(selected, stale), schema, [selected, other])
+
+
+def test_by_example_type_validation_recurses_through_nested_programs() -> None:
+    reference = ref("c:value", "value")
+    program = {
+        "kind": "concat",
+        "parts": [
+            {
+                "kind": "arithmetic",
+                "left": expression_column(reference),
+                "operator": "add",
+                "right": {"kind": "literal", "value": 1},
+            },
+            {"kind": "literal", "value": "suffix"},
+        ],
+    }
+
+    with pytest.raises(ColumnBindingError, match=r"program.parts\[0\].left.*'decimal'"):
+        bind_step(
+            by_example_step(reference, program),
+            [{"name": "value", "type": "decimal"}],
+            [reference],
+        )

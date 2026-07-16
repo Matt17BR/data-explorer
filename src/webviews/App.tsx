@@ -92,6 +92,8 @@ export function App() {
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
+  const operationReturnFocus = useRef<HTMLElement | null>(null);
+  const operationWasOpen = useRef(false);
   const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
   const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
   const gridViewStateTimer = useRef<number | undefined>(undefined);
@@ -100,6 +102,36 @@ export function App() {
     lastViewRequestSequence += 1;
     return `view-${viewRequestEpoch}-${lastViewRequestSequence}`;
   }, []);
+
+  const rememberOperationReturnFocus = useCallback(() => {
+    operationReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, []);
+
+  useEffect(() => {
+    if (operationOpen) {
+      operationWasOpen.current = true;
+      return;
+    }
+    if (!operationWasOpen.current) return;
+    operationWasOpen.current = false;
+    const returnTarget = operationReturnFocus.current;
+    operationReturnFocus.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      const targetIsAvailable =
+        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
+      if (targetIsAvailable) {
+        returnTarget.focus();
+        return;
+      }
+      document
+        .querySelector<HTMLElement>(
+          "[data-operation-focus-fallback]:not(:disabled), " +
+            '[data-testid="data-grid-scroller"] [tabindex="0"], main.app'
+        )
+        ?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [operationOpen]);
 
   const storeMetadata = useCallback((next: SessionMetadata | undefined) => {
     metadataRef.current = next;
@@ -740,6 +772,7 @@ export function App() {
           }
           if (!canStartOperation(metadataRef.current)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
+          rememberOperationReturnFocus();
           setEditingStep(undefined);
           setOperationKind(response.operationKind);
           setOperationOpen(true);
@@ -750,6 +783,7 @@ export function App() {
           }
           if (!canEditLatestStep(metadataRef.current)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
+          rememberOperationReturnFocus();
           setMetadata((current) => {
             const latest = current?.steps.at(-1);
             if (latest) {
@@ -1079,6 +1113,7 @@ export function App() {
     nextViewRequestId,
     pruneSummaryOwners,
     releaseBackgroundRequest,
+    rememberOperationReturnFocus,
     requestStatsForConfirmedView,
     requestStepInspection,
     restartProfilingForConfirmedView,
@@ -1373,6 +1408,7 @@ export function App() {
     }
     if (!canStartOperation(metadataRef.current)) return;
     if (stepInspectionTargetRef.current) clearStepInspection();
+    rememberOperationReturnFocus();
     setEditingStep(undefined);
     setOperationKind(kind);
     setOperationOpen(true);
@@ -1389,6 +1425,7 @@ export function App() {
     if (stepInspectionTargetRef.current) clearStepInspection();
     const latest = metadata?.steps.at(-1);
     if (!latest) return;
+    rememberOperationReturnFocus();
     setEditingStep(latest);
     setOperationKind(latest.kind);
     setOperationOpen(true);
@@ -1485,345 +1522,355 @@ export function App() {
   }
 
   return (
-    <main className="app" onKeyDown={handleKeyboardShortcut}>
-      <header className="toolbar">
-        <div className="toolbarIdentity">
-          <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
-          <span>
-            {metadata
-              ? `${(displayMetadata ?? metadata).filteredShape.rows.toLocaleString()} rows x ${(displayMetadata ?? metadata).filteredShape.columns.toLocaleString()} columns`
-              : "Preparing session"}
-          </span>
-        </div>
-        {metadata && (
-          <div className="toolbarActions">
-            {metadata.mode === "editing" && !snapshotMode && (
-              <button
-                type="button"
-                disabled={loading || projectionLoading || !canStartOperation(metadata)}
-                aria-describedby={projectionStatusId}
-                title={
-                  projectionActionTitle ??
-                  (metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined)
-                }
-                onClick={() => openNewOperation()}
-              >
-                <span className="codicon codicon-add" aria-hidden="true" /> Add step
-              </button>
-            )}
-            <button
-              ref={sidePanelToggleRef}
-              type="button"
-              className="toolbarButton"
-              aria-expanded={sidePanelOpen}
-              disabled={inspectionMode}
-              title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
-              onClick={(event) => {
-                if (sidePanelOpenRef.current) {
-                  closeSidePanel();
-                  return;
-                }
-                sidePanelReturnFocus.current = event.currentTarget;
-                sidePanelOpenRef.current = true;
-                setSidePanelOpen(true);
-              }}
-            >
-              {inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
-            </button>
-            <label className="goToColumn">
-              <span>Column</span>
-              <input
-                list="openwrangler-columns"
-                value={goToColumn}
-                placeholder="Search columns"
-                onChange={(event) => setGoToColumn(event.target.value)}
-              />
-              <datalist id="openwrangler-columns">
-                {(displayMetadata ?? metadata).schema.map((column) => (
-                  <option key={column.id} value={column.name} />
-                ))}
-              </datalist>
-            </label>
-            <span className="modeBadge">{metadata.mode}</span>
-            <span className="backendBadge">{metadata.backend}</span>
-            {snapshotMode && <span className="modeBadge">Snapshot</span>}
-            {inspectionMode && <span className="inspectionBadge">Step inspection</span>}
+    <main className="app" tabIndex={-1} onKeyDown={handleKeyboardShortcut}>
+      <div
+        className="appWorkspace"
+        data-testid="app-workspace"
+        inert={operationOpen}
+        aria-hidden={operationOpen ? true : undefined}
+      >
+        <header className="toolbar">
+          <div className="toolbarIdentity">
+            <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
+            <span>
+              {metadata
+                ? `${(displayMetadata ?? metadata).filteredShape.rows.toLocaleString()} rows x ${(displayMetadata ?? metadata).filteredShape.columns.toLocaleString()} columns`
+                : "Preparing session"}
+            </span>
           </div>
-        )}
-      </header>
-
-      {metadata && metadata.mode === "editing" && (
-        <section className="cleaningBar" aria-label="Cleaning plan">
-          <div className="cleaningSummary">
-            <span className="codicon codicon-layers" aria-hidden="true" />
-            <strong>
-              {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
-            </strong>
-            {metadata.draftStep && <span className="draftBadge">Draft: {metadata.draftStep.kind}</span>}
-          </div>
-          <div className="cleaningActions">
-            {metadata.draftStep ? (
-              <>
+          {metadata && (
+            <div className="toolbarActions">
+              {metadata.mode === "editing" && !snapshotMode && (
                 <button
                   type="button"
-                  className="secondaryButton"
-                  disabled={loading || projectionLoading}
+                  data-operation-focus-fallback
+                  disabled={loading || projectionLoading || !canStartOperation(metadata)}
                   aria-describedby={projectionStatusId}
-                  aria-keyshortcuts="Escape"
-                  title={projectionActionTitle ?? "Discard draft (Escape)"}
-                  onClick={() => sendPlanAction("discardDraft")}
+                  title={
+                    projectionActionTitle ??
+                    (metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined)
+                  }
+                  onClick={() => openNewOperation()}
                 >
-                  Discard
-                </button>
-                <button
-                  type="button"
-                  disabled={loading || projectionLoading}
-                  aria-describedby={projectionStatusId}
-                  aria-keyshortcuts="Control+Enter Meta+Enter"
-                  title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
-                  onClick={() => sendPlanAction("applyDraft")}
-                >
-                  Apply step
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="secondaryButton"
-                  disabled={loading || projectionLoading || metadata.steps.length === 0}
-                  aria-describedby={projectionStatusId}
-                  aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                  title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                  onClick={editLatestStep}
-                >
-                  Edit latest
-                </button>
-                <button
-                  type="button"
-                  className="secondaryButton"
-                  disabled={loading || projectionLoading || metadata.steps.length === 0}
-                  aria-describedby={projectionStatusId}
-                  aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                  title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
-                  onClick={() => sendPlanAction("undoStep")}
-                >
-                  <span className="codicon codicon-discard" aria-hidden="true" /> Undo
-                </button>
-              </>
-            )}
-          </div>
-        </section>
-      )}
-
-      {metadata && inspectionMode && (
-        <section className="inspectionPanel" aria-label="Selected applied-step inspection">
-          <header>
-            <div>
-              <strong>
-                {pendingStepInspection ? "Loading" : "Inspecting"}{" "}
-                {selectedInspectionStep ? operationByKind(selectedInspectionStep.kind).title : "applied step"}
-              </strong>
-              <span>
-                This is that step&apos;s input → output boundary. The confirmed dataframe view and filters are
-                unchanged.
-              </span>
-            </div>
-            <button type="button" className="secondaryButton" onClick={() => clearStepInspection()}>
-              Show confirmed data
-            </button>
-          </header>
-          {pendingStepInspection && (
-            <div role="status" aria-live="polite">
-              Loading inspection rows {pendingStepInspection.offset + 1}–{pendingStepInspection.offset + pageSize}…
-            </div>
-          )}
-          {stepInspectionError && (
-            <div className="errorBanner" role="alert">
-              {stepInspectionError}
-            </div>
-          )}
-          {stepInspection && (
-            <>
-              <div className="diffStats" aria-label="Selected step data diff summary">
-                <span>+{stepInspection.diff.addedRows} rows</span>
-                <span>-{stepInspection.diff.removedRows} rows</span>
-                <span>+{stepInspection.diff.addedColumns.length} columns</span>
-                <span>-{stepInspection.diff.removedColumns.length} columns</span>
-                <span>
-                  {stepInspection.diff.changedCells} changed cells
-                  {stepInspection.diff.truncated ? " in this block" : ""}
-                </span>
-              </div>
-              <details className="draftCode">
-                <summary>Generated code through this applied step</summary>
-                <pre tabIndex={0} aria-label="Selected step generated Python code">
-                  <code>{stepInspection.code}</code>
-                </pre>
-              </details>
-            </>
-          )}
-        </section>
-      )}
-
-      <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
-        <section className="gridShell">
-          {foregroundError && (
-            <div className="errorBanner" role="alert">
-              <span>{foregroundError}</span>
-              {failedPageRequest && (
-                <button type="button" className="secondaryButton" onClick={retryFailedPage}>
-                  Retry page
+                  <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
               )}
-            </div>
-          )}
-          {backgroundDiagnosticMessages.length > 0 && (
-            <div className="errorBanner" role="status" aria-label="Profiling diagnostics">
-              Insights warning: {backgroundDiagnosticMessages.join(" ")}
-            </div>
-          )}
-          {loading && (
-            <div className="loading" role="status" aria-live="polite">
-              Loading...
-            </div>
-          )}
-          {projectionLoading && (
-            <div id="column-projection-status" className="loading" role="status" aria-live="polite">
-              Loading visible columns… Cleaning actions are temporarily unavailable.
-            </div>
-          )}
-          {displayMetadata && displayPage ? (
-            <DataGrid
-              key={
-                inspectionMode
-                  ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}`
-                  : `confirmed:${displayMetadata.sessionId}`
-              }
-              metadata={displayMetadata}
-              page={displayPage}
-              summaries={inspectionMode ? [] : summaries}
-              onPage={(offset) => {
-                const stepId = stepInspectionTarget?.stepId;
-                if (stepId) requestStepInspection(stepId, offset, inspectionColumnWindow.current, "row");
-                else
-                  requestPage(offset, filterModelRef.current, {
-                    columnWindow: desiredColumnWindow.current,
-                    reason: "row"
-                  });
-              }}
-              pageSize={pageSize}
-              defaultColumnWidth={webviewConfig.defaultColumnWidth}
-              insightsOnOpen={inspectionMode ? false : webviewConfig.insightsOnOpen}
-              busy={loading || Boolean(pendingStepInspection && pendingStepInspection.reason !== "projection")}
-              projecting={projectionLoading || pendingStepInspection?.reason === "projection"}
-              viewContextId={
-                inspectionMode ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}` : activeViewContextId
-              }
-              goToColumn={goToColumn}
-              viewState={inspectionMode ? inspectionGridViewState : gridViewState}
-              viewStateRestoreVersion={
-                inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
-              }
-              diff={stepInspection?.diff ?? (metadata?.draftStep ? diff : undefined)}
-              beforePage={stepInspection?.inputPage ?? draftBefore?.page}
-              beforeSchema={stepInspection?.inputSchema ?? draftBefore?.schema}
-              viewControlsDisabled={inspectionMode}
-              onSortColumn={(column, direction) =>
-                inspectionMode
-                  ? undefined
-                  : applyFilters({
-                      ...filterModel,
-                      sort: [
-                        ...filterModel.sort.filter((rule) => rule.column !== column),
-                        { column, direction, nulls: "last" }
-                      ]
-                    })
-              }
-              onOpenFilter={(column) => {
-                if (inspectionMode) return;
-                sidePanelReturnFocus.current =
-                  document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
-                setFilterColumn(column);
-                sidePanelOpenRef.current = true;
-                setSidePanelOpen(true);
-                requestValues(column);
-              }}
-              onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
-              onVisibleColumnRangeChange={handleVisibleColumnRange}
-              onViewStateChange={inspectionMode ? () => undefined : publishGridViewState}
-            />
-          ) : (
-            <div className="emptyState">
-              {inspectionMode ? "Loading selected-step inspection…" : "Opening session..."}
-            </div>
-          )}
-        </section>
-        {sidePanelOpen && !inspectionMode && (
-          <aside className="sidebar" aria-label="Insights and filters">
-            <div className="drawerHeader">
-              <strong>Insights & filters</strong>
               <button
+                ref={sidePanelToggleRef}
                 type="button"
-                className="iconButton codicon codicon-close"
-                aria-label="Close panel"
-                onClick={closeSidePanel}
-              />
+                className="toolbarButton"
+                aria-expanded={sidePanelOpen}
+                disabled={inspectionMode}
+                title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
+                onClick={(event) => {
+                  if (sidePanelOpenRef.current) {
+                    closeSidePanel();
+                    return;
+                  }
+                  sidePanelReturnFocus.current = event.currentTarget;
+                  sidePanelOpenRef.current = true;
+                  setSidePanelOpen(true);
+                }}
+              >
+                {inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
+              </button>
+              <label className="goToColumn">
+                <span>Column</span>
+                <input
+                  list="openwrangler-columns"
+                  value={goToColumn}
+                  placeholder="Search columns"
+                  onChange={(event) => setGoToColumn(event.target.value)}
+                />
+                <datalist id="openwrangler-columns">
+                  {(displayMetadata ?? metadata).schema.map((column) => (
+                    <option key={column.id} value={column.name} />
+                  ))}
+                </datalist>
+              </label>
+              <span className="modeBadge">{metadata.mode}</span>
+              <span className="backendBadge">{metadata.backend}</span>
+              {snapshotMode && <span className="modeBadge">Snapshot</span>}
+              {inspectionMode && <span className="inspectionBadge">Step inspection</span>}
             </div>
-            <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
-            <FilterPanel
-              key={filterColumn}
-              metadata={metadata}
-              model={filterModel}
-              values={columnValues}
-              activeColumn={filterColumn}
-              defaultAdvanced={webviewConfig.filterMode === "advanced"}
-              disabled={mutationPending}
-              onApply={applyFilters}
-              onRequestValues={requestValues}
-            />
-          </aside>
+          )}
+        </header>
+
+        {metadata && metadata.mode === "editing" && (
+          <section className="cleaningBar" aria-label="Cleaning plan">
+            <div className="cleaningSummary">
+              <span className="codicon codicon-layers" aria-hidden="true" />
+              <strong>
+                {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+              </strong>
+              {metadata.draftStep && <span className="draftBadge">Draft: {metadata.draftStep.kind}</span>}
+            </div>
+            <div className="cleaningActions">
+              {metadata.draftStep ? (
+                <>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    disabled={loading || projectionLoading}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Escape"
+                    title={projectionActionTitle ?? "Discard draft (Escape)"}
+                    onClick={() => sendPlanAction("discardDraft")}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="button"
+                    data-operation-focus-fallback
+                    disabled={loading || projectionLoading}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Enter Meta+Enter"
+                    title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
+                    onClick={() => sendPlanAction("applyDraft")}
+                  >
+                    Apply step
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    disabled={loading || projectionLoading || metadata.steps.length === 0}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                    title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                    onClick={editLatestStep}
+                  >
+                    Edit latest
+                  </button>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    disabled={loading || projectionLoading || metadata.steps.length === 0}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                    title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                    onClick={() => sendPlanAction("undoStep")}
+                  >
+                    <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+                  </button>
+                </>
+              )}
+            </div>
+          </section>
         )}
-      </section>
-      {metadata?.draftStep && !inspectionMode && (
-        <section className="draftPanel" aria-label="Draft preview">
-          <header>
-            <div>
-              <strong>Previewing {metadata.draftStep.kind}</strong>
-              <span>The grid shows the draft result. Apply or discard it explicitly.</span>
-            </div>
-            {diff && (
-              <div className="diffStats" aria-label="Data diff summary">
-                <span>+{diff.addedRows} rows</span>
-                <span>-{diff.removedRows} rows</span>
-                <span>+{diff.addedColumns.length} columns</span>
-                <span>-{diff.removedColumns.length} columns</span>
+
+        {metadata && inspectionMode && (
+          <section className="inspectionPanel" aria-label="Selected applied-step inspection">
+            <header>
+              <div>
+                <strong>
+                  {pendingStepInspection ? "Loading" : "Inspecting"}{" "}
+                  {selectedInspectionStep ? operationByKind(selectedInspectionStep.kind).title : "applied step"}
+                </strong>
                 <span>
-                  {diff.changedCells} changed cells{diff.truncated ? " in this block" : ""}
+                  This is that step&apos;s input → output boundary. The confirmed dataframe view and filters are
+                  unchanged.
                 </span>
               </div>
-            )}
-            {draftWarnings.length > 0 && (
-              <div className="draftWarnings" role="alert">
-                {draftWarnings.map((warning) => (
-                  <span key={warning}>
-                    <span className="codicon codicon-warning" aria-hidden="true" /> {warning}
-                  </span>
-                ))}
+              <button type="button" className="secondaryButton" onClick={() => clearStepInspection()}>
+                Show confirmed data
+              </button>
+            </header>
+            {pendingStepInspection && (
+              <div role="status" aria-live="polite">
+                Loading inspection rows {pendingStepInspection.offset + 1}–{pendingStepInspection.offset + pageSize}…
               </div>
             )}
-          </header>
-          <details className="draftCode" open>
-            <summary>
-              Generated {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
-              code · edit in Code Preview panel
-            </summary>
-            <pre tabIndex={0} aria-label="Generated Python code preview">
-              <code>{generatedCode}</code>
-            </pre>
-          </details>
+            {stepInspectionError && (
+              <div className="errorBanner" role="alert">
+                {stepInspectionError}
+              </div>
+            )}
+            {stepInspection && (
+              <>
+                <div className="diffStats" aria-label="Selected step data diff summary">
+                  <span>+{stepInspection.diff.addedRows} rows</span>
+                  <span>-{stepInspection.diff.removedRows} rows</span>
+                  <span>+{stepInspection.diff.addedColumns.length} columns</span>
+                  <span>-{stepInspection.diff.removedColumns.length} columns</span>
+                  <span>
+                    {stepInspection.diff.changedCells} changed cells
+                    {stepInspection.diff.truncated ? " in this block" : ""}
+                  </span>
+                </div>
+                <details className="draftCode">
+                  <summary>Generated code through this applied step</summary>
+                  <pre tabIndex={0} aria-label="Selected step generated Python code">
+                    <code>{stepInspection.code}</code>
+                  </pre>
+                </details>
+              </>
+            )}
+          </section>
+        )}
+
+        <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
+          <section className="gridShell">
+            {foregroundError && (
+              <div className="errorBanner" role="alert">
+                <span>{foregroundError}</span>
+                {failedPageRequest && (
+                  <button type="button" className="secondaryButton" onClick={retryFailedPage}>
+                    Retry page
+                  </button>
+                )}
+              </div>
+            )}
+            {backgroundDiagnosticMessages.length > 0 && (
+              <div className="errorBanner" role="status" aria-label="Profiling diagnostics">
+                Insights warning: {backgroundDiagnosticMessages.join(" ")}
+              </div>
+            )}
+            {loading && (
+              <div className="loading" role="status" aria-live="polite">
+                Loading...
+              </div>
+            )}
+            {projectionLoading && (
+              <div id="column-projection-status" className="loading" role="status" aria-live="polite">
+                Loading visible columns… Cleaning actions are temporarily unavailable.
+              </div>
+            )}
+            {displayMetadata && displayPage ? (
+              <DataGrid
+                key={
+                  inspectionMode
+                    ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}`
+                    : `confirmed:${displayMetadata.sessionId}`
+                }
+                metadata={displayMetadata}
+                page={displayPage}
+                summaries={inspectionMode ? [] : summaries}
+                onPage={(offset) => {
+                  const stepId = stepInspectionTarget?.stepId;
+                  if (stepId) requestStepInspection(stepId, offset, inspectionColumnWindow.current, "row");
+                  else
+                    requestPage(offset, filterModelRef.current, {
+                      columnWindow: desiredColumnWindow.current,
+                      reason: "row"
+                    });
+                }}
+                pageSize={pageSize}
+                defaultColumnWidth={webviewConfig.defaultColumnWidth}
+                insightsOnOpen={inspectionMode ? false : webviewConfig.insightsOnOpen}
+                busy={loading || Boolean(pendingStepInspection && pendingStepInspection.reason !== "projection")}
+                projecting={projectionLoading || pendingStepInspection?.reason === "projection"}
+                viewContextId={
+                  inspectionMode ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}` : activeViewContextId
+                }
+                goToColumn={goToColumn}
+                viewState={inspectionMode ? inspectionGridViewState : gridViewState}
+                viewStateRestoreVersion={
+                  inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
+                }
+                diff={stepInspection?.diff ?? (metadata?.draftStep ? diff : undefined)}
+                beforePage={stepInspection?.inputPage ?? draftBefore?.page}
+                beforeSchema={stepInspection?.inputSchema ?? draftBefore?.schema}
+                viewControlsDisabled={inspectionMode}
+                onSortColumn={(column, direction) =>
+                  inspectionMode
+                    ? undefined
+                    : applyFilters({
+                        ...filterModel,
+                        sort: [
+                          ...filterModel.sort.filter((rule) => rule.column !== column),
+                          { column, direction, nulls: "last" }
+                        ]
+                      })
+                }
+                onOpenFilter={(column) => {
+                  if (inspectionMode) return;
+                  sidePanelReturnFocus.current =
+                    document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
+                  setFilterColumn(column);
+                  sidePanelOpenRef.current = true;
+                  setSidePanelOpen(true);
+                  requestValues(column);
+                }}
+                onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
+                onVisibleColumnRangeChange={handleVisibleColumnRange}
+                onViewStateChange={inspectionMode ? () => undefined : publishGridViewState}
+              />
+            ) : (
+              <div className="emptyState">
+                {inspectionMode ? "Loading selected-step inspection…" : "Opening session..."}
+              </div>
+            )}
+          </section>
+          {sidePanelOpen && !inspectionMode && (
+            <aside className="sidebar" aria-label="Insights and filters">
+              <div className="drawerHeader">
+                <strong>Insights & filters</strong>
+                <button
+                  type="button"
+                  className="iconButton codicon codicon-close"
+                  aria-label="Close panel"
+                  onClick={closeSidePanel}
+                />
+              </div>
+              <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
+              <FilterPanel
+                key={filterColumn}
+                metadata={metadata}
+                model={filterModel}
+                values={columnValues}
+                activeColumn={filterColumn}
+                defaultAdvanced={webviewConfig.filterMode === "advanced"}
+                disabled={mutationPending}
+                onApply={applyFilters}
+                onRequestValues={requestValues}
+              />
+            </aside>
+          )}
         </section>
-      )}
+        {metadata?.draftStep && !inspectionMode && (
+          <section className="draftPanel" aria-label="Draft preview">
+            <header>
+              <div>
+                <strong>Previewing {metadata.draftStep.kind}</strong>
+                <span>The grid shows the draft result. Apply or discard it explicitly.</span>
+              </div>
+              {diff && (
+                <div className="diffStats" aria-label="Data diff summary">
+                  <span>+{diff.addedRows} rows</span>
+                  <span>-{diff.removedRows} rows</span>
+                  <span>+{diff.addedColumns.length} columns</span>
+                  <span>-{diff.removedColumns.length} columns</span>
+                  <span>
+                    {diff.changedCells} changed cells{diff.truncated ? " in this block" : ""}
+                  </span>
+                </div>
+              )}
+              {draftWarnings.length > 0 && (
+                <div className="draftWarnings" role="alert">
+                  {draftWarnings.map((warning) => (
+                    <span key={warning}>
+                      <span className="codicon codicon-warning" aria-hidden="true" /> {warning}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </header>
+            <details className="draftCode" open>
+              <summary>
+                Generated{" "}
+                {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
+                code · edit in Code Preview panel
+              </summary>
+              <pre tabIndex={0} aria-label="Generated Python code preview">
+                <code>{generatedCode}</code>
+              </pre>
+            </details>
+          </section>
+        )}
+      </div>
       {metadata && operationOpen && (
         <OperationBuilder
           key={`${operationKind ?? "none"}:${editingStep?.id ?? "new"}`}

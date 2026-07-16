@@ -106,8 +106,14 @@ def test_group_lineage_preserves_keys_and_creates_deterministic_aggregate_ids() 
         "id": "group-step",
         "kind": "groupBy",
         "params": {
-            "keys": ["group"],
-            "aggregations": [{"column": "value", "operation": "sum", "alias": "total"}],
+            "keys": [{"id": "c:source:0", "name": "group", "position": 0}],
+            "aggregations": [
+                {
+                    "column": {"id": "c:source:1", "name": "value", "position": 1},
+                    "operation": "sum",
+                    "alias": "total",
+                }
+            ],
         },
     }
     after = derive_lineage(before, schema("group", "total"), step)

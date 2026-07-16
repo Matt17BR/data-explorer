@@ -717,6 +717,223 @@ describe("SessionCoordinator", () => {
     });
   });
 
+  it("persists group and by-example identities across a real coordinator close and reopen", async () => {
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const groupStep: TransformStep = {
+      id: "persisted-group",
+      kind: "groupBy",
+      params: {
+        keys: [{ id: "c:region", name: "region" }],
+        aggregations: [
+          {
+            column: { id: "c:sales", name: "sales" },
+            operation: "sum",
+            alias: "total"
+          }
+        ]
+      }
+    };
+    const exampleStep: TransformStep = {
+      id: "persisted-example",
+      kind: "byExample",
+      params: {
+        sourceColumns: [
+          { id: "c:region", name: "region" },
+          { id: "c:step:persisted-group:0", name: "total" }
+        ],
+        newColumn: "label",
+        examples: [
+          { inputs: ["a", 3], output: "a-3" },
+          { inputs: ["b", 7], output: "b-7" }
+        ],
+        program: {
+          kind: "concat",
+          parts: [
+            { kind: "column", column: { id: "c:region", name: "region" } },
+            { kind: "literal", value: "-" },
+            { kind: "column", column: { id: "c:step:persisted-group:0", name: "total" } }
+          ]
+        },
+        warnings: [],
+        candidateCount: 1
+      }
+    };
+    const steps = [groupStep, exampleStep];
+    const schemas: SessionMetadata["schema"][] = [
+      [
+        { id: "c:region", name: "region", position: 0, rawType: "String", type: "string", nullable: false },
+        { id: "c:sales", name: "sales", position: 1, rawType: "Int64", type: "integer", nullable: false }
+      ],
+      [
+        { id: "c:region", name: "region", position: 0, rawType: "String", type: "string", nullable: false },
+        {
+          id: "c:step:persisted-group:0",
+          name: "total",
+          position: 1,
+          rawType: "Int128",
+          type: "integer",
+          nullable: false
+        }
+      ],
+      [
+        { id: "c:region", name: "region", position: 0, rawType: "String", type: "string", nullable: false },
+        {
+          id: "c:step:persisted-group:0",
+          name: "total",
+          position: 1,
+          rawType: "Int128",
+          type: "integer",
+          nullable: false
+        },
+        {
+          id: "c:step:persisted-example:0",
+          name: "label",
+          position: 2,
+          rawType: "String",
+          type: "string",
+          nullable: false
+        }
+      ]
+    ];
+    const metadataFor = (sessionId: string, appliedCount: number, draftStep?: TransformStep): SessionMetadata => {
+      const opened = openedResponse(sessionId);
+      const outputIndex = draftStep === undefined ? appliedCount : appliedCount + 1;
+      const rows = outputIndex === 0 ? 4 : 2;
+      return {
+        ...opened.metadata,
+        revision: appliedCount * 2 + (draftStep === undefined ? 0 : 1),
+        shape: { rows, columns: schemas[outputIndex].length },
+        filteredShape: { rows, columns: schemas[outputIndex].length },
+        schema: schemas[outputIndex],
+        steps: steps.slice(0, appliedCount),
+        ...(draftStep === undefined ? {} : { draftStep })
+      };
+    };
+    const makeDelegate = (sessionId: string, order?: string[]) => {
+      const applied: TransformStep[] = [];
+      let draft: TransformStep | undefined;
+      return vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          order?.push("open");
+          const metadata = metadataFor(sessionId, 0);
+          return {
+            ...openedResponse(sessionId),
+            metadata,
+            page: {
+              offset: 0,
+              limit: openRequest.pageSize,
+              totalRows: metadata.filteredShape.rows,
+              columnIds: metadata.schema.map((column) => column.id),
+              rows: []
+            }
+          };
+        }
+        if (request.kind === "previewStep") {
+          const expected = steps[applied.length];
+          expect(request.step).toEqual(expected);
+          draft = request.step;
+          order?.push(`preview:${draft.id}`);
+          const metadata = metadataFor(sessionId, applied.length, draft);
+          return {
+            ...stepPreviewResponse(metadata.revision, draft, sessionId),
+            metadata,
+            page: projectedPage(request, metadata)
+          };
+        }
+        if (request.kind === "applyDraft") {
+          if (draft === undefined) throw new Error("Apply received without a draft.");
+          applied.push(draft);
+          order?.push(`apply:${draft.id}`);
+          draft = undefined;
+          const metadata = metadataFor(sessionId, applied.length);
+          return {
+            ...planUpdatedResponse(metadata.revision, [...applied], sessionId),
+            metadata,
+            page: projectedPage(request, metadata)
+          };
+        }
+        if (request.kind === "getPage") {
+          order?.push("page");
+          return pageResponseForMetadata(request, metadataFor(sessionId, applied.length));
+        }
+        if (request.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected persistence delegate request: ${request.kind}`);
+      });
+    };
+    const firstDelegate = makeDelegate("persistence-runtime-1");
+    const firstCoordinator = new SessionCoordinator(workspaceState);
+    const firstBridge = firstCoordinator.createBridge({ request: firstDelegate });
+    const opened = await firstBridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the first fake session to open.");
+    let revision = opened.metadata.revision;
+    for (const step of steps) {
+      const preview = await firstBridge.request({
+        kind: "previewStep",
+        sessionId: opened.metadata.sessionId,
+        revision,
+        step,
+        offset: 0,
+        limit: 2,
+        ...columnWindow
+      });
+      if (preview.kind !== "stepPreview") throw new Error("Expected the identity-addressed step to preview.");
+      const applied = await firstBridge.request({
+        kind: "applyDraft",
+        sessionId: opened.metadata.sessionId,
+        revision: preview.revision,
+        offset: 0,
+        limit: 2,
+        ...columnWindow
+      });
+      if (applied.kind !== "planUpdated") throw new Error("Expected the identity-addressed step to apply.");
+      revision = applied.revision;
+    }
+    await firstBridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision
+    });
+
+    expect(firstCoordinator.diagnostics().sessionCount).toBe(0);
+    expect(stored[persistenceKey(openRequest.source, "polars")]).toMatchObject({
+      cleaning: { steps }
+    });
+
+    const replayOrder: string[] = [];
+    const secondDelegate = makeDelegate("persistence-runtime-2", replayOrder);
+    const secondCoordinator = new SessionCoordinator(workspaceState);
+    const secondBridge = secondCoordinator.createBridge({ request: secondDelegate });
+
+    const restored = await secondBridge.request(openRequest);
+
+    expect(restored).toMatchObject({ kind: "sessionOpened", metadata: { revision: 4, steps } });
+    expect(replayOrder).toEqual([
+      "open",
+      `preview:${groupStep.id}`,
+      `apply:${groupStep.id}`,
+      `preview:${exampleStep.id}`,
+      `apply:${exampleStep.id}`,
+      "page"
+    ]);
+    if (restored.kind === "sessionOpened") {
+      await secondBridge.request({
+        kind: "closeSession",
+        sessionId: restored.metadata.sessionId,
+        revision: restored.metadata.revision
+      });
+    }
+    expect(secondCoordinator.diagnostics().sessionCount).toBe(0);
+  });
+
   it("discards a stale saved view while preserving replayed cleaning steps and draft", async () => {
     const appliedStep: TransformStep = {
       id: "persisted-drop",

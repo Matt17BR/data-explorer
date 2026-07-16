@@ -46,12 +46,7 @@ def derive_lineage(
         _require_known_ids(candidates, {bound_id})
         candidates = [column for column in candidates if column["id"] != bound_id]
     elif kind == "groupBy":
-        by_name = _pools(candidates)
-        candidates = []
-        for name in params["keys"]:
-            existing = by_name[str(name)]
-            if existing:
-                candidates.append({"id": existing.popleft(), "name": str(name)})
+        candidates = _selected_candidates(candidates, params["keys"])
         for index, aggregation in enumerate(params["aggregations"]):
             candidates.append({"id": _step_column_id(step, index), "name": str(aggregation["alias"])})
     return _align(candidates, after_schema, step)

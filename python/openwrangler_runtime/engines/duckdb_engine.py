@@ -26,6 +26,10 @@ from .base import (
 )
 
 SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_PORTABLE_INTEGER_MAX = 10**38 - 1
+_PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 
 
 class DuckDBEngine(DataFrameEngine):
@@ -487,7 +491,7 @@ class DuckDBEngine(DataFrameEngine):
                 f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})",
             )
         if kind == "groupBy":
-            return self._group_by(frame, params)
+            return self._group_by(frame, _bound_duckdb_group_params(params))
         if kind == "byExample":
             return self._assign(frame, params["newColumn"], _by_example_expression(params["program"]))
         if kind == "customCode":
@@ -629,7 +633,7 @@ class DuckDBEngine(DataFrameEngine):
             expression = f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})"
             return [f"{prefix}df = _ow_assign(df, {params.get('newColumn', column)!r}, {expression!r})"]
         if kind == "groupBy":
-            return [f"{prefix}df = _ow_group_by(df, {dict(params)!r})"]
+            return [f"{prefix}df = _ow_group_by(df, {_bound_duckdb_group_params(params)!r})"]
         if kind == "byExample":
             return [
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {_by_example_expression(params['program'])!r})"
@@ -868,7 +872,18 @@ class DuckDBEngine(DataFrameEngine):
     def _group_by(self, frame: Any, params: Mapping[str, Any]) -> Any:
         keys = list(params["keys"])
         order_name = _unique_internal(self._columns(frame), "__ow_group_order")
-        projections = [_quote_ident(key) for key in keys]
+        types = dict(zip((str(item) for item in frame.columns), (str(item) for item in frame.types), strict=True))
+        key_expressions = [
+            (
+                f"CASE WHEN {_valid_predicate(_quote_ident(key), types[key])} THEN {_quote_ident(key)} ELSE NULL END"
+                if _is_float_type(types[key])
+                else _quote_ident(key)
+            )
+            for key in keys
+        ]
+        projections = [
+            f"{expression} AS {_quote_ident(key)}" for key, expression in zip(keys, key_expressions, strict=True)
+        ]
         projections.extend(
             _aggregation_expression(frame, aggregation, _quote_ident(order_name))
             + f" AS {_quote_ident(aggregation['alias'])}"
@@ -876,7 +891,7 @@ class DuckDBEngine(DataFrameEngine):
         )
         query = (
             f"WITH ordered AS (SELECT *, row_number() OVER () AS {_quote_ident(order_name)} FROM ow) "
-            f"SELECT {', '.join(projections)} FROM ordered GROUP BY {_identifier_list(keys)} "
+            f"SELECT {', '.join(projections)} FROM ordered GROUP BY {', '.join(key_expressions)} "
             f"ORDER BY min({_quote_ident(order_name)})"
         )
         return self._relation(frame, query)
@@ -991,6 +1006,10 @@ def _semantic_type(raw_type: str) -> str:
 def _is_float_type(raw_type: str) -> bool:
     lowered = raw_type.lower()
     return any(token in lowered for token in ("float", "double", "real"))
+
+
+def _is_integer_type(raw_type: str) -> bool:
+    return _semantic_type(raw_type) == "integer"
 
 
 def _nan_predicate(identifier: str, raw_type: str) -> str:
@@ -1126,30 +1145,59 @@ def _formula_expression(left: str, right: str, operator: str) -> str:
     return f"({left} {symbol} {right})"
 
 
+def _bound_duckdb_group_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "keys": [bound_column_name(reference, "groupBy") for reference in params["keys"]],
+        "aggregations": [
+            {
+                **aggregation,
+                "column": bound_column_name(aggregation["column"], "groupBy"),
+            }
+            for aggregation in params["aggregations"]
+        ],
+    }
+
+
 def _aggregation_expression(frame: Any, aggregation: Mapping[str, Any], order: str) -> str:
     column = _quote_ident(aggregation["column"])
+    types = dict(zip((str(item) for item in frame.columns), (str(item) for item in frame.types), strict=True))
+    raw_type = types[aggregation["column"]]
+    value = (
+        f"CASE WHEN {_valid_predicate(column, raw_type)} THEN {column} ELSE NULL END"
+        if _is_float_type(raw_type)
+        else column
+    )
     operation = aggregation["operation"]
     if operation == "sum":
-        return f"coalesce(sum({column}), 0)"
+        if _is_integer_type(raw_type):
+            # BIGNUM keeps accumulation exact even when intermediate partial
+            # sums exceed HUGEINT or the portable result envelope.  The final
+            # value is checked and narrowed below, so cancellation remains
+            # deterministic and independent of input order.
+            total = f"coalesce(sum(CAST({value} AS BIGNUM)), 0::BIGNUM)"
+            return _checked_duckdb_integer_result(total)
+        return f"coalesce(sum({value}), 0)"
     if operation == "mean":
-        return f"avg({column})"
-    if operation in {"min", "max", "median"}:
-        return f"{operation}({column})"
+        return f"avg({value})"
+    if operation in {"min", "max"}:
+        return f"{operation}({value})"
+    if operation == "median":
+        expression = f"median({value})"
+        return f"CAST({expression} AS DOUBLE)" if "decimal" in raw_type.lower() else expression
     if operation == "count":
-        return f"count({column})"
+        return f"count({value})"
     if operation == "nUnique":
-        types = dict(zip((str(item) for item in frame.columns), (str(item) for item in frame.types), strict=True))
-        return f"count(DISTINCT {column}) FILTER (WHERE {_valid_predicate(column, types[aggregation['column']])})"
+        return f"count(DISTINCT {value})"
     if operation in {"first", "last"}:
         direction = "ASC" if operation == "first" else "DESC"
-        return f"first({column} ORDER BY {order} {direction}) FILTER (WHERE {column} IS NOT NULL)"
+        return f"first({value} ORDER BY {order} {direction}) FILTER (WHERE {value} IS NOT NULL)"
     raise EngineError(f"Unsupported DuckDB aggregation: {operation}")
 
 
 def _by_example_expression(program: Mapping[str, Any]) -> str:
     kind = program["kind"]
     if kind == "column":
-        return _quote_ident(program["column"])
+        return _quote_ident(bound_column_name(program["column"], "byExample"))
     if kind == "literal":
         return _sql_literal(program.get("value"))
     if kind == "slice":
@@ -1172,16 +1220,18 @@ def _by_example_expression(program: Mapping[str, Any]) -> str:
         )
     if kind == "regexReplace":
         value = f"CAST({_by_example_expression(program['input'])} AS VARCHAR)"
-        return (
-            f"regexp_replace({value}, {_sql_literal(program['pattern'])}, {_sql_literal(program['replacement'])}, 'g')"
-        )
+        replacement = str(program["replacement"]).replace("\\", "\\\\")
+        return f"regexp_replace({value}, {_sql_literal(program['pattern'])}, {_sql_literal(replacement)}, 'g')"
     if kind == "case":
         value = f"CAST({_by_example_expression(program['input'])} AS VARCHAR)"
         if program["style"] == "lower":
-            return f"lower({value})"
+            return f"translate({value}, {_sql_literal(_ASCII_UPPER)}, {_sql_literal(_ASCII_LOWER)})"
         if program["style"] == "upper":
-            return f"upper({value})"
-        return f"upper(substr({value}, 1, 1)) || lower(substr({value}, 2))"
+            return f"translate({value}, {_sql_literal(_ASCII_LOWER)}, {_sql_literal(_ASCII_UPPER)})"
+        return (
+            f"translate(substr({value}, 1, 1), {_sql_literal(_ASCII_LOWER)}, {_sql_literal(_ASCII_UPPER)}) || "
+            f"translate(substr({value}, 2), {_sql_literal(_ASCII_UPPER)}, {_sql_literal(_ASCII_LOWER)})"
+        )
     if kind == "datetimeFormat":
         value = f"CAST({_by_example_expression(program['input'])} AS VARCHAR)"
         return (
@@ -1189,12 +1239,79 @@ def _by_example_expression(program: Mapping[str, Any]) -> str:
             f"{_sql_literal(program['outputFormat'])})"
         )
     if kind == "arithmetic":
+        left = _by_example_expression(program["left"])
+        right = _by_example_expression(program["right"])
+        widens_integer = program.get("_owResultType") == "integer"
+        if widens_integer:
+            return _checked_duckdb_integer_formula(left, right, str(program["operator"]))
         return _formula_expression(
-            _by_example_expression(program["left"]),
-            _by_example_expression(program["right"]),
+            left,
+            right,
             program["operator"],
         )
     raise EngineError(f"Unsupported DuckDB by-example expression: {kind}")
+
+
+def _checked_duckdb_integer_result(expression: str) -> str:
+    minimum = f"'{_PORTABLE_INTEGER_MIN}'::BIGNUM"
+    maximum = f"'{_PORTABLE_INTEGER_MAX}'::BIGNUM"
+    # DuckDB 1.5 cannot cast BIGNUM directly to HUGEINT, even for small
+    # values.  Its lossless VARCHAR bridge does support the full HUGEINT
+    # domain, and the explicit range check runs before that narrowing cast.
+    return (
+        f"CAST(CASE WHEN ({expression}) IS NULL THEN NULL "
+        f"WHEN ({expression}) BETWEEN {minimum} AND {maximum} "
+        f"THEN CAST(({expression}) AS VARCHAR) "
+        "ELSE error('Open Wrangler integer result exceeds the portable 38-digit envelope.') END AS HUGEINT)"
+    )
+
+
+def _checked_duckdb_integer_formula(left: str, right: str, operator: str) -> str:
+    if operator not in {"add", "subtract", "multiply"}:
+        raise EngineError(f"Unsupported checked DuckDB integer operator: {operator}")
+    left_bignum = f"CAST({left} AS BIGNUM)"
+    right_bignum = f"CAST({right} AS BIGNUM)"
+    if operator == "multiply":
+        # DuckDB 1.5's BIGNUM multiplication currently rounds large products
+        # through scientific notation.  BIGNUM still preserves each operand
+        # losslessly, though, and unlike HUGEINT it can hold the full UHUGEINT
+        # domain for the exact string conversion below.
+        # Normalize only in-envelope operands to DECIMAL(38, 0), then perform
+        # the guarded multiplication there.  This also preserves the valid
+        # UHUGEINT.max * 0 and UHUGEINT.max * NULL cases without narrowing the
+        # wide operand before the zero/null guard can run.
+        maximum_integer = f"{_PORTABLE_INTEGER_MAX}::HUGEINT"
+        zero = "CAST(0 AS DECIMAL(38, 0))"
+        # DuckDB 1.4/1.5 mis-binds some BIGNUM comparisons against column
+        # expressions, while abs(BIGNUM) narrows to DOUBLE.  A lossless VARCHAR
+        # bridge followed by TRY_CAST is an exact in-envelope test for integer
+        # operands and safely rejects the rest of the UHUGEINT/BIGNUM domain.
+        left_decimal = f"TRY_CAST(CAST({left_bignum} AS VARCHAR) AS DECIMAL(38, 0))"
+        right_decimal = f"TRY_CAST(CAST({right_bignum} AS VARCHAR) AS DECIMAL(38, 0))"
+        left_in_range = f"({left_decimal} IS NOT NULL)"
+        right_in_range = f"({right_decimal} IS NOT NULL)"
+        normalized_left = (
+            f"CASE WHEN {left_bignum} IS NULL THEN NULL::DECIMAL(38, 0) ELSE coalesce({left_decimal}, {zero}) END"
+        )
+        normalized_right = (
+            f"CASE WHEN {right_bignum} IS NULL THEN NULL::DECIMAL(38, 0) ELSE coalesce({right_decimal}, {zero}) END"
+        )
+        left_magnitude = f"abs(CAST({normalized_left} AS HUGEINT))"
+        right_magnitude = f"abs(CAST({normalized_right} AS HUGEINT))"
+        divisor = f"CASE WHEN {right_magnitude} <> 0 THEN {right_magnitude} ELSE 1::HUGEINT END"
+        safe = (
+            f"({left_bignum} IS NULL OR {right_bignum} IS NULL OR {left_bignum} = 0 OR {right_bignum} = 0 OR "
+            f"({left_in_range} AND {right_in_range} AND "
+            f"{left_magnitude} <= {maximum_integer} // ({divisor})))"
+        )
+        checked_left = f"CASE WHEN {safe} THEN {normalized_left} ELSE {zero} END"
+        checked_right = f"CASE WHEN {safe} THEN {normalized_right} ELSE {zero} END"
+        result = _formula_expression(checked_left, checked_right, operator)
+        return (
+            f"CAST(CASE WHEN {safe} THEN {result} "
+            "ELSE error('Open Wrangler integer result exceeds the portable 38-digit envelope.') END AS HUGEINT)"
+        )
+    return _checked_duckdb_integer_result(_formula_expression(left_bignum, right_bignum, operator))
 
 
 _GENERATED_HELPERS = r"""import math
@@ -1293,6 +1410,29 @@ def _ow_unique(existing, base):
 def _ow_is_float(raw_type):
     lowered = str(raw_type).lower()
     return any(token in lowered for token in ("float", "double", "real"))
+
+
+def _ow_is_integer(raw_type):
+    lowered = str(raw_type).lower()
+    return any(
+        token in lowered
+        for token in (
+            "tinyint", "smallint", "integer", "bigint", "hugeint",
+            "utinyint", "usmallint", "uinteger", "ubigint",
+        )
+    )
+
+
+def _ow_checked_integer_result(expression):
+    maximum_value = str(10**38 - 1)
+    minimum = "'-" + maximum_value + "'::BIGNUM"
+    maximum = "'" + maximum_value + "'::BIGNUM"
+    return (
+        "CAST(CASE WHEN (" + expression + ") IS NULL THEN NULL WHEN ("
+        + expression + ") BETWEEN " + minimum + " AND " + maximum
+        + " THEN CAST((" + expression + ") AS VARCHAR) ELSE error('Open Wrangler integer result exceeds "
+        + "the portable 38-digit envelope.') END AS HUGEINT)"
+    )
 
 
 def _ow_valid(identifier, raw_type):
@@ -1551,33 +1691,54 @@ def _ow_group_by(df, params):
     order_name = _ow_unique(_ow_columns(df), "__ow_group_order")
     order = _ow_ident(order_name)
     types = dict(zip(_ow_columns(df), map(str, df.types)))
-    projections = [_ow_ident(key) for key in keys]
+    key_expressions = []
+    projections = []
+    for key in keys:
+        column = _ow_ident(key)
+        expression = (
+            "CASE WHEN " + _ow_valid(column, types[key]) + " THEN " + column + " ELSE NULL END"
+            if _ow_is_float(types[key])
+            else column
+        )
+        key_expressions.append(expression)
+        projections.append(expression + " AS " + column)
     for aggregation in params["aggregations"]:
         column = _ow_ident(aggregation["column"])
+        value = (
+            "CASE WHEN " + _ow_valid(column, types[aggregation["column"]])
+            + " THEN " + column + " ELSE NULL END"
+            if _ow_is_float(types[aggregation["column"]])
+            else column
+        )
         operation = aggregation["operation"]
         if operation == "sum":
-            expression = "coalesce(sum(" + column + "), 0)"
+            if _ow_is_integer(types[aggregation["column"]]):
+                total = "coalesce(sum(CAST(" + value + " AS BIGNUM)), 0::BIGNUM)"
+                expression = _ow_checked_integer_result(total)
+            else:
+                expression = "coalesce(sum(" + value + "), 0)"
         elif operation == "mean":
-            expression = "avg(" + column + ")"
-        elif operation in {"min", "max", "median"}:
-            expression = operation + "(" + column + ")"
+            expression = "avg(" + value + ")"
+        elif operation in {"min", "max"}:
+            expression = operation + "(" + value + ")"
+        elif operation == "median":
+            expression = "median(" + value + ")"
+            if "decimal" in types[aggregation["column"]].lower():
+                expression = "CAST(" + expression + " AS DOUBLE)"
         elif operation == "count":
-            expression = "count(" + column + ")"
+            expression = "count(" + value + ")"
         elif operation == "nUnique":
-            expression = (
-                "count(DISTINCT " + column + ") FILTER (WHERE "
-                + _ow_valid(column, types[aggregation["column"]]) + ")"
-            )
+            expression = "count(DISTINCT " + value + ")"
         else:
             direction = "ASC" if operation == "first" else "DESC"
             expression = (
-                "first(" + column + " ORDER BY " + order + " " + direction
-                + ") FILTER (WHERE " + column + " IS NOT NULL)"
+                "first(" + value + " ORDER BY " + order + " " + direction
+                + ") FILTER (WHERE " + value + " IS NOT NULL)"
             )
         projections.append(expression + " AS " + _ow_ident(aggregation["alias"]))
     query = (
         "WITH ordered AS (SELECT *, row_number() OVER () AS " + order + " FROM ow) SELECT "
-        + ", ".join(projections) + " FROM ordered GROUP BY " + _ow_identifiers(keys)
+        + ", ".join(projections) + " FROM ordered GROUP BY " + ", ".join(key_expressions)
         + " ORDER BY min(" + order + ")"
     )
     return _ow_query(df, query)

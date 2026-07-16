@@ -136,6 +136,8 @@ _COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "selectColumns": ("columns",),
     "dropColumns": ("columns",),
     "oneHotEncode": ("columns",),
+    "groupBy": ("keys",),
+    "byExample": ("sourceColumns",),
 }
 
 
@@ -265,17 +267,38 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         aggregations = params["aggregations"]
         if not isinstance(aggregations, list) or not aggregations:
             raise OperationError("groupBy.aggregations must be a non-empty array.")
-        for aggregation in aggregations:
+        normalized_aggregations: list[dict[str, Any]] = []
+        for index, aggregation in enumerate(aggregations):
             if not isinstance(aggregation, Mapping):
                 raise OperationError("Each aggregation must be an object.")
-            if not all(isinstance(aggregation.get(key), str) and aggregation.get(key) for key in ("column", "alias")):
-                raise OperationError("Each aggregation must contain column and alias names.")
+            fields = set(aggregation)
+            missing = {"column", "operation", "alias"} - fields
+            if missing:
+                raise OperationError("Each aggregation is missing required fields: " + ", ".join(sorted(missing)) + ".")
+            unexpected = fields - {"column", "operation", "alias"}
+            if unexpected:
+                raise OperationError(
+                    "Each aggregation contains unknown fields: " + ", ".join(sorted(map(str, unexpected))) + "."
+                )
+            if not isinstance(aggregation.get("alias"), str) or not aggregation["alias"]:
+                raise OperationError("Each aggregation must contain a non-empty alias.")
             if aggregation.get("operation") not in AGGREGATIONS:
                 raise OperationError(f"Unsupported aggregation: {aggregation.get('operation')!r}.")
-        aliases = [str(aggregation["alias"]) for aggregation in aggregations]
+            normalized_aggregations.append(
+                {
+                    "column": _normalize_column_reference(
+                        aggregation.get("column"), f"groupBy.aggregations[{index}].column"
+                    ),
+                    "operation": aggregation["operation"],
+                    "alias": aggregation["alias"],
+                }
+            )
+        params["aggregations"] = normalized_aggregations
+        aliases = [str(aggregation["alias"]) for aggregation in normalized_aggregations]
         if len(aliases) != len(set(aliases)):
             raise OperationError("groupBy aggregation aliases must be unique.")
-        if set(params["keys"]) & set(aliases):
+        key_names = {reference["name"] for reference in params["keys"]}
+        if key_names & set(aliases):
             raise OperationError("groupBy aggregation aliases cannot duplicate a group key.")
     elif kind == "customCode" and (not isinstance(params["code"], str) or not params["code"].strip()):
         raise OperationError("customCode.code must be non-empty Python code assigning a dataframe to result.")
@@ -496,16 +519,16 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         if "rightColumn" in params:
             references.append(("rightColumn.name", params["rightColumn"].get("name")))
     elif kind == "groupBy":
-        references.extend(("keys", name) for name in params["keys"])
+        references.extend(("keys.name", reference.get("name")) for reference in params["keys"])
         for aggregation in params["aggregations"]:
             references.extend(
                 (
-                    ("aggregations.column", aggregation["column"]),
+                    ("aggregations.column.name", aggregation["column"].get("name")),
                     ("aggregations.alias", aggregation["alias"]),
                 )
             )
     elif kind == "byExample":
-        references.extend(("sourceColumns", name) for name in params["sourceColumns"])
+        references.extend(("sourceColumns.name", reference.get("name")) for reference in params["sourceColumns"])
 
     for output_field in ("newName", "newColumn"):
         if output_field in params:

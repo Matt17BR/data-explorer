@@ -319,8 +319,8 @@ def test_structural_diffs_use_stable_row_and_column_lineage(tmp_path, backend, m
         transform(
             "group",
             "groupBy",
-            keys=["group"],
-            aggregations=[{"column": "value", "operation": "sum", "alias": "total"}],
+            keys=[source_ref(0, "group")],
+            aggregations=[{"column": source_ref(1, "value"), "operation": "sum", "alias": "total"}],
         ),
         0,
         10,
@@ -571,7 +571,7 @@ def test_projected_preview_diff_samples_the_confirmed_filtered_sorted_lens(tmp_p
     assert preview["diff"]["truncated"] is True
 
 
-@pytest.mark.parametrize("backend", ["pandas", "polars"])
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_internal_row_ids_never_enter_exports_or_statistics(tmp_path, backend):
     path = tmp_path / "identity-source.csv"
     path.write_text("group,value\na,1\na,1\n", encoding="utf-8")
@@ -733,11 +733,11 @@ def test_by_example_requires_warning_preview_before_apply(tmp_path, backend):
         transform(
             "example",
             "byExample",
-            sourceColumns=["value"],
+            sourceColumns=[source_ref(0, "value")],
             newColumn="upper",
             examples=[
-                {"inputs": {"value": "a"}, "output": "A"},
-                {"inputs": {"value": "b"}, "output": "B"},
+                {"inputs": ["a"], "output": "A"},
+                {"inputs": ["b"], "output": "B"},
             ],
         ),
         0,

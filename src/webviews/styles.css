@@ -94,6 +94,10 @@ textarea {
   flex-direction: column;
 }
 
+.appWorkspace {
+  display: contents;
+}
+
 .app-error {
   padding: 24px;
 }

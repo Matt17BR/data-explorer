@@ -234,10 +234,22 @@ def normalize_page_projection(
 
 def normalize_cell(value: Any) -> dict[str, Any]:
     type_name = type(value).__name__
-    is_null = value is None or type_name in {"NAType", "NaTType"}
+    if _is_numpy_scalar_wrapper(value) and type_name not in {"datetime64", "timedelta64"}:
+        converted = value.item()
+        if type(converted) is not type(value):
+            return normalize_cell(converted)
+    numpy_datetime = value.item() if type_name == "datetime64" else None
+    pandas_timedelta_value = getattr(value, "value", None)
+    is_null = (
+        value is None
+        or type_name in {"NAType", "NaTType"}
+        or (type_name == "datetime64" and numpy_datetime is None)
+        or (type_name == "timedelta64" and str(value) == "NaT")
+        or (isinstance(value, Decimal) and value.is_nan())
+    )
     is_boolean = isinstance(value, bool) or type_name in {"bool", "bool_"}
-    is_integer = isinstance(value, Integral) and not is_boolean
-    is_real = isinstance(value, Real) and not is_boolean and not is_integer
+    is_integer = isinstance(value, Integral) and not is_boolean and type_name != "timedelta64"
+    is_real = isinstance(value, Real) and not is_boolean and not is_integer and type_name != "timedelta64"
     numeric_value = float(str(value)) if is_real else None
     is_nan = False
     infinity_sign: int | None = None
@@ -271,6 +283,10 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "decimal"
         display = str(value)
         raw = display
+    elif type_name == "datetime64":
+        kind = "datetime"
+        display = str(value)
+        raw = display
     elif isinstance(value, datetime):
         kind = "datetime"
         display = value.isoformat()
@@ -279,10 +295,18 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "date"
         display = value.isoformat()
         raw = display
+    elif type_name == "Timedelta" and isinstance(pandas_timedelta_value, Integral):
+        kind = "duration"
+        display = str(value)
+        raw = int(pandas_timedelta_value) / 1_000_000_000
     elif isinstance(value, timedelta):
         kind = "duration"
         display = str(value)
         raw = value.total_seconds()
+    elif type_name == "timedelta64":
+        kind = "duration"
+        display = str(value)
+        raw = _numpy_timedelta_raw(value, display)
     elif isinstance(value, bytes):
         kind = "binary"
         display = b64encode(value).decode("ascii")
@@ -463,7 +487,13 @@ def _maybe_float(value: Any) -> float | None:
 
 def _json_safe(value: Any) -> Any:
     type_name = type(value).__name__
-    if value is None or type_name in {"NAType", "NaTType"}:
+    if type_name in {"datetime64", "timedelta64"}:
+        return normalize_cell(value)["raw"]
+    if _is_numpy_scalar_wrapper(value):
+        converted = value.item()
+        if type(converted) is not type(value):
+            return _json_safe(converted)
+    if value is None or type_name in {"NAType", "NaTType"} or (isinstance(value, Decimal) and value.is_nan()):
         return None
     if isinstance(value, str):
         return value
@@ -482,6 +512,8 @@ def _json_safe(value: Any) -> Any:
         return numeric_value
     if isinstance(value, (date, datetime)):
         return value.isoformat()
+    if type_name == "Timedelta" and isinstance(getattr(value, "value", None), Integral):
+        return int(value.value) / 1_000_000_000
     if isinstance(value, timedelta):
         return value.total_seconds()
     if isinstance(value, bytes):
@@ -491,3 +523,14 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     return str(value)
+
+
+def _is_numpy_scalar_wrapper(value: Any) -> bool:
+    return any(base.__module__ == "numpy" and base.__name__ == "generic" for base in type(value).__mro__)
+
+
+def _numpy_timedelta_raw(value: Any, fallback: str) -> float | str:
+    try:
+        return float(value / type(value)(1, "s"))
+    except (TypeError, ValueError, OverflowError):
+        return fallback

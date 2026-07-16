@@ -1,5 +1,5 @@
 import type { DataBackend, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
-import { isFilterModel, isTransformStep } from "../shared/protocolValidation";
+import { isFilterModel, isRetainedTransformStep } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 
 export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v4";
@@ -101,7 +101,7 @@ function isDataBackend(value: unknown): value is DataBackend {
 }
 
 function decodeStep(value: unknown): TransformStep | undefined {
-  return isTransformStep(value) ? value : undefined;
+  return isRetainedTransformStep(value) ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

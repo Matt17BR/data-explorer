@@ -242,20 +242,16 @@ export type GroupByTransformStep = TransformStepTemplate & {
   params: GroupByParams;
   [k: string]: unknown;
 };
-/**
- * @minItems 1
- */
-export type NonEmptyStringArray = [string, ...string[]];
 export type ByExampleTransformStep = TransformStepTemplate & {
   kind: "byExample";
   params: ByExampleParams;
   [k: string]: unknown;
 };
-export type JsonScalar = string | number | boolean | null;
+export type JsonScalar = string | boolean | null | number;
 export type ByExampleProgram =
   | {
       kind: "column";
-      column: string;
+      column: ColumnReference;
     }
   | {
       kind: "literal";
@@ -277,6 +273,7 @@ export type ByExampleProgram =
       kind: "concat";
       /**
        * @minItems 1
+       * @maxItems 64
        */
       parts: [ByExampleProgram, ...ByExampleProgram[]];
     }
@@ -328,6 +325,9 @@ export type OpenWranglerResponse =
   | SessionClosedResponse
   | CancelledResponse
   | ErrorResponse;
+export type RetainedTransformStep = TransformStep & {
+  [k: string]: unknown;
+};
 export type TypedCellKind =
   | "null"
   | "nan"
@@ -596,32 +596,297 @@ export interface FormatDatetimeParams {
   newColumn?: string;
 }
 export interface GroupByParams {
-  keys: NonEmptyStringArray;
+  keys: NonEmptyColumnReferenceArray;
   /**
    * @minItems 1
    */
   aggregations: [Aggregation, ...Aggregation[]];
 }
 export interface Aggregation {
-  column: string;
+  column: ColumnReference;
   operation: "sum" | "mean" | "min" | "max" | "median" | "count" | "nUnique" | "first" | "last";
   alias: string;
 }
 export interface ByExampleParams {
-  sourceColumns: NonEmptyStringArray;
+  /**
+   * @minItems 1
+   * @maxItems 16
+   */
+  sourceColumns:
+    | [ColumnReference]
+    | [ColumnReference, ColumnReference]
+    | [ColumnReference, ColumnReference, ColumnReference]
+    | [ColumnReference, ColumnReference, ColumnReference, ColumnReference]
+    | [ColumnReference, ColumnReference, ColumnReference, ColumnReference, ColumnReference]
+    | [ColumnReference, ColumnReference, ColumnReference, ColumnReference, ColumnReference, ColumnReference]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ]
+    | [
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference,
+        ColumnReference
+      ];
   newColumn: string;
   /**
    * @minItems 2
+   * @maxItems 64
    */
   examples: [ByExampleItem, ByExampleItem, ...ByExampleItem[]];
   program?: ByExampleProgram;
+  /**
+   * @maxItems 64
+   */
   warnings?: string[];
   candidateCount?: number;
 }
 export interface ByExampleItem {
-  inputs: {
-    [k: string]: JsonScalar;
-  };
+  /**
+   * @minItems 1
+   * @maxItems 16
+   */
+  inputs:
+    | [JsonScalar]
+    | [JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar]
+    | [JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar, JsonScalar]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ]
+    | [
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar,
+        JsonScalar
+      ];
   output: JsonScalar;
 }
 export interface CustomCodeParams {
@@ -717,9 +982,9 @@ export interface SessionMetadata {
   filteredShape: DataShape;
   schema: ColumnSchema[];
   filterModel: FilterModel;
-  steps: TransformStep[];
+  steps: RetainedTransformStep[];
   latestStepInputSchema?: ColumnSchema[];
-  draftStep?: TransformStep;
+  draftStep?: RetainedTransformStep;
   draftReplacesStepId?: string;
   stats?: DatasetStats;
 }

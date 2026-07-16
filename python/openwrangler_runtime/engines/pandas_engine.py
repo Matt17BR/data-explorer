@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
+from datetime import date, datetime, timedelta
+from decimal import MAX_EMAX, MIN_EMIN, Decimal, localcontext
 from math import isfinite, isnan
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,6 +28,14 @@ from .base import (
     normalize_page_projection,
     numeric_visualization,
 )
+
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
+_ASCII_TO_UPPER = str.maketrans(_ASCII_LOWER, _ASCII_UPPER)
+_INT64_MIN = -(2**63)
+_INT64_MAX = (2**63) - 1
+_PORTABLE_INTEGER_LIMIT = 10**38
 
 
 class PandasEngine(DataFrameEngine):
@@ -85,7 +95,7 @@ class PandasEngine(DataFrameEngine):
             df.to_csv(path, index=False)
             return
         if format_name == "parquet":
-            df.to_parquet(path, index=False)
+            _pandas_parquet_frame(df).to_parquet(path, index=False)
             return
         raise EngineError(f"Unsupported Pandas export format: {format_name}")
 
@@ -109,7 +119,7 @@ class PandasEngine(DataFrameEngine):
                 "name": str(column),
                 "position": position,
                 "rawType": str(dtype),
-                "type": infer_semantic_type(str(dtype)),
+                "type": _pandas_semantic_type(df.iloc[:, frame_position]),
                 "nullable": bool(df.iloc[:, frame_position].isna().any()),
             }
             for position, frame_position in enumerate(self._visible_positions(df))
@@ -189,12 +199,12 @@ class PandasEngine(DataFrameEngine):
         sliced = df.iloc[offset : offset + limit, selected_positions]
         value_offset = 1 if row_id_position is not None else 0
         rows = []
-        for row_number, (_, row) in enumerate(sliced.iterrows(), start=offset):
+        for row_number, row in enumerate(sliced.itertuples(index=False, name=None), start=offset):
             rows.append(
                 {
-                    "id": str(row.iloc[0]) if row_id_position is not None else f"r:{row_number}",
+                    "id": str(row[0]) if row_id_position is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(row.iloc[value_offset + index]) for index in range(len(positions))],
+                    "values": [normalize_cell(row[value_offset + index]) for index in range(len(positions))],
                 }
             )
         return {
@@ -217,7 +227,7 @@ class PandasEngine(DataFrameEngine):
             column = df.columns[position]
             series = df.iloc[:, position]
             raw_type = str(series.dtype)
-            semantic_type = infer_semantic_type(raw_type)
+            semantic_type = _pandas_semantic_type(series)
             null_count, nan_count = _missing_value_counts(series, raw_type)
             top_values = [
                 {"value": str(index), "count": int(value)}
@@ -278,8 +288,8 @@ class PandasEngine(DataFrameEngine):
         series = df.iloc[:, position].dropna()
         if search:
             series = series[series.astype(str).str.contains(search, case=False, na=False)]
-        counts = series.value_counts().head(limit + 1)
-        values = [{"value": str(index), "count": int(value)} for index, value in counts.head(limit).items()]
+        counts = sorted(series.value_counts(sort=False).items(), key=lambda item: (-int(item[1]), str(item[0])))
+        values = [{"value": str(index), "count": int(value)} for index, value in counts[:limit]]
         return values, len(counts) > limit
 
     def _predicate_mask(self, series: Any, predicate: Mapping[str, Any]) -> Any:
@@ -484,17 +494,23 @@ class PandasEngine(DataFrameEngine):
                 return df
             return pd.concat([df, result.rename(target)], axis=1)
         if kind == "groupBy":
-            named = {
-                aggregation["alias"]: (
-                    aggregation["column"],
-                    "nunique" if aggregation["operation"] == "nUnique" else aggregation["operation"],
+            key_positions = [self._bound_frame_position(df, reference, kind) for reference in params["keys"]]
+            aggregations = [
+                (
+                    self._bound_frame_position(df, aggregation["column"], kind),
+                    aggregation["operation"],
+                    aggregation["alias"],
                 )
                 for aggregation in params["aggregations"]
-            }
-            return df.groupby(params["keys"], dropna=False, sort=False).agg(**named).reset_index()
+            ]
+            return _pandas_group_by_positions(df, key_positions, aggregations)
         if kind == "byExample":
-            df[params["newColumn"]] = _pandas_by_example_expression(df, params["program"])
-            return df
+            result = _pandas_by_example_expression(
+                df,
+                params["program"],
+                lambda reference: self._bound_frame_position(df, reference, kind),
+            )
+            return _pandas_append_result(df, result, params["newColumn"])
         if kind == "customCode":
             # Pandas' documented deep copy still shares Python objects stored in
             # object-dtype cells. Give arbitrary custom code a recursively
@@ -637,9 +653,15 @@ class PandasEngine(DataFrameEngine):
         plan = list(steps)
         needs_missing_helpers = any(step["kind"] == "filterRows" for step in plan)
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
+        needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
+        needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         lines = ["from collections import Counter"]
         if needs_object_isolation:
             lines.append("from copy import deepcopy")
+        if needs_nullable_result_helpers:
+            lines.append(
+                "from decimal import Decimal" + (", MAX_EMAX, MIN_EMIN, localcontext" if needs_group_helpers else "")
+            )
         if needs_missing_helpers:
             lines.append("from numbers import Real")
         lines.extend(["", "import numpy as np", "import pandas as pd", "", ""])
@@ -681,6 +703,215 @@ class PandasEngine(DataFrameEngine):
                     "            values = [deepcopy(value, memo) for value in isolated.iloc[:, position].array]",
                     "            isolated.isetitem(position, values)",
                     "    return isolated",
+                    "",
+                    "",
+                ]
+            )
+        if needs_nullable_result_helpers:
+            lines.extend(
+                [
+                    "def _open_wrangler_float_nan_mask(series):",
+                    "    return pd.Series(",
+                    "        [isinstance(value, (float, np.floating)) and np.isnan(value) for value in series.array],",
+                    "        index=series.index, dtype=bool)",
+                    "",
+                    "",
+                    "def _open_wrangler_nullable_string_copy(series):",
+                    "    if isinstance(series.dtype, pd.StringDtype):",
+                    "        return series.astype('string')",
+                    "    if (",
+                    "        pd.api.types.is_object_dtype(series.dtype)",
+                    "        or isinstance(series.dtype, pd.CategoricalDtype)",
+                    "    ):",
+                    "        null_mask = _open_wrangler_float_nan_mask(series)",
+                    "        if null_mask.any():",
+                    "            result = series.astype(object)",
+                    "            result.loc[null_mask] = pd.NA",
+                    "            return result",
+                    "    return series",
+                    "",
+                    "",
+                    "def _open_wrangler_group_nulls(series, null_mask):",
+                    "    mask = np.asarray(null_mask, dtype=bool)",
+                    "    if not mask.any():",
+                    "        return _open_wrangler_nullable_string_copy(series)",
+                    "    if pd.api.types.is_float_dtype(series.dtype):",
+                    "        values = series.to_numpy(dtype='float64', na_value=np.nan)",
+                    "        return pd.Series(",
+                    "            pd.arrays.FloatingArray(values, mask), index=series.index, name=series.name)",
+                    "    result = _open_wrangler_nullable_string_copy(series)",
+                    "    if (",
+                    "        pd.api.types.is_object_dtype(result.dtype)",
+                    "        or isinstance(result.dtype, pd.CategoricalDtype)",
+                    "    ):",
+                    "        result = result.astype(object)",
+                    "    return result.mask(pd.Series(mask, index=result.index), pd.NA)",
+                    "",
+                    "",
+                    "def _open_wrangler_group_key(series):",
+                    "    return _open_wrangler_group_nulls(series, _open_wrangler_float_nan_mask(series))",
+                    "",
+                    "",
+                    "def _open_wrangler_missing_scalar(value):",
+                    "    return (",
+                    "        value is None or type(value).__name__ in {'NAType', 'NaTType'} or",
+                    "        (isinstance(value, (float, np.floating)) and np.isnan(value)) or",
+                    "        (isinstance(value, Decimal) and value.is_nan())",
+                    "    )",
+                    "",
+                    "",
+                    "def _open_wrangler_integer_scalar(value):",
+                    "    return (",
+                    "        isinstance(value, (int, np.integer))",
+                    "        and not isinstance(value, (bool, np.bool_))",
+                    "        and type(value).__name__ != 'timedelta64'",
+                    "    )",
+                    "",
+                    "",
+                    "def _open_wrangler_prepare_group_key(series):",
+                    "    if not _open_wrangler_is_integer_series(series):",
+                    "        return series, None, False",
+                    "    sentinel = (",
+                    "        object() if any(_open_wrangler_missing_scalar(item) for item in series.array) else None",
+                    "    )",
+                    "    values = [",
+                    "        sentinel if _open_wrangler_missing_scalar(item) else int(item)",
+                    "        for item in series.array",
+                    "    ]",
+                    "    return pd.Series(values, index=series.index, name=series.name, dtype=object), sentinel, True",
+                    "",
+                    "",
+                    "def _open_wrangler_restore_group_key(series, sentinel, integer_key):",
+                    "    if not integer_key:",
+                    "        return _open_wrangler_group_key(series)",
+                    "    values = [pd.NA if item is sentinel else item for item in series.array]",
+                    "    restored = pd.Series(values, index=series.index, name=series.name, dtype=object)",
+                    "    return _open_wrangler_normalize_integer(restored, enforce_envelope=False)",
+                    "",
+                    "",
+                    "def _open_wrangler_widen_integer(value):",
+                    "    if not isinstance(value, pd.Series):",
+                    "        return (",
+                    "            int(value) if _open_wrangler_integer_scalar(value) else value)",
+                    "    normalized = [",
+                    "        pd.NA if _open_wrangler_missing_scalar(item) else",
+                    "        int(item) if _open_wrangler_integer_scalar(item) else item",
+                    "        for item in value.array",
+                    "    ]",
+                    "    return pd.Series(normalized, index=value.index, name=value.name, dtype=object)",
+                    "",
+                    "",
+                    "def _open_wrangler_float_integer(value):",
+                    "    return value.astype('Float64') if isinstance(value, pd.Series) else float(value)",
+                    "",
+                    "",
+                    "def _open_wrangler_is_integer_series(value):",
+                    "    if pd.api.types.is_integer_dtype(value.dtype):",
+                    "        return True",
+                    "    if not pd.api.types.is_object_dtype(value.dtype):",
+                    "        return False",
+                    "    present = [item for item in value.array if not _open_wrangler_missing_scalar(item)]",
+                    "    return bool(present) and all(_open_wrangler_integer_scalar(item) for item in present)",
+                    "",
+                    "",
+                    "def _open_wrangler_normalize_integer(value, enforce_envelope=True):",
+                    "    if not isinstance(value, pd.Series):",
+                    "        return value",
+                    "    present = [item for item in value.array if not _open_wrangler_missing_scalar(item)]",
+                    "    if not all(_open_wrangler_integer_scalar(item) for item in present):",
+                    "        raise TypeError('Open Wrangler integer arithmetic produced a non-integer value.')",
+                    "    normalized = [",
+                    "        pd.NA if _open_wrangler_missing_scalar(item) else int(item) for item in value.array",
+                    "    ]",
+                    "    numbers = [item for item in normalized if item is not pd.NA]",
+                    f"    if enforce_envelope and any(abs(item) >= {_PORTABLE_INTEGER_LIMIT!r} for item in numbers):",
+                    "        raise OverflowError(",
+                    "            'Open Wrangler integer result exceeds the portable 38-digit envelope.')",
+                    f"    if not numbers or all({_INT64_MIN!r} <= item <= {_INT64_MAX!r} for item in numbers):",
+                    "        return pd.Series(pd.array(normalized, dtype='Int64'), index=value.index, name=value.name)",
+                    "    return pd.Series(normalized, index=value.index, name=value.name, dtype=object)",
+                    "",
+                    "",
+                    "def _open_wrangler_integer_aggregate_input(series):",
+                    "    values = [",
+                    "        None if _open_wrangler_missing_scalar(item) else Decimal(int(item))",
+                    "        for item in series.array",
+                    "    ]",
+                    "    return pd.Series(values, index=series.index, name=series.name, dtype=object)",
+                    "",
+                    "",
+                    "def _open_wrangler_restore_integer_aggregate(series, null_mask):",
+                    "    mask = np.asarray(null_mask, dtype=bool)",
+                    "    values = []",
+                    "    for index, item in enumerate(series.array):",
+                    "        if mask[index] or _open_wrangler_missing_scalar(item):",
+                    "            values.append(pd.NA)",
+                    "        elif isinstance(item, Decimal) and item == item.to_integral_value():",
+                    "            values.append(int(item))",
+                    "        elif _open_wrangler_integer_scalar(item):",
+                    "            values.append(int(item))",
+                    "        else:",
+                    "            raise TypeError('Open Wrangler integer aggregation produced a non-integer value.')",
+                    "    restored = pd.Series(values, index=series.index, name=series.name, dtype=object)",
+                    "    return _open_wrangler_normalize_integer(restored, enforce_envelope=False)",
+                    "",
+                    "",
+                    "def _open_wrangler_is_decimal_series(series):",
+                    "    present = [item for item in series.array if not _open_wrangler_missing_scalar(item)]",
+                    "    return bool(present) and all(isinstance(item, Decimal) for item in present)",
+                    "",
+                    "",
+                    "def _open_wrangler_exact_decimal_sum(series):",
+                    "    values = [item for item in series.array if not _open_wrangler_missing_scalar(item)]",
+                    "    if not values:",
+                    "        return Decimal(0)",
+                    "    if not all(isinstance(item, Decimal) for item in values):",
+                    "        raise TypeError('Open Wrangler decimal sum received a non-decimal value.')",
+                    "    finite = [item for item in values if item.is_finite()]",
+                    "    integer_digits = max([max(item.adjusted() + 1, 0) for item in finite] or [1])",
+                    "    fractional_digits = max([max(-int(item.as_tuple().exponent), 0) for item in finite] or [0])",
+                    "    carry_digits = len(str(max(len(finite), 1))) + 1",
+                    "    with localcontext() as context:",
+                    "        context.prec = max(38, integer_digits + fractional_digits + carry_digits)",
+                    "        context.Emax = MAX_EMAX",
+                    "        context.Emin = MIN_EMIN",
+                    "        return sum(values, Decimal(0))",
+                    "",
+                    "",
+                    "def _open_wrangler_decimal_zero(series):",
+                    "    values = [",
+                    "        item for item in series.array",
+                    "        if not _open_wrangler_missing_scalar(item)",
+                    "        and isinstance(item, Decimal) and item.is_finite()",
+                    "    ]",
+                    "    exponent = min([int(item.as_tuple().exponent) for item in values] or [0])",
+                    "    return Decimal((0, (0,), exponent))",
+                    "",
+                    "",
+                    "def _open_wrangler_float_decimal_aggregate(series, null_mask):",
+                    "    mask = np.asarray(null_mask, dtype=bool)",
+                    "    values = [",
+                    "        pd.NA if mask[index] or _open_wrangler_missing_scalar(item) else float(item)",
+                    "        for index, item in enumerate(series.array)",
+                    "    ]",
+                    "    return pd.Series(pd.array(values, dtype='Float64'), index=series.index, name=series.name)",
+                    "",
+                    "",
+                    "def _open_wrangler_normalize_decimal_sum(series, zero):",
+                    "    values = []",
+                    "    for item in series.array:",
+                    "        if _open_wrangler_missing_scalar(item):",
+                    "            values.append(zero)",
+                    "        elif isinstance(item, Decimal):",
+                    "            values.append(zero if item == 0 else item)",
+                    "        elif (",
+                    "            _open_wrangler_integer_scalar(item)",
+                    "            and item == 0",
+                    "        ):",
+                    "            values.append(zero)",
+                    "        else:",
+                    "            raise TypeError('Open Wrangler decimal sum produced a non-decimal value.')",
+                    "    return pd.Series(values, index=series.index, name=series.name, dtype=object)",
                     "",
                     "",
                 ]
@@ -956,19 +1187,195 @@ class PandasEngine(DataFrameEngine):
                 return [f"{prefix}df.isetitem({position}, {expression})"]
             return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
         if kind == "groupBy":
-            named = {
-                aggregation["alias"]: (
-                    aggregation["column"],
-                    "nunique" if aggregation["operation"] == "nUnique" else aggregation["operation"],
+            key_positions = [bound_column_position(reference, kind) for reference in params["keys"]]
+            aggregations = [
+                (
+                    bound_column_position(aggregation["column"], kind),
+                    aggregation["operation"],
+                    aggregation["alias"],
                 )
                 for aggregation in params["aggregations"]
-            }
-            return [
-                f"{prefix}df = df.groupby({params['keys']!r}, dropna=False, sort=False).agg(**{named!r}).reset_index()"
             ]
+            source = f"_group_source_{index}"
+            key_names = list(range(len(key_positions)))
+            value_names = list(range(len(key_positions), len(key_positions) + len(aggregations)))
+            temporary_names = [*key_names, *value_names]
+            named = {
+                alias: (value_names[ordinal], "nunique" if operation == "nUnique" else operation)
+                for ordinal, (_position, operation, alias) in enumerate(aggregations)
+            }
+            output_labels = f"_group_labels_{index}"
+            grouped = f"_grouped_{index}"
+            named_name = f"_group_named_{index}"
+            selected_positions = [*key_positions, *(position for position, _operation, _alias in aggregations)]
+            lines = [
+                f"{prefix}{output_labels} = [df.columns[position] for position in {key_positions!r}]",
+                f"{prefix}{source} = pd.concat([df.iloc[:, position] for position in {selected_positions!r}], axis=1)",
+                f"{prefix}{source}.columns = {temporary_names!r}",
+                f"{prefix}{named_name} = {named!r}",
+            ]
+            key_states: list[tuple[str, str]] = []
+            for key_index, key_name in enumerate(key_names):
+                sentinel = f"_group_key_sentinel_{index}_{key_index}"
+                integer_key = f"_group_key_integer_{index}_{key_index}"
+                prepared = f"_group_key_prepared_{index}_{key_index}"
+                key_states.append((sentinel, integer_key))
+                lines.extend(
+                    [
+                        (
+                            f"{prefix}{prepared}, {sentinel}, {integer_key} = "
+                            f"_open_wrangler_prepare_group_key({source}[{key_name!r}])"
+                        ),
+                        f"{prefix}{source}.isetitem({key_name!r}, {prepared})",
+                    ]
+                )
+            integer_sum_flags: dict[int, str] = {}
+            integer_nullable_flags: dict[int, str] = {}
+            decimal_sum_flags: dict[int, str] = {}
+            decimal_sum_zeros: dict[int, str] = {}
+            decimal_average_flags: dict[int, str] = {}
+            for aggregation_index, (_position, operation, _alias) in enumerate(aggregations):
+                value_name = value_names[aggregation_index]
+                if operation == "sum":
+                    flag = f"_group_integer_sum_{index}_{aggregation_index}"
+                    integer_sum_flags[aggregation_index] = flag
+                    decimal_flag = f"_group_decimal_sum_{index}_{aggregation_index}"
+                    decimal_sum_flags[aggregation_index] = decimal_flag
+                    decimal_zero = f"_group_decimal_zero_{index}_{aggregation_index}"
+                    decimal_sum_zeros[aggregation_index] = decimal_zero
+                    lines.extend(
+                        [
+                            f"{prefix}{flag} = _open_wrangler_is_integer_series({source}[{value_name!r}])",
+                            (
+                                f"{prefix}{decimal_flag} = not {flag} and "
+                                f"_open_wrangler_is_decimal_series({source}[{value_name!r}])"
+                            ),
+                            f"{prefix}if {decimal_flag}:",
+                            (f"{prefix}    {decimal_zero} = _open_wrangler_decimal_zero({source}[{value_name!r}])"),
+                            (
+                                f"{prefix}    {named_name}[{_alias!r}] = "
+                                f"({value_name!r}, _open_wrangler_exact_decimal_sum)"
+                            ),
+                            f"{prefix}if {flag}:",
+                            (
+                                f"{prefix}    {source}.isetitem({value_name!r}, "
+                                f"_open_wrangler_widen_integer({source}[{value_name!r}]))"
+                            ),
+                        ]
+                    )
+                elif operation in {"min", "max", "first", "last"}:
+                    flag = f"_group_integer_nullable_{index}_{aggregation_index}"
+                    integer_nullable_flags[aggregation_index] = flag
+                    lines.extend(
+                        [
+                            f"{prefix}{flag} = _open_wrangler_is_integer_series({source}[{value_name!r}])",
+                            f"{prefix}if {flag}:",
+                            (
+                                f"{prefix}    {source}.isetitem({value_name!r}, "
+                                f"_open_wrangler_integer_aggregate_input({source}[{value_name!r}]))"
+                            ),
+                        ]
+                    )
+                if operation in {"mean", "median"}:
+                    flag = f"_group_decimal_average_{index}_{aggregation_index}"
+                    decimal_average_flags[aggregation_index] = flag
+                    lines.append(f"{prefix}{flag} = _open_wrangler_is_decimal_series({source}[{value_name!r}])")
+            lines.extend(
+                [
+                    f"{prefix}{grouped} = {source}.groupby({key_names!r}, dropna=False, sort=False, observed=True)",
+                    f"{prefix}df = {grouped}.agg(**{named_name}).reset_index()",
+                    (
+                        f"{prefix}df.columns = {output_labels} + "
+                        f"{[alias for _position, _operation, alias in aggregations]!r}"
+                    ),
+                ]
+            )
+            for aggregation_index, flag in integer_sum_flags.items():
+                output_position = len(key_positions) + aggregation_index
+                lines.extend(
+                    [
+                        f"{prefix}if {flag}:",
+                        (
+                            f"{prefix}    df.isetitem({output_position}, "
+                            f"_open_wrangler_normalize_integer(df.iloc[:, {output_position}]))"
+                        ),
+                    ]
+                )
+            for aggregation_index, flag in decimal_sum_flags.items():
+                output_position = len(key_positions) + aggregation_index
+                lines.extend(
+                    [
+                        f"{prefix}if {flag}:",
+                        (
+                            f"{prefix}    df.isetitem({output_position}, "
+                            f"_open_wrangler_normalize_decimal_sum("
+                            f"df.iloc[:, {output_position}], {decimal_sum_zeros[aggregation_index]}))"
+                        ),
+                    ]
+                )
+            for output_position, (sentinel, integer_key) in enumerate(key_states):
+                lines.append(
+                    f"{prefix}df.isetitem({output_position}, _open_wrangler_restore_group_key("
+                    f"df.iloc[:, {output_position}], {sentinel}, {integer_key}))"
+                )
+            for aggregation_index, (_position, operation, _alias) in enumerate(aggregations):
+                if operation not in {"mean", "median", "min", "max", "first", "last"}:
+                    continue
+                output_position = len(key_positions) + aggregation_index
+                null_mask = f"_group_nulls_{index}_{aggregation_index}"
+                lines.append(
+                    f"{prefix}{null_mask} = {grouped}[{value_names[aggregation_index]!r}].count()"
+                    ".reset_index(drop=True).eq(0)"
+                )
+                integer_flag = integer_nullable_flags.get(aggregation_index)
+                decimal_flag = decimal_average_flags.get(aggregation_index)
+                if integer_flag is not None:
+                    lines.extend(
+                        [
+                            f"{prefix}if {integer_flag}:",
+                            (
+                                f"{prefix}    df.isetitem({output_position}, "
+                                f"_open_wrangler_restore_integer_aggregate("
+                                f"df.iloc[:, {output_position}], {null_mask}))"
+                            ),
+                            f"{prefix}else:",
+                            (
+                                f"{prefix}    df.isetitem({output_position}, "
+                                f"_open_wrangler_group_nulls(df.iloc[:, {output_position}], {null_mask}))"
+                            ),
+                        ]
+                    )
+                elif decimal_flag is not None:
+                    lines.extend(
+                        [
+                            f"{prefix}if {decimal_flag}:",
+                            (
+                                f"{prefix}    df.isetitem({output_position}, "
+                                f"_open_wrangler_float_decimal_aggregate("
+                                f"df.iloc[:, {output_position}], {null_mask}))"
+                            ),
+                            f"{prefix}else:",
+                            (
+                                f"{prefix}    df.isetitem({output_position}, "
+                                f"_open_wrangler_group_nulls(df.iloc[:, {output_position}], {null_mask}))"
+                            ),
+                        ]
+                    )
+                else:
+                    lines.append(
+                        f"{prefix}df.isetitem({output_position}, "
+                        f"_open_wrangler_group_nulls(df.iloc[:, {output_position}], {null_mask}))"
+                    )
+            return lines
         if kind == "byExample":
             expression = _compile_pandas_by_example(params["program"])
-            return [f"{prefix}df[{params['newColumn']!r}] = {expression}"]
+            result = f"_by_example_result_{index}"
+            return [
+                f"{prefix}{result} = {expression}",
+                f"{prefix}if not isinstance({result}, pd.Series):",
+                f"{prefix}    {result} = pd.Series({result}, index=df.index)",
+                f"{prefix}df = pd.concat([df, {result}.rename({params['newColumn']!r})], axis=1)",
+            ]
         if kind == "customCode":
             function_name = f"_custom_step_{index}"
             code_lines = str(params["code"]).splitlines()
@@ -982,60 +1389,468 @@ class PandasEngine(DataFrameEngine):
         raise EngineError(f"Pandas cannot compile transformation: {kind}")
 
 
-def _pandas_by_example_expression(df: Any, program: Mapping[str, Any]) -> Any:
+def _pandas_group_by_positions(
+    df: Any,
+    key_positions: Sequence[int],
+    aggregations: Sequence[tuple[int, str, str]],
+) -> Any:
+    import pandas as pd
+
+    key_names = list(range(len(key_positions)))
+    value_names = list(range(len(key_positions), len(key_positions) + len(aggregations)))
+    selected_positions = [*key_positions, *(position for position, _operation, _alias in aggregations)]
+    source = pd.concat([df.iloc[:, position] for position in selected_positions], axis=1)
+    source.columns = [*key_names, *value_names]
+    key_states: list[tuple[object | None, bool]] = []
+    for key_name in key_names:
+        prepared, sentinel, integer_key = _pandas_prepare_group_key(source[key_name])
+        source.isetitem(key_name, prepared)
+        key_states.append((sentinel, integer_key))
+    integer_sum_indexes: list[int] = []
+    integer_nullable_indexes: list[int] = []
+    decimal_sum_indexes: list[int] = []
+    decimal_sum_zeros: dict[int, Decimal] = {}
+    decimal_average_indexes: list[int] = []
+    for aggregation_index, (_source_position, operation, _alias) in enumerate(aggregations):
+        value_name = value_names[aggregation_index]
+        semantic_type = _pandas_semantic_type(source[value_name])
+        if operation == "sum" and semantic_type == "integer":
+            integer_sum_indexes.append(aggregation_index)
+            source.isetitem(value_name, _pandas_widen_integer(source[value_name]))
+        elif operation == "sum" and semantic_type == "decimal":
+            decimal_sum_indexes.append(aggregation_index)
+            decimal_sum_zeros[aggregation_index] = _pandas_decimal_zero(source[value_name])
+        elif operation in {"min", "max", "first", "last"} and semantic_type == "integer":
+            integer_nullable_indexes.append(aggregation_index)
+            source.isetitem(value_name, _pandas_integer_aggregate_input(source[value_name]))
+        if operation in {"mean", "median"} and semantic_type == "decimal":
+            decimal_average_indexes.append(aggregation_index)
+    named: dict[str, tuple[int, str | Callable[[Any], Any]]] = {
+        alias: (value_names[index], "nunique" if operation == "nUnique" else operation)
+        for index, (_position, operation, alias) in enumerate(aggregations)
+    }
+    for aggregation_index in decimal_sum_indexes:
+        _position, _operation, alias = aggregations[aggregation_index]
+        named[alias] = (value_names[aggregation_index], _pandas_exact_decimal_sum)
+    grouped = source.groupby(key_names, dropna=False, sort=False, observed=True)
+    result = grouped.agg(**named).reset_index()
+    result.columns = [df.columns[position] for position in key_positions] + [
+        alias for _position, _operation, alias in aggregations
+    ]
+    for aggregation_index in integer_sum_indexes:
+        output_position = len(key_positions) + aggregation_index
+        result.isetitem(output_position, _pandas_normalize_integer_result(result.iloc[:, output_position]))
+    for aggregation_index in decimal_sum_indexes:
+        output_position = len(key_positions) + aggregation_index
+        result.isetitem(
+            output_position,
+            _pandas_normalize_decimal_sum(result.iloc[:, output_position], decimal_sum_zeros[aggregation_index]),
+        )
+    for output_position, (sentinel, integer_key) in enumerate(key_states):
+        result.isetitem(
+            output_position,
+            _pandas_restore_group_key(result.iloc[:, output_position], sentinel, integer_key),
+        )
+    for aggregation_index, (_source_position, operation, _alias) in enumerate(aggregations):
+        if operation not in {"mean", "median", "min", "max", "first", "last"}:
+            continue
+        null_mask = grouped[value_names[aggregation_index]].count().reset_index(drop=True).eq(0)
+        output_position = len(key_positions) + aggregation_index
+        if aggregation_index in integer_nullable_indexes:
+            normalized = _pandas_restore_integer_aggregate(result.iloc[:, output_position], null_mask)
+        elif aggregation_index in decimal_average_indexes:
+            normalized = _pandas_float_decimal_aggregate(result.iloc[:, output_position], null_mask)
+        else:
+            normalized = _pandas_group_nulls(result.iloc[:, output_position], null_mask)
+        result.isetitem(output_position, normalized)
+    return result
+
+
+def _pandas_is_missing_scalar(value: Any) -> bool:
+    import numpy as np
+
+    return (
+        value is None
+        or type(value).__name__ in {"NAType", "NaTType"}
+        or (isinstance(value, (float, np.floating)) and np.isnan(value))
+        or (isinstance(value, Decimal) and value.is_nan())
+    )
+
+
+def _pandas_is_integer_scalar(value: Any) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool) and type(value).__name__ != "timedelta64"
+
+
+def _pandas_integer_values(series: Any) -> list[int] | None:
+    values = _pandas_present_values(series)
+    if not all(_pandas_is_integer_scalar(value) for value in values):
+        return None
+    return [int(value) for value in values]
+
+
+def _pandas_present_values(series: Any) -> list[Any]:
+    return [value for value in series.array if not _pandas_is_missing_scalar(value)]
+
+
+def _pandas_semantic_type(series: Any) -> str:
+    import pandas as pd
+
+    semantic_type = infer_semantic_type(str(series.dtype))
+    if semantic_type == "string" and pd.api.types.is_object_dtype(series.dtype):
+        # Pandas' native classifier is exhaustive but runs in its optimized C
+        # path.  It avoids the prior Python materialization without making UI
+        # capabilities depend on a potentially misleading sample.
+        inferred = pd.api.types.infer_dtype(series, skipna=True)
+        inferred_semantic = {
+            "boolean": "boolean",
+            "integer": "integer",
+            "floating": "float",
+            "mixed-integer-float": "float",
+            "decimal": "decimal",
+            "datetime": "datetime",
+            "datetime64": "datetime",
+            "timedelta": "duration",
+            "timedelta64": "duration",
+            "bytes": "binary",
+        }.get(inferred)
+        if inferred_semantic is not None:
+            return inferred_semantic
+        if inferred in {"mixed", "mixed-integer", "date"}:
+            # infer_dtype intentionally groups homogeneous nested Python
+            # containers under "mixed", and Pandas 3 can classify otherwise
+            # valid object columns containing pd.NaT as mixed/mixed-integer or
+            # collapse datetime to date.  Refine only those ambiguous cases
+            # with the runtime's exact missing-value semantics.
+            values = _pandas_present_values(series)
+            if values and all(isinstance(value, bool) for value in values):
+                return "boolean"
+            if values and all(_pandas_is_integer_scalar(value) for value in values):
+                return "integer"
+            if values and all(isinstance(value, Real) and not isinstance(value, bool) for value in values):
+                return "float"
+            if values and all(isinstance(value, Decimal) for value in values):
+                return "decimal"
+            if values and all(isinstance(value, datetime) for value in values):
+                return "datetime"
+            if values and all(isinstance(value, date) for value in values):
+                return "date"
+            if values and all(isinstance(value, timedelta) for value in values):
+                return "duration"
+            if values and all(isinstance(value, bytes) for value in values):
+                return "binary"
+            if values and all(isinstance(value, list | tuple) for value in values):
+                return "list"
+            if values and all(isinstance(value, Mapping) for value in values):
+                return "struct"
+    return semantic_type
+
+
+def _pandas_normalize_integer_series(value: Any, *, enforce_envelope: bool) -> Any:
+    import pandas as pd
+
+    if not isinstance(value, pd.Series):
+        return value
+    integer_values = _pandas_integer_values(value)
+    if integer_values is None:
+        raise EngineError("Pandas integer arithmetic produced a non-integer value.")
+    if enforce_envelope and any(abs(number) >= _PORTABLE_INTEGER_LIMIT for number in integer_values):
+        raise EngineError("Open Wrangler integer result exceeds the portable 38-digit envelope.")
+    normalized = [pd.NA if _pandas_is_missing_scalar(item) else int(item) for item in value.array]
+    if not integer_values or all(_INT64_MIN <= number <= _INT64_MAX for number in integer_values):
+        array = pd.array(normalized, dtype="Int64")
+        return pd.Series(array, index=value.index, name=value.name)
+    return pd.Series(normalized, index=value.index, name=value.name, dtype=object)
+
+
+def _pandas_normalize_integer_result(value: Any) -> Any:
+    return _pandas_normalize_integer_series(value, enforce_envelope=True)
+
+
+def _pandas_preserve_integer_result(value: Any) -> Any:
+    return _pandas_normalize_integer_series(value, enforce_envelope=False)
+
+
+def _pandas_parquet_frame(df: Any) -> Any:
+    import pandas as pd
+
+    result = df.copy()
+    for position in range(result.shape[1]):
+        series = result.iloc[:, position]
+        if not pd.api.types.is_object_dtype(series.dtype) or _pandas_semantic_type(series) != "integer":
+            continue
+        integer_values = _pandas_integer_values(series)
+        if not integer_values or all(_INT64_MIN <= number <= _INT64_MAX for number in integer_values):
+            continue
+        precision = max(len(str(abs(number))) for number in integer_values)
+        if precision > 76:
+            raise EngineError("Pandas Parquet export supports integer results up to 76 decimal digits.")
+        try:
+            import pyarrow as pa
+        except ImportError as error:
+            raise EngineError("Pandas Parquet export requires PyArrow for widened integer columns.") from error
+        arrow_type = pa.decimal128(precision, 0) if precision <= 38 else pa.decimal256(precision, 0)
+        decimal_values = [None if _pandas_is_missing_scalar(item) else Decimal(int(item)) for item in series.array]
+        converted = pd.Series(
+            pd.array(decimal_values, dtype=pd.ArrowDtype(arrow_type)),
+            index=series.index,
+            name=series.name,
+        )
+        result.isetitem(position, converted)
+    return result
+
+
+def _pandas_float_nan_mask(series: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    return pd.Series(
+        [isinstance(value, (float, np.floating)) and np.isnan(value) for value in series.array],
+        index=series.index,
+        dtype=bool,
+    )
+
+
+def _pandas_nullable_string_copy(series: Any) -> Any:
+    import pandas as pd
+
+    if isinstance(series.dtype, pd.StringDtype):
+        return series.astype("string")
+    if pd.api.types.is_object_dtype(series.dtype) or isinstance(series.dtype, pd.CategoricalDtype):
+        null_mask = _pandas_float_nan_mask(series)
+        if null_mask.any():
+            result = series.astype(object)
+            result.loc[null_mask] = pd.NA
+            return result
+    return series
+
+
+def _pandas_group_nulls(series: Any, null_mask: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    mask = np.asarray(null_mask, dtype=bool)
+    if not mask.any():
+        return _pandas_nullable_string_copy(series)
+    if pd.api.types.is_float_dtype(series.dtype):
+        values = series.to_numpy(dtype="float64", na_value=np.nan)
+        return pd.Series(pd.arrays.FloatingArray(values, mask), index=series.index, name=series.name)
+    result = _pandas_nullable_string_copy(series)
+    if pd.api.types.is_object_dtype(result.dtype) or isinstance(result.dtype, pd.CategoricalDtype):
+        result = result.astype(object)
+    return result.mask(pd.Series(mask, index=result.index), pd.NA)
+
+
+def _pandas_group_key(series: Any) -> Any:
+    return _pandas_group_nulls(series, _pandas_float_nan_mask(series))
+
+
+def _pandas_prepare_group_key(series: Any) -> tuple[Any, object | None, bool]:
+    import pandas as pd
+
+    if _pandas_semantic_type(series) != "integer":
+        return series, None, False
+    sentinel = object() if any(_pandas_is_missing_scalar(item) for item in series.array) else None
+    values = [sentinel if _pandas_is_missing_scalar(item) else int(item) for item in series.array]
+    return pd.Series(values, index=series.index, name=series.name, dtype=object), sentinel, True
+
+
+def _pandas_restore_group_key(series: Any, sentinel: object | None, integer_key: bool) -> Any:
+    import pandas as pd
+
+    if not integer_key:
+        return _pandas_group_key(series)
+    values = [pd.NA if item is sentinel else item for item in series.array]
+    restored = pd.Series(values, index=series.index, name=series.name, dtype=object)
+    return _pandas_preserve_integer_result(restored)
+
+
+def _pandas_integer_aggregate_input(series: Any) -> Any:
+    import pandas as pd
+
+    values = [None if _pandas_is_missing_scalar(item) else Decimal(int(item)) for item in series.array]
+    return pd.Series(values, index=series.index, name=series.name, dtype=object)
+
+
+def _pandas_restore_integer_aggregate(series: Any, null_mask: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    mask = np.asarray(null_mask, dtype=bool)
+    values = []
+    for index, item in enumerate(series.array):
+        if mask[index] or _pandas_is_missing_scalar(item):
+            values.append(pd.NA)
+        elif (isinstance(item, Decimal) and item == item.to_integral_value()) or _pandas_is_integer_scalar(item):
+            values.append(int(item))
+        else:
+            raise EngineError("Pandas integer aggregation produced a non-integer value.")
+    restored = pd.Series(values, index=series.index, name=series.name, dtype=object)
+    return _pandas_preserve_integer_result(restored)
+
+
+def _pandas_float_decimal_aggregate(series: Any, null_mask: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    mask = np.asarray(null_mask, dtype=bool)
+    values = [
+        pd.NA if mask[index] or _pandas_is_missing_scalar(item) else float(item)
+        for index, item in enumerate(series.array)
+    ]
+    return pd.Series(pd.array(values, dtype="Float64"), index=series.index, name=series.name)
+
+
+def _pandas_exact_decimal_sum(series: Any) -> Decimal:
+    values = [item for item in series.array if not _pandas_is_missing_scalar(item)]
+    if not values:
+        return Decimal(0)
+    if not all(isinstance(item, Decimal) for item in values):
+        raise EngineError("Pandas decimal sum received a non-decimal value.")
+    finite = [item for item in values if item.is_finite()]
+    integer_digits = max([max(item.adjusted() + 1, 0) for item in finite] or [1])
+    fractional_digits = max([max(-int(item.as_tuple().exponent), 0) for item in finite] or [0])
+    carry_digits = len(str(max(len(finite), 1))) + 1
+    with localcontext() as context:
+        context.prec = max(38, integer_digits + fractional_digits + carry_digits)
+        context.Emax = MAX_EMAX
+        context.Emin = MIN_EMIN
+        return sum(values, Decimal(0))
+
+
+def _pandas_decimal_zero(series: Any) -> Decimal:
+    values = [
+        item
+        for item in series.array
+        if not _pandas_is_missing_scalar(item) and isinstance(item, Decimal) and item.is_finite()
+    ]
+    exponent = min([int(item.as_tuple().exponent) for item in values] or [0])
+    return Decimal((0, (0,), exponent))
+
+
+def _pandas_normalize_decimal_sum(series: Any, zero: Decimal) -> Any:
+    import pandas as pd
+
+    values = []
+    for item in series.array:
+        if _pandas_is_missing_scalar(item):
+            values.append(zero)
+        elif isinstance(item, Decimal):
+            values.append(zero if item == 0 else item)
+        elif _pandas_is_integer_scalar(item) and item == 0:
+            values.append(zero)
+        else:
+            raise EngineError("Pandas decimal sum produced a non-decimal value.")
+    return pd.Series(values, index=series.index, name=series.name, dtype=object)
+
+
+def _pandas_widen_integer(value: Any) -> Any:
+    import pandas as pd
+
+    if not isinstance(value, pd.Series):
+        return int(value) if _pandas_is_integer_scalar(value) else value
+    normalized = [
+        pd.NA if _pandas_is_missing_scalar(item) else int(item) if _pandas_is_integer_scalar(item) else item
+        for item in value.array
+    ]
+    return pd.Series(normalized, index=value.index, name=value.name, dtype=object)
+
+
+def _pandas_float_integer(value: Any) -> Any:
+    import pandas as pd
+
+    return value.astype("Float64") if isinstance(value, pd.Series) else float(value)
+
+
+def _pandas_append_result(df: Any, result: Any, name: str) -> Any:
+    import pandas as pd
+
+    series = result if isinstance(result, pd.Series) else pd.Series(result, index=df.index)
+    return pd.concat([df, series.rename(name)], axis=1)
+
+
+def _pandas_by_example_expression(
+    df: Any,
+    program: Mapping[str, Any],
+    resolve_position: Callable[[Any], int],
+) -> Any:
     import pandas as pd
 
     kind = program["kind"]
     if kind == "column":
-        return df[program["column"]]
+        return _pandas_nullable_string_copy(df.iloc[:, resolve_position(program["column"])])
     if kind == "literal":
         return program.get("value")
     if kind == "slice":
-        value = _pandas_string_expression(df, program["input"])
+        value = _pandas_string_expression(df, program["input"], resolve_position)
         return value.str.slice(program["start"], program.get("stop"))
     if kind == "split":
-        value = _pandas_string_expression(df, program["input"])
+        value = _pandas_string_expression(df, program["input"], resolve_position)
         return value.str.split(program["delimiter"], regex=False).str.get(program["index"])
     if kind == "concat":
         result: Any = pd.Series("", index=df.index, dtype="string")
         for part in program["parts"]:
-            value = _pandas_by_example_expression(df, part)
+            value = _pandas_by_example_expression(df, part, resolve_position)
             result = result + (value.astype("string") if hasattr(value, "astype") else str(value))
         return result
     if kind == "regexExtract":
-        value = _pandas_string_expression(df, program["input"])
+        value = _pandas_string_expression(df, program["input"], resolve_position)
         return value.str.extract(program["pattern"], expand=False)
     if kind == "regexReplace":
-        value = _pandas_string_expression(df, program["input"])
-        return value.str.replace(program["pattern"], program["replacement"], regex=True)
+        value = _pandas_string_expression(df, program["input"], resolve_position)
+        replacement = program["replacement"]
+        return value.str.replace(program["pattern"], lambda _match: replacement, regex=True)
     if kind == "case":
-        value = _pandas_string_expression(df, program["input"])
-        return getattr(value.str, program["style"])()
+        value = _pandas_string_expression(df, program["input"], resolve_position)
+        if program["style"] == "lower":
+            return value.str.translate(_ASCII_TO_LOWER)
+        if program["style"] == "upper":
+            return value.str.translate(_ASCII_TO_UPPER)
+        return value.str.slice(0, 1).str.translate(_ASCII_TO_UPPER) + value.str.slice(1).str.translate(_ASCII_TO_LOWER)
     if kind == "datetimeFormat":
-        value = _pandas_by_example_expression(df, program["input"])
-        return pd.to_datetime(value, format=program["inputFormat"], errors="coerce").dt.strftime(
-            program["outputFormat"]
+        value = _pandas_by_example_expression(df, program["input"], resolve_position)
+        return (
+            pd.to_datetime(value, format=program["inputFormat"], errors="coerce")
+            .dt.strftime(program["outputFormat"])
+            .astype("string")
         )
     if kind == "arithmetic":
-        return _pandas_formula(
-            _pandas_by_example_expression(df, program["left"]),
-            _pandas_by_example_expression(df, program["right"]),
+        left = _pandas_by_example_expression(df, program["left"], resolve_position)
+        right = _pandas_by_example_expression(df, program["right"], resolve_position)
+        widens_integer = program.get("_owResultType") == "integer"
+        if widens_integer and program.get("_owLeftType") == "integer":
+            left = _pandas_widen_integer(left)
+        if widens_integer and program.get("_owRightType") == "integer":
+            right = _pandas_widen_integer(right)
+        if program.get("operator") == "divide" and program.get("_owLeftType") == "integer":
+            left = _pandas_float_integer(left)
+        if program.get("operator") == "divide" and program.get("_owRightType") == "integer":
+            right = _pandas_float_integer(right)
+        result = _pandas_formula(
+            left,
+            right,
             program["operator"],
         )
+        return _pandas_normalize_integer_result(result) if widens_integer else result
     raise EngineError(f"Unsupported Pandas by-example expression: {kind}")
 
 
-def _pandas_string_expression(df: Any, program: Mapping[str, Any]) -> Any:
+def _pandas_string_expression(
+    df: Any,
+    program: Mapping[str, Any],
+    resolve_position: Callable[[Any], int],
+) -> Any:
     import pandas as pd
 
-    value = _pandas_by_example_expression(df, program)
-    return value.astype("string") if hasattr(value, "astype") else pd.Series(str(value), index=df.index, dtype="string")
+    value = _pandas_by_example_expression(df, program, resolve_position)
+    return value.astype("string") if hasattr(value, "astype") else pd.Series(value, index=df.index, dtype="string")
 
 
 def _compile_pandas_by_example(program: Mapping[str, Any]) -> str:
     kind = program["kind"]
     if kind == "column":
-        return f"df[{program['column']!r}]"
+        return (
+            f"_open_wrangler_nullable_string_copy(df.iloc[:, {bound_column_position(program['column'], 'byExample')}])"
+        )
     if kind == "literal":
         return repr(program.get("value"))
     if kind == "slice":
@@ -1052,20 +1867,39 @@ def _compile_pandas_by_example(program: Mapping[str, Any]) -> str:
     if kind == "regexReplace":
         return (
             f"{_compile_pandas_string(program['input'])}.str.replace({program['pattern']!r}, "
-            f"{program['replacement']!r}, regex=True)"
+            f"lambda _match: {program['replacement']!r}, regex=True)"
         )
     if kind == "case":
-        return f"{_compile_pandas_string(program['input'])}.str.{program['style']}()"
+        value = _compile_pandas_string(program["input"])
+        if program["style"] == "lower":
+            return f"{value}.str.translate(str.maketrans({_ASCII_UPPER!r}, {_ASCII_LOWER!r}))"
+        if program["style"] == "upper":
+            return f"{value}.str.translate(str.maketrans({_ASCII_LOWER!r}, {_ASCII_UPPER!r}))"
+        return (
+            f"({value}.str.slice(0, 1).str.translate(str.maketrans({_ASCII_LOWER!r}, {_ASCII_UPPER!r})) + "
+            f"{value}.str.slice(1).str.translate(str.maketrans({_ASCII_UPPER!r}, {_ASCII_LOWER!r})))"
+        )
     if kind == "datetimeFormat":
         return (
             f"pd.to_datetime({_compile_pandas_by_example(program['input'])}, "
             f"format={program['inputFormat']!r}, errors='coerce').dt.strftime({program['outputFormat']!r})"
+            ".astype('string')"
         )
     if kind == "arithmetic":
         symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[program["operator"]]
-        return (
-            f"({_compile_pandas_by_example(program['left'])} {symbol} {_compile_pandas_by_example(program['right'])})"
-        )
+        left = _compile_pandas_by_example(program["left"])
+        right = _compile_pandas_by_example(program["right"])
+        widens_integer = program.get("_owResultType") == "integer"
+        if widens_integer and program.get("_owLeftType") == "integer":
+            left = f"_open_wrangler_widen_integer({left})"
+        if widens_integer and program.get("_owRightType") == "integer":
+            right = f"_open_wrangler_widen_integer({right})"
+        if program.get("operator") == "divide" and program.get("_owLeftType") == "integer":
+            left = f"_open_wrangler_float_integer({left})"
+        if program.get("operator") == "divide" and program.get("_owRightType") == "integer":
+            right = f"_open_wrangler_float_integer({right})"
+        result = f"({left} {symbol} {right})"
+        return f"_open_wrangler_normalize_integer({result})" if widens_integer else result
     raise EngineError(f"Unsupported Pandas by-example expression: {kind}")
 
 

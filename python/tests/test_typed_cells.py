@@ -32,10 +32,31 @@ def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
     assert normalize_cell(np.bool_(True))["raw"] is True
     assert normalize_cell(np.float32("nan"))["kind"] == "nan"
     assert normalize_cell(np.float64("inf"))["sign"] == 1
+    assert normalize_cell(np.datetime64("2026-07-16")) == {
+        "kind": "datetime",
+        "raw": "2026-07-16",
+        "display": "2026-07-16",
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert normalize_cell(np.datetime64("NaT"))["kind"] == "null"
+    assert normalize_cell(np.timedelta64(1, "D"))["raw"] == 86_400
+    assert normalize_cell(np.timedelta64(1, "ns")) == {
+        "kind": "duration",
+        "raw": 1e-9,
+        "display": "1 nanoseconds",
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert normalize_cell(np.timedelta64("NaT"))["kind"] == "null"
+    assert normalize_cell(np.array([1, 2]))["kind"] == "unknown"
+    assert normalize_cell(np.array([1]))["kind"] == "unknown"
+    assert normalize_cell(np.longdouble(1))["kind"] in {"number", "unknown"}
     assert normalize_cell(pd.NA)["kind"] == "null"
     assert normalize_cell(pd.NaT)["kind"] == "null"
     assert normalize_cell(pd.Timestamp("2026-07-15T12:30:00+02:00"))["raw"] == "2026-07-15T12:30:00+02:00"
     assert normalize_cell(timedelta(days=1))["raw"] == 86_400
+    assert normalize_cell(pd.Timedelta(1, unit="ns"))["raw"] == 1e-9
 
 
 def test_nested_typed_cells_are_strict_json_safe() -> None:

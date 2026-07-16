@@ -95,6 +95,14 @@ const PREDICATE_OPERATORS = new Set([
 const CAST_DTYPES = new Set(["string", "integer", "float", "boolean", "date", "datetime"]);
 const FORMULA_OPERATORS = new Set(["add", "subtract", "multiply", "divide", "modulo", "power"]);
 const AGGREGATIONS = new Set(["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"]);
+const MAX_BY_EXAMPLE_SOURCE_COLUMNS = 16;
+const MAX_BY_EXAMPLE_EXAMPLES = 64;
+const MAX_BY_EXAMPLE_PROGRAM_NODES = 256;
+const MAX_BY_EXAMPLE_PROGRAM_DEPTH = 64;
+const MAX_BY_EXAMPLE_CONCAT_PARTS = 64;
+const MAX_BY_EXAMPLE_WARNINGS = 64;
+const MAX_BY_EXAMPLE_STRING_UTF8_BYTES = 8 * 1024;
+const MAX_BY_EXAMPLE_TEXT_UTF8_BYTES = 64 * 1024;
 const SIMPLE_COLUMN_OPERATIONS = new Set([
   "capitalizeText",
   "lowerText",
@@ -529,10 +537,10 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isColumnSchemaArray(candidate.schema) &&
     isFilterModel(candidate.filterModel) &&
     Array.isArray(candidate.steps) &&
-    candidate.steps.every(isTransformStep) &&
+    candidate.steps.every(isRetainedTransformStep) &&
     (candidate.steps.length === 0 || Object.prototype.hasOwnProperty.call(candidate, "latestStepInputSchema")) &&
     optional(candidate, "latestStepInputSchema", isColumnSchemaArray) &&
-    optional(candidate, "draftStep", isTransformStep) &&
+    optional(candidate, "draftStep", isRetainedTransformStep) &&
     optional(candidate, "draftReplacesStepId", isString) &&
     optional(candidate, "stats", isDatasetStats)
   );
@@ -880,17 +888,21 @@ export function isTransformStep(value: unknown): value is TransformStep {
     }
     case "groupBy": {
       const decoded = exactRecord(params, ["keys", "aggregations"]);
-      if (decoded === undefined || !isStringArray(decoded.keys, false) || !Array.isArray(decoded.aggregations)) {
+      if (
+        decoded === undefined ||
+        !isUniqueColumnReferenceArray(decoded.keys, false) ||
+        !Array.isArray(decoded.aggregations)
+      ) {
         return false;
       }
-      const keys = new Set(decoded.keys);
+      const keyNames = new Set(decoded.keys.map((reference) => reference.name));
       const aliases: string[] = [];
       for (const aggregation of decoded.aggregations) {
         if (!isAggregation(aggregation)) return false;
         aliases.push(aggregation.alias);
       }
       if (aliases.length === 0) return false;
-      return new Set(aliases).size === aliases.length && aliases.every((alias) => !keys.has(alias));
+      return new Set(aliases).size === aliases.length && aliases.every((alias) => !keyNames.has(alias));
     }
     case "byExample":
       return isByExampleParams(params);
@@ -903,11 +915,20 @@ export function isTransformStep(value: unknown): value is TransformStep {
   }
 }
 
-function isAggregation(value: unknown): value is { column: string; operation: string; alias: string } {
+/**
+ * Runtime metadata and persisted cleaning state must retain the exact program
+ * selected for a by-example step. New preview requests may omit it so the
+ * runtime can synthesize a candidate, but replay must never synthesize again.
+ */
+export function isRetainedTransformStep(value: unknown): value is TransformStep {
+  return isTransformStep(value) && (value.kind !== "byExample" || value.params.program !== undefined);
+}
+
+function isAggregation(value: unknown): value is { column: ColumnReference; operation: string; alias: string } {
   const candidate = exactRecord(value, ["column", "operation", "alias"]);
   return (
     candidate !== undefined &&
-    isNonEmptyString(candidate.column) &&
+    isColumnReference(candidate.column) &&
     isEnumMember(candidate.operation, AGGREGATIONS) &&
     isNonEmptyString(candidate.alias)
   );
@@ -919,107 +940,238 @@ function isByExampleParams(value: unknown): boolean {
     ["sourceColumns", "newColumn", "examples"],
     ["program", "warnings", "candidateCount"]
   );
+  if (candidate === undefined) return false;
+  const sourceColumns = candidate.sourceColumns;
+  const examples = candidate.examples;
+  const hasProgram = Object.prototype.hasOwnProperty.call(candidate, "program");
+  const hasWarnings = Object.prototype.hasOwnProperty.call(candidate, "warnings");
   if (
-    candidate === undefined ||
-    !isStringArray(candidate.sourceColumns, false) ||
+    !Array.isArray(sourceColumns) ||
+    sourceColumns.length === 0 ||
+    sourceColumns.length > MAX_BY_EXAMPLE_SOURCE_COLUMNS ||
     !isNonEmptyString(candidate.newColumn) ||
-    !Array.isArray(candidate.examples) ||
-    candidate.examples.length < 2
+    !Array.isArray(examples) ||
+    examples.length < 2 ||
+    examples.length > MAX_BY_EXAMPLE_EXAMPLES ||
+    (hasWarnings && (!Array.isArray(candidate.warnings) || candidate.warnings.length > MAX_BY_EXAMPLE_WARNINGS)) ||
+    (hasProgram && !hasBoundedByExampleProgramShape(candidate.program))
   ) {
     return false;
   }
-  const sourceColumns = candidate.sourceColumns;
-  if (!candidate.examples.every((example) => isByExampleItem(example, sourceColumns))) return false;
+  if (!isUniqueColumnReferenceArray(sourceColumns, false)) return false;
+  const budget: ByExampleValidationBudget = {
+    remainingNodes: MAX_BY_EXAMPLE_PROGRAM_NODES,
+    remainingTextBytes: MAX_BY_EXAMPLE_TEXT_UTF8_BYTES
+  };
+  if (
+    !sourceColumns.every(
+      (reference) => consumeByExampleString(reference.id, budget) && consumeByExampleString(reference.name, budget)
+    ) ||
+    !consumeByExampleString(candidate.newColumn, budget) ||
+    !examples.every((example) => isByExampleItem(example, sourceColumns, budget))
+  ) {
+    return false;
+  }
+  const sourceById = new Map(sourceColumns.map((reference) => [reference.id, reference.name]));
   return (
-    optional(candidate, "program", (program) => isByExampleProgram(program, 0)) &&
-    optional(candidate, "warnings", (warnings) => isArrayOf(warnings, isString)) &&
+    optional(candidate, "program", (program) => isByExampleProgram(program, 0, sourceById, budget)) &&
+    optional(
+      candidate,
+      "warnings",
+      (warnings) =>
+        Array.isArray(warnings) &&
+        warnings.length <= MAX_BY_EXAMPLE_WARNINGS &&
+        warnings.every((warning) => isString(warning) && consumeByExampleString(warning, budget))
+    ) &&
     optional(candidate, "candidateCount", isPositiveInteger)
   );
 }
 
-function isByExampleItem(value: unknown, sourceColumns: readonly string[]): boolean {
+interface ByExampleValidationBudget {
+  remainingNodes: number;
+  remainingTextBytes: number;
+}
+
+function hasBoundedByExampleProgramShape(value: unknown): boolean {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const visited = new WeakSet<object>();
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined) return false;
+    nodes += 1;
+    if (
+      nodes > MAX_BY_EXAMPLE_PROGRAM_NODES ||
+      current.depth > MAX_BY_EXAMPLE_PROGRAM_DEPTH ||
+      !isRecord(current.value) ||
+      typeof current.value.kind !== "string" ||
+      visited.has(current.value)
+    ) {
+      return false;
+    }
+    visited.add(current.value);
+    const nested = (child: unknown) => pending.push({ value: child, depth: current.depth + 1 });
+    switch (current.value.kind) {
+      case "column":
+      case "literal":
+        break;
+      case "slice":
+      case "split":
+      case "regexExtract":
+      case "regexReplace":
+      case "case":
+      case "datetimeFormat":
+        nested(current.value.input);
+        break;
+      case "concat": {
+        const parts = current.value.parts;
+        if (!Array.isArray(parts) || parts.length === 0 || parts.length > MAX_BY_EXAMPLE_CONCAT_PARTS) {
+          return false;
+        }
+        for (const part of parts) nested(part);
+        break;
+      }
+      case "arithmetic":
+        nested(current.value.left);
+        nested(current.value.right);
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+function isByExampleItem(
+  value: unknown,
+  sourceColumns: readonly ColumnReference[],
+  budget: ByExampleValidationBudget
+): boolean {
   const candidate = exactRecord(value, ["inputs", "output"]);
-  if (candidate === undefined || !isRecord(candidate.inputs) || !isJsonScalar(candidate.output)) return false;
-  const inputs = candidate.inputs;
-  const inputKeys = Object.keys(inputs);
   return (
-    inputKeys.length === sourceColumns.length &&
-    sourceColumns.every(
-      (column) => Object.prototype.hasOwnProperty.call(inputs, column) && isJsonScalar(inputs[column])
-    )
+    candidate !== undefined &&
+    Array.isArray(candidate.inputs) &&
+    candidate.inputs.length === sourceColumns.length &&
+    candidate.inputs.every((input) => isBoundedByExampleScalar(input, budget)) &&
+    isBoundedByExampleScalar(candidate.output, budget)
   );
 }
 
-function isByExampleProgram(value: unknown, depth: number): boolean {
-  if (depth > 64 || !isRecord(value) || typeof value.kind !== "string") return false;
-  const nested = (candidate: unknown) => isByExampleProgram(candidate, depth + 1);
+function isByExampleProgram(
+  value: unknown,
+  depth: number,
+  sourceById: ReadonlyMap<string, string>,
+  budget: ByExampleValidationBudget
+): boolean {
+  budget.remainingNodes -= 1;
+  if (
+    budget.remainingNodes < 0 ||
+    depth > MAX_BY_EXAMPLE_PROGRAM_DEPTH ||
+    !isRecord(value) ||
+    typeof value.kind !== "string" ||
+    !consumeByExampleString(value.kind, budget)
+  ) {
+    return false;
+  }
+  const nested = (candidate: unknown) => isByExampleProgram(candidate, depth + 1, sourceById, budget);
   switch (value.kind) {
     case "column": {
       const candidate = exactRecord(value, ["kind", "column"]);
-      return candidate !== undefined && isNonEmptyString(candidate.column);
+      return (
+        candidate !== undefined &&
+        isColumnReference(candidate.column) &&
+        consumeByExampleString(candidate.column.id, budget) &&
+        consumeByExampleString(candidate.column.name, budget) &&
+        sourceById.get(candidate.column.id) === candidate.column.name
+      );
     }
     case "literal": {
       const candidate = exactRecord(value, ["kind", "value"]);
-      return candidate !== undefined && isJsonScalar(candidate.value);
+      return candidate !== undefined && isBoundedByExampleScalar(candidate.value, budget);
     }
     case "slice": {
       const candidate = exactRecord(value, ["kind", "input", "start"], ["stop"]);
       return (
         candidate !== undefined &&
-        nested(candidate.input) &&
-        isInteger(candidate.start) &&
-        optional(candidate, "stop", (stop) => stop === null || isInteger(stop))
+        isNonNegativeInteger(candidate.start) &&
+        optional(
+          candidate,
+          "stop",
+          (stop) => stop === null || (isNonNegativeInteger(stop) && stop >= (candidate.start as number))
+        ) &&
+        nested(candidate.input)
       );
     }
     case "split": {
       const candidate = exactRecord(value, ["kind", "input", "delimiter", "index"]);
       return (
         candidate !== undefined &&
-        nested(candidate.input) &&
         isString(candidate.delimiter) &&
-        isInteger(candidate.index)
+        consumeByExampleString(candidate.delimiter, budget) &&
+        isNonNegativeInteger(candidate.index) &&
+        nested(candidate.input)
       );
     }
     case "concat": {
       const candidate = exactRecord(value, ["kind", "parts"]);
-      return candidate !== undefined && isNonEmptyArrayOf(candidate.parts, nested);
+      return (
+        candidate !== undefined &&
+        Array.isArray(candidate.parts) &&
+        candidate.parts.length > 0 &&
+        candidate.parts.length <= MAX_BY_EXAMPLE_CONCAT_PARTS &&
+        candidate.parts.every(nested)
+      );
     }
     case "regexExtract": {
       const candidate = exactRecord(value, ["kind", "input", "pattern", "group"]);
       return (
-        candidate !== undefined && nested(candidate.input) && isString(candidate.pattern) && isInteger(candidate.group)
+        candidate !== undefined &&
+        isString(candidate.pattern) &&
+        consumeByExampleString(candidate.pattern, budget) &&
+        isInteger(candidate.group) &&
+        nested(candidate.input)
       );
     }
     case "regexReplace": {
       const candidate = exactRecord(value, ["kind", "input", "pattern", "replacement"]);
       return (
         candidate !== undefined &&
-        nested(candidate.input) &&
         isString(candidate.pattern) &&
-        isString(candidate.replacement)
+        consumeByExampleString(candidate.pattern, budget) &&
+        isString(candidate.replacement) &&
+        consumeByExampleString(candidate.replacement, budget) &&
+        nested(candidate.input)
       );
     }
     case "case": {
       const candidate = exactRecord(value, ["kind", "style", "input"]);
       return (
-        candidate !== undefined && isOneOf(candidate.style, ["lower", "upper", "capitalize"]) && nested(candidate.input)
+        candidate !== undefined &&
+        isString(candidate.style) &&
+        isOneOf(candidate.style, ["lower", "upper", "capitalize"]) &&
+        consumeByExampleString(candidate.style, budget) &&
+        nested(candidate.input)
       );
     }
     case "datetimeFormat": {
       const candidate = exactRecord(value, ["kind", "input", "inputFormat", "outputFormat"]);
       return (
         candidate !== undefined &&
-        nested(candidate.input) &&
         isString(candidate.inputFormat) &&
-        isString(candidate.outputFormat)
+        consumeByExampleString(candidate.inputFormat, budget) &&
+        isString(candidate.outputFormat) &&
+        consumeByExampleString(candidate.outputFormat, budget) &&
+        nested(candidate.input)
       );
     }
     case "arithmetic": {
       const candidate = exactRecord(value, ["kind", "left", "operator", "right"]);
       return (
         candidate !== undefined &&
-        nested(candidate.left) &&
+        isString(candidate.operator) &&
         isOneOf(candidate.operator, ["add", "subtract", "multiply", "divide"]) &&
+        consumeByExampleString(candidate.operator, budget) &&
+        nested(candidate.left) &&
         nested(candidate.right)
       );
     }
@@ -1321,16 +1473,59 @@ function isArrayOf(value: unknown, guard: ValueGuard): boolean {
   return Array.isArray(value) && value.every(guard);
 }
 
-function isNonEmptyArrayOf(value: unknown, guard: ValueGuard): boolean {
-  return Array.isArray(value) && value.length > 0 && value.every(guard);
-}
-
-function isStringArray(value: unknown, allowEmpty: boolean): value is string[] {
-  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every(isNonEmptyString);
-}
-
 function isJsonScalar(value: unknown): value is string | number | boolean | null {
   return value === null || isString(value) || isBoolean(value) || isFiniteNumber(value);
+}
+
+function isSafeJsonNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
+}
+
+function isBoundedByExampleScalar(
+  value: unknown,
+  budget: ByExampleValidationBudget
+): value is string | number | boolean | null {
+  return (
+    (value === null || isBoolean(value) || isSafeJsonNumber(value) || isString(value)) &&
+    (typeof value !== "string" || consumeByExampleString(value, budget))
+  );
+}
+
+function consumeByExampleString(value: string, budget: ByExampleValidationBudget): boolean {
+  const byteLength = strictUtf8ByteLength(value, MAX_BY_EXAMPLE_STRING_UTF8_BYTES);
+  if (
+    byteLength === undefined ||
+    byteLength > MAX_BY_EXAMPLE_STRING_UTF8_BYTES ||
+    byteLength > budget.remainingTextBytes
+  ) {
+    return false;
+  }
+  budget.remainingTextBytes -= byteLength;
+  return true;
+}
+
+function strictUtf8ByteLength(value: string, maximum: number): number | undefined {
+  let byteLength = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit <= 0x7f) {
+      byteLength += 1;
+    } else if (codeUnit <= 0x7ff) {
+      byteLength += 2;
+    } else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return undefined;
+      const lowSurrogate = value.charCodeAt(index + 1);
+      if (lowSurrogate < 0xdc00 || lowSurrogate > 0xdfff) return undefined;
+      byteLength += 4;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return undefined;
+    } else {
+      byteLength += 3;
+    }
+    if (byteLength > maximum) return byteLength;
+  }
+  return byteLength;
 }
 
 function isJsonValue(value: unknown, depth = 0): boolean {

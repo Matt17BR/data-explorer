@@ -58,7 +58,7 @@ def execute_generated(engine: PandasEngine | PolarsEngine, frame: Any, operation
 
 
 def normalized(value: Any) -> Any:
-    if value is None:
+    if value is None or type(value).__name__ in {"NAType", "NaTType"}:
         return None
     if isinstance(value, float) and isnan(value):
         return None
@@ -72,6 +72,30 @@ def assert_records_equal(left: Any, right: Any) -> None:
     assert [{key: normalized(value) for key, value in row.items()} for row in left_rows] == [
         {key: normalized(value) for key, value in row.items()} for row in right_rows
     ]
+
+
+def typed_records(engine: PandasEngine | PolarsEngine, frame: Any) -> list[dict[str, dict[str, Any]]]:
+    schema = engine.schema(frame)
+    page = engine.page(
+        frame,
+        0,
+        engine.shape(frame)["rows"],
+        column_projection=[(column["position"], column["id"]) for column in schema],
+    )
+    return [{column["name"]: cell for column, cell in zip(schema, row["values"], strict=True)} for row in page["rows"]]
+
+
+def test_column_values_break_equal_counts_by_display_text(engine) -> None:
+    frame = frame_for(engine, {"city": ["Milan", "Berlin", "Milan", "Berlin", "Paris"]})
+
+    values, has_more = engine.column_values(frame, "city")
+
+    assert values == [
+        {"value": "Berlin", "count": 2},
+        {"value": "Milan", "count": 2},
+        {"value": "Paris", "count": 1},
+    ]
+    assert has_more is False
 
 
 def test_multi_sort_honors_per_column_null_order_and_stable_ties(engine) -> None:
@@ -530,15 +554,15 @@ def test_grouping_is_ordered_and_nullable_aggregations_match(engine) -> None:
             "text": [None, "B", "A", None, "Z", None],
         },
     )
-    operation = step(
+    operation = bound_step(
         "groupBy",
-        keys=["group"],
+        keys=[bound_ref("c:source:0", "group", 0)],
         aggregations=[
-            {"column": "value", "operation": "nUnique", "alias": "unique_values"},
-            {"column": "text", "operation": "first", "alias": "first_text"},
-            {"column": "text", "operation": "last", "alias": "last_text"},
-            {"column": "value", "operation": "count", "alias": "value_count"},
-            {"column": "value", "operation": "sum", "alias": "value_sum"},
+            {"column": bound_ref("c:source:1", "value", 1), "operation": "nUnique", "alias": "unique_values"},
+            {"column": bound_ref("c:source:2", "text", 2), "operation": "first", "alias": "first_text"},
+            {"column": bound_ref("c:source:2", "text", 2), "operation": "last", "alias": "last_text"},
+            {"column": bound_ref("c:source:1", "value", 1), "operation": "count", "alias": "value_count"},
+            {"column": bound_ref("c:source:1", "value", 1), "operation": "sum", "alias": "value_sum"},
         ],
     )
 
@@ -566,18 +590,183 @@ def test_group_aliases_are_unique_and_cannot_replace_keys() -> None:
     with pytest.raises(OperationError, match="aliases must be unique"):
         step(
             "groupBy",
-            keys=["group"],
+            keys=[public_ref("c:source:0", "group")],
             aggregations=[
-                {"column": "value", "operation": "sum", "alias": "result"},
-                {"column": "value", "operation": "mean", "alias": "result"},
+                {"column": public_ref("c:source:1", "value"), "operation": "sum", "alias": "result"},
+                {"column": public_ref("c:source:1", "value"), "operation": "mean", "alias": "result"},
             ],
         )
     with pytest.raises(OperationError, match="cannot duplicate a group key"):
         step(
             "groupBy",
-            keys=["group"],
-            aggregations=[{"column": "value", "operation": "sum", "alias": "group"}],
+            keys=[public_ref("c:source:0", "group")],
+            aggregations=[{"column": public_ref("c:source:1", "value"), "operation": "sum", "alias": "group"}],
         )
+
+
+def test_grouping_treats_nan_as_missing_for_keys_and_every_aggregate(engine) -> None:
+    frame = frame_for(
+        engine,
+        {
+            "key": [None, float("nan"), 1.0, None, float("nan"), 1.0],
+            "value": [None, float("nan"), 2.0, None, float("nan"), 3.0],
+        },
+    )
+    value = bound_ref("c:source:1", "value", 1)
+    operation = bound_step(
+        "groupBy",
+        keys=[bound_ref("c:source:0", "key", 0)],
+        aggregations=[
+            {"column": value, "operation": "sum", "alias": "total"},
+            {"column": value, "operation": "mean", "alias": "average"},
+            {"column": value, "operation": "min", "alias": "minimum"},
+            {"column": value, "operation": "max", "alias": "maximum"},
+            {"column": value, "operation": "median", "alias": "middle"},
+            {"column": value, "operation": "count", "alias": "count"},
+            {"column": value, "operation": "nUnique", "alias": "unique"},
+            {"column": value, "operation": "first", "alias": "first"},
+            {"column": value, "operation": "last", "alias": "last"},
+        ],
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+    result = [{key: normalized(value) for key, value in row.items()} for row in records(transformed)]
+
+    assert result == [
+        {
+            "key": None,
+            "total": 0.0,
+            "average": None,
+            "minimum": None,
+            "maximum": None,
+            "middle": None,
+            "count": 0,
+            "unique": 0,
+            "first": None,
+            "last": None,
+        },
+        {
+            "key": 1.0,
+            "total": 5.0,
+            "average": 2.5,
+            "minimum": 2.0,
+            "maximum": 3.0,
+            "middle": 2.5,
+            "count": 2,
+            "unique": 2,
+            "first": 2.0,
+            "last": 3.0,
+        },
+    ]
+    assert_records_equal(transformed, execute_generated(engine, frame, operation))
+
+
+def test_grouping_emits_typed_nulls_without_erasing_a_computed_nan(engine) -> None:
+    frame = frame_for(
+        engine,
+        {
+            "group": ["a", "a", "b", None],
+            "number": [float("inf"), float("-inf"), None, 2.0],
+            "text": ["x", None, None, "z"],
+        },
+    )
+    number = bound_ref("c:source:1", "number", 1)
+    text = bound_ref("c:source:2", "text", 2)
+    operation = bound_step(
+        "groupBy",
+        keys=[bound_ref("c:source:0", "group", 0)],
+        aggregations=[
+            {"column": number, "operation": operation_name, "alias": f"number_{operation_name}"}
+            for operation_name in ("mean", "median", "min", "max", "first", "last")
+        ]
+        + [
+            {"column": text, "operation": operation_name, "alias": f"text_{operation_name}"}
+            for operation_name in ("min", "max", "first", "last")
+        ],
+    )
+
+    live = typed_records(engine, engine.apply_transform(frame, operation))
+    generated = typed_records(engine, execute_generated(engine, frame, operation))
+
+    assert live == generated
+    by_group = {row["group"]["display"]: row for row in live}
+    assert by_group[""]["group"]["kind"] == "null"
+    assert by_group["a"]["number_mean"]["kind"] == "nan"
+    for name, cell in by_group["b"].items():
+        if name != "group":
+            assert cell["kind"] == "null"
+
+
+@pytest.mark.parametrize(
+    ("program", "expected_kinds"),
+    [
+        (
+            {"kind": "column", "column": bound_ref("c:source:0", "value", 0)},
+            ["string", "null", "string"],
+        ),
+        (
+            {
+                "kind": "datetimeFormat",
+                "input": {"kind": "column", "column": bound_ref("c:source:0", "value", 0)},
+                "inputFormat": "%Y-%m-%d",
+                "outputFormat": "%Y",
+            },
+            ["string", "null", "null"],
+        ),
+    ],
+)
+def test_by_example_string_and_datetime_results_use_typed_nulls(
+    engine: PandasEngine | PolarsEngine,
+    program: dict[str, Any],
+    expected_kinds: list[str],
+) -> None:
+    frame = frame_for(engine, {"value": ["2024-01-02", None, "invalid"]})
+    operation = bound_step(
+        "byExample",
+        sourceColumns=[bound_ref("c:source:0", "value", 0)],
+        newColumn="result",
+        examples=[],
+        program=program,
+    )
+
+    live = typed_records(engine, engine.apply_transform(frame, operation))
+    generated = typed_records(engine, execute_generated(engine, frame, operation))
+
+    assert live == generated
+    assert [row["result"]["kind"] for row in live] == expected_kinds
+
+
+def test_pandas_grouping_targets_duplicate_and_non_string_labels_positionally() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        [
+            ["ignored", "a", 1, 100],
+            ["ignored", "a", 2, 200],
+            ["ignored", "b", 3, 300],
+            ["ignored", "b", 4, 400],
+        ],
+        columns=cast(Any, ["duplicate", "duplicate", 7, "metric"]),
+    )
+    operation = bound_step(
+        "groupBy",
+        keys=[bound_ref("c:source:1", "duplicate", 1)],
+        aggregations=[
+            {
+                "column": bound_ref("c:source:2", "7", 2),
+                "operation": "sum",
+                "alias": "__ow_group_key_0",
+            }
+        ],
+    )
+
+    transformed = engine.apply_transform(frame, operation)
+
+    assert list(transformed.columns) == ["duplicate", "__ow_group_key_0"]
+    assert transformed.to_dict(orient="records") == [
+        {"duplicate": "a", "__ow_group_key_0": 3},
+        {"duplicate": "b", "__ow_group_key_0": 7},
+    ]
+    pd.testing.assert_frame_equal(transformed, execute_generated(engine, frame, operation))
 
 
 @pytest.mark.parametrize(

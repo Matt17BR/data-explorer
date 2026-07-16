@@ -89,6 +89,83 @@ def test_bound_plan_survives_apply_replay_inspection_edit_and_undo(tmp_path: Pat
     assert [column["name"] for column in edited["metadata"]["schema"]] == ["name", "measure"]
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_group_and_by_example_bind_replay_inspect_and_undo_without_leaking_positions(
+    tmp_path: Path, backend: str
+) -> None:
+    path = tmp_path / f"group-example-binding-{backend}.csv"
+    original = "group,value\na,1\na,2\nb,3\n"
+    path.write_text(original, encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    group = ref(opened["metadata"]["schema"][0]["id"], "group")
+    value = ref(opened["metadata"]["schema"][1]["id"], "value")
+    runtime = manager.sessions[session_id]
+
+    grouped_step = step(
+        "grouped",
+        "groupBy",
+        keys=[group],
+        aggregations=[
+            {"column": value, "operation": "sum", "alias": "total"},
+            {"column": value, "operation": "mean", "alias": "average"},
+        ],
+    )
+    preview = manager.preview_step(session_id, 0, grouped_step, 0, 10)
+    assert runtime.draft_bound_step is not None
+    assert runtime.draft_bound_step["params"]["keys"] == [{**group, "position": 0}]
+    assert [item["column"] for item in runtime.draft_bound_step["params"]["aggregations"]] == [
+        {**value, "position": 1},
+        {**value, "position": 1},
+    ]
+    assert not contains_private_position(preview["metadata"]["draftStep"])
+    applied = manager.apply_draft(session_id, 1, 0, 10)
+    assert not contains_private_position(applied["metadata"]["steps"])
+    inspection = manager.inspect_step(session_id, 2, "grouped", 0, 10)
+    assert [column["name"] for column in inspection["outputSchema"]] == ["group", "total", "average"]
+    assert "def clean_data" in inspection["code"]
+
+    undone = manager.undo_step(session_id, 2, 0, 10)
+    assert undone["revision"] == 3
+    assert [column["name"] for column in undone["metadata"]["schema"]] == ["group", "value"]
+
+    example_step = step(
+        "combined",
+        "byExample",
+        sourceColumns=[group, value],
+        newColumn="label",
+        examples=[
+            {"inputs": ["a", 1], "output": "a1"},
+            {"inputs": ["b", 3], "output": "b3"},
+        ],
+    )
+    preview = manager.preview_step(session_id, 3, example_step, 0, 10)
+    assert runtime.draft_bound_step is not None
+    assert runtime.draft_bound_step["params"]["sourceColumns"] == [
+        {**group, "position": 0},
+        {**value, "position": 1},
+    ]
+    assert not contains_private_position(preview["metadata"]["draftStep"])
+    assert [row["values"][2]["display"] for row in preview["page"]["rows"]] == ["a1", "a2", "b3"]
+    applied = manager.apply_draft(session_id, 4, 0, 10)
+    assert not contains_private_position(applied["metadata"]["steps"])
+    inspection = manager.inspect_step(session_id, 5, "combined", 0, 10)
+    assert [column["name"] for column in inspection["outputSchema"]] == ["group", "value", "label"]
+    assert "def clean_data" in inspection["code"]
+
+    undone = manager.undo_step(session_id, 5, 0, 10)
+    assert undone["revision"] == 6
+    assert [column["name"] for column in undone["metadata"]["schema"]] == ["group", "value"]
+    assert path.read_text(encoding="utf-8") == original
+    manager.close_session(session_id, 6)
+    assert session_id not in manager.sessions
+
+
 def test_edit_rejects_a_replacement_step_with_a_different_identity(tmp_path: Path) -> None:
     manager, session_id, schema = open_session(tmp_path)
     value = ref(schema[1]["id"], schema[1]["name"])
@@ -234,8 +311,8 @@ def test_private_row_identity_cannot_be_named_by_legacy_operations(
         else step(
             "attack",
             "groupBy",
-            keys=["name"],
-            aggregations=[{"column": hidden, "operation": "first", "alias": "leaked"}],
+            keys=[ref("c:source:0", "name")],
+            aggregations=[{"column": ref("private-row-id", hidden), "operation": "first", "alias": "leaked"}],
         )
     )
     before = {

@@ -417,12 +417,17 @@
       ]
     },
     "JsonScalar": {
-      "type": ["string", "number", "boolean", "null"]
-    },
-    "NonEmptyStringArray": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "type": "string", "minLength": 1 }
+      "oneOf": [
+        { "type": "string" },
+        { "type": "boolean" },
+        { "type": "null" },
+        {
+          "oneOf": [
+            { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+            { "type": "number", "not": { "type": "integer" } }
+          ]
+        }
+      ]
     },
     "ColumnReference": {
       "type": "object",
@@ -612,7 +617,7 @@
       "additionalProperties": false,
       "required": ["column", "operation", "alias"],
       "properties": {
-        "column": { "type": "string", "minLength": 1 },
+        "column": { "$ref": "#/definitions/ColumnReference" },
         "operation": {
           "type": "string",
           "enum": ["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"]
@@ -625,7 +630,7 @@
       "additionalProperties": false,
       "required": ["keys", "aggregations"],
       "properties": {
-        "keys": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "keys": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" },
         "aggregations": {
           "type": "array",
           "minItems": 1,
@@ -639,7 +644,10 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["kind", "column"],
-          "properties": { "kind": { "const": "column" }, "column": { "type": "string", "minLength": 1 } }
+          "properties": {
+            "kind": { "const": "column" },
+            "column": { "$ref": "#/definitions/ColumnReference" }
+          }
         },
         {
           "type": "object",
@@ -654,8 +662,10 @@
           "properties": {
             "kind": { "const": "slice" },
             "input": { "$ref": "#/definitions/ByExampleProgram" },
-            "start": { "type": "integer" },
-            "stop": { "type": ["integer", "null"] }
+            "start": { "type": "integer", "minimum": 0 },
+            "stop": {
+              "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+            }
           }
         },
         {
@@ -666,7 +676,7 @@
             "kind": { "const": "split" },
             "input": { "$ref": "#/definitions/ByExampleProgram" },
             "delimiter": { "type": "string" },
-            "index": { "type": "integer" }
+            "index": { "type": "integer", "minimum": 0 }
           }
         },
         {
@@ -675,7 +685,12 @@
           "required": ["kind", "parts"],
           "properties": {
             "kind": { "const": "concat" },
-            "parts": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/ByExampleProgram" } }
+            "parts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": { "$ref": "#/definitions/ByExampleProgram" }
+            }
           }
         },
         {
@@ -739,7 +754,12 @@
       "additionalProperties": false,
       "required": ["inputs", "output"],
       "properties": {
-        "inputs": { "type": "object", "additionalProperties": { "$ref": "#/definitions/JsonScalar" } },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/definitions/JsonScalar" }
+        },
         "output": { "$ref": "#/definitions/JsonScalar" }
       }
     },
@@ -748,11 +768,22 @@
       "additionalProperties": false,
       "required": ["sourceColumns", "newColumn", "examples"],
       "properties": {
-        "sourceColumns": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "sourceColumns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/ColumnReference" }
+        },
         "newColumn": { "type": "string", "minLength": 1 },
-        "examples": { "type": "array", "minItems": 2, "items": { "$ref": "#/definitions/ByExampleItem" } },
+        "examples": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "items": { "$ref": "#/definitions/ByExampleItem" }
+        },
         "program": { "$ref": "#/definitions/ByExampleProgram" },
-        "warnings": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
         "candidateCount": { "type": "integer", "minimum": 1 }
       }
     },
@@ -791,6 +822,15 @@
         { "$ref": "#/definitions/GroupByTransformStep" },
         { "$ref": "#/definitions/ByExampleTransformStep" },
         { "$ref": "#/definitions/CustomCodeTransformStep" }
+      ]
+    },
+    "RetainedTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStep" },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "byExample" } } },
+          "then": { "properties": { "params": { "required": ["program"] } } }
+        }
       ]
     },
     "SortRowsTransformStep": {
@@ -1137,9 +1177,9 @@
         "filteredShape": { "$ref": "#/definitions/DataShape" },
         "schema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
-        "steps": { "type": "array", "items": { "$ref": "#/definitions/TransformStep" } },
+        "steps": { "type": "array", "items": { "$ref": "#/definitions/RetainedTransformStep" } },
         "latestStepInputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
-        "draftStep": { "$ref": "#/definitions/TransformStep" },
+        "draftStep": { "$ref": "#/definitions/RetainedTransformStep" },
         "draftReplacesStepId": { "type": "string" },
         "stats": { "$ref": "#/definitions/DatasetStats" }
       }

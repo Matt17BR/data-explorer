@@ -1021,6 +1021,9 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
       "duplicate_frame = pd.DataFrame([[2, 10.26, 'a', 'red', 'x', '2024-01-02', '2020-05-06'], [1, 20.74, 'b', 'blue', 'y', '2024-02-03', '2021-06-07'], [2, 10.26, 'c', 'red', 'z', '2024-03-04', '2022-07-08'], [2, None, 'd', 'green', 'x', '2024-04-05', '2023-08-09']], columns=['duplicate', 'duplicate', 7, 'category', 'category', 'when', 'when'])",
       "duplicate_frame_source = duplicate_frame.copy(deep=True)",
+      "identity_frame = duplicate_frame.copy(deep=True)",
+      "identity_frame.iloc[:, 2] = ['alpha', 'bravo', 'charlie', 'delta']",
+      "identity_frame_source = identity_frame.copy(deep=True)",
       "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})"
     ].join("\n");
     await jupyter.testing.execute(notebook.uri, setupCode);
@@ -1437,6 +1440,242 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       duplicateSourceState,
       /\bTrue\b/u,
       "Cleaning steps must not mutate the originating notebook dataframe."
+    );
+
+    await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
+      variableName: "identity_frame",
+      notebookUri: notebook.uri
+    });
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.variableName === "identity_frame",
+      30_000,
+      "the packaged group-by/by-example duplicate-column Pandas notebook session"
+    );
+    active = testing.activeSession();
+    assert.equal(active?.metadata.backend, "pandas");
+    if (!active) throw new Error("Group-by/by-example duplicate-column Pandas session did not become active.");
+    const identitySessionId = active.sessionId;
+    const identityFirstDuplicate = columnReferenceAt(active.metadata, 0);
+    const identitySecondDuplicate = columnReferenceAt(active.metadata, 1);
+    const identityIntegerLabel = columnReferenceAt(active.metadata, 2);
+    assert.notEqual(
+      identityFirstDuplicate.id,
+      identitySecondDuplicate.id,
+      "Group-by/by-example acceptance requires independently addressable duplicate labels."
+    );
+    assert.equal(identityIntegerLabel.name, "7");
+
+    const identityExamplePreview = await testing.request({
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: identitySessionId,
+      revision: active.metadata.revision,
+      step: {
+        id: "duplicate-by-example-stable-references",
+        kind: "byExample",
+        params: {
+          sourceColumns: [identityIntegerLabel],
+          newColumn: "upper_integer_label",
+          examples: [
+            { inputs: ["alpha"], output: "ALPHA" },
+            { inputs: ["bravo"], output: "BRAVO" }
+          ]
+        }
+      },
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(
+      identityExamplePreview.kind,
+      "stepPreview",
+      `Stable-reference by-example must preview: ${JSON.stringify(identityExamplePreview)}`
+    );
+    if (identityExamplePreview.kind !== "stepPreview") {
+      throw new Error(`Stable-reference by-example preview did not resolve: ${JSON.stringify(identityExamplePreview)}`);
+    }
+    assert.match(
+      identityExamplePreview.code,
+      /_open_wrangler_nullable_string_copy\(df\.iloc\[:, 2\]\)\.astype\('string'\)/u,
+      "By-example generated code must address the non-string-labelled source by position."
+    );
+    assert.deepEqual(
+      gridColumnDisplays(
+        identityExamplePreview.page,
+        columnReference(identityExamplePreview.metadata, "upper_integer_label").id
+      ),
+      ["ALPHA", "BRAVO", "CHARLIE", "DELTA"]
+    );
+    assert.equal(identityExamplePreview.metadata.draftStep?.kind, "byExample");
+    if (identityExamplePreview.metadata.draftStep?.kind === "byExample") {
+      assert.deepEqual(identityExamplePreview.metadata.draftStep.params.sourceColumns, [identityIntegerLabel]);
+      assert.equal(identityExamplePreview.metadata.draftStep.params.program?.kind, "case");
+      assert.match(
+        JSON.stringify(identityExamplePreview.metadata.draftStep.params.program),
+        new RegExp(identityIntegerLabel.id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u")
+      );
+    }
+    assert.doesNotMatch(
+      JSON.stringify(identityExamplePreview.metadata.draftStep),
+      /"position"\s*:/u,
+      "Private by-example positions must not leak into public draft metadata."
+    );
+
+    const identityExampleApplied = await testing.request({
+      kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: identitySessionId,
+      revision: identityExamplePreview.revision,
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(identityExampleApplied.kind, "planUpdated", "Stable-reference by-example must apply.");
+    if (identityExampleApplied.kind !== "planUpdated") {
+      throw new Error("Stable-reference by-example apply did not resolve.");
+    }
+
+    const identityGroupPreview = await testing.request({
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: identitySessionId,
+      revision: identityExampleApplied.revision,
+      step: {
+        id: "duplicate-group-stable-references",
+        kind: "groupBy",
+        params: {
+          keys: [identityIntegerLabel],
+          aggregations: [{ column: identitySecondDuplicate, operation: "sum", alias: "second_duplicate_total" }]
+        }
+      },
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(
+      identityGroupPreview.kind,
+      "stepPreview",
+      `Stable-reference group-by must preview: ${JSON.stringify(identityGroupPreview)}`
+    );
+    if (identityGroupPreview.kind !== "stepPreview") {
+      throw new Error(`Stable-reference group-by preview did not resolve: ${JSON.stringify(identityGroupPreview)}`);
+    }
+    assert.match(
+      identityGroupPreview.code,
+      /_group_labels_1 = \[df\.columns\[position\] for position in \[2\]\]/u,
+      "Group-by generated code must bind the non-string-labelled key by position."
+    );
+    assert.match(
+      identityGroupPreview.code,
+      /pd\.concat\(\[df\.iloc\[:, position\] for position in \[2, 1\]\], axis=1\)/u,
+      "Group-by generated code must bind the exact second duplicate aggregation by position."
+    );
+    assert.doesNotMatch(
+      identityGroupPreview.code,
+      /df\[['"]duplicate['"]\]/u,
+      "Group-by generated code must not fall back to an ambiguous duplicate label."
+    );
+    assert.equal(identityGroupPreview.metadata.draftStep?.kind, "groupBy");
+    if (identityGroupPreview.metadata.draftStep?.kind === "groupBy") {
+      assert.deepEqual(identityGroupPreview.metadata.draftStep.params.keys, [identityIntegerLabel]);
+      assert.deepEqual(identityGroupPreview.metadata.draftStep.params.aggregations, [
+        { column: identitySecondDuplicate, operation: "sum", alias: "second_duplicate_total" }
+      ]);
+    }
+    assert.doesNotMatch(
+      JSON.stringify(identityGroupPreview.metadata.draftStep),
+      /"position"\s*:/u,
+      "Private group-by positions must not leak into public draft metadata."
+    );
+
+    const identityGroupApplied = await testing.request({
+      kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: identitySessionId,
+      revision: identityGroupPreview.revision,
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(identityGroupApplied.kind, "planUpdated", "Stable-reference group-by must apply.");
+    if (identityGroupApplied.kind !== "planUpdated") {
+      throw new Error("Stable-reference group-by apply did not resolve.");
+    }
+    assert.equal(identityGroupApplied.metadata.steps.length, 2);
+    assert.doesNotMatch(
+      JSON.stringify(identityGroupApplied.metadata.steps),
+      /"position"\s*:/u,
+      "Private group-by/by-example positions must not leak into persisted public steps."
+    );
+    const identitySourceBeforeRestart = await jupyter.testing.execute(
+      notebook.uri,
+      "print(identity_frame.equals(identity_frame_source))"
+    );
+    assert.match(
+      identitySourceBeforeRestart,
+      /\bTrue\b/u,
+      "Group-by/by-example steps must not mutate the notebook source before recovery."
+    );
+
+    const identityGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
+    const identityReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
+    assert.ok(identityReplacementGeneration > identityGeneration);
+    const identityReplayed = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "notebook-pandas-group-by-example-stable-reference-replay",
+      sessionId: identitySessionId,
+      revision: identityGroupApplied.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: identityGroupApplied.metadata.filterModel
+    });
+    assert.equal(identityReplayed.kind, "page", "Stable-reference group-by/by-example plan must replay.");
+    if (identityReplayed.kind !== "page") {
+      throw new Error("Stable-reference group-by/by-example replay failed.");
+    }
+    assert.equal(jupyter.testing.stats(notebook.uri)?.generation, identityReplacementGeneration);
+    assert.equal(identityReplayed.page.totalRows, 4);
+    assert.equal(identityReplayed.metadata.steps.length, 2);
+    assert.deepEqual(gridColumnDisplays(identityReplayed.page, columnReference(identityReplayed.metadata, "7").id), [
+      "alpha",
+      "bravo",
+      "charlie",
+      "delta"
+    ]);
+    assert.deepEqual(
+      gridColumnDisplays(
+        identityReplayed.page,
+        columnReference(identityReplayed.metadata, "second_duplicate_total").id
+      ).slice(0, 3),
+      ["10.26", "20.74", "10.26"]
+    );
+    assert.doesNotMatch(
+      JSON.stringify(identityReplayed.metadata.steps),
+      /"position"\s*:/u,
+      "Kernel replay must retain position-free public group-by/by-example references."
+    );
+    const identityClosed = await testing.request({
+      kind: "closeSession",
+      sessionId: identitySessionId,
+      revision: identityReplayed.revision
+    });
+    assert.equal(identityClosed.kind, "sessionClosed");
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0,
+      10_000,
+      "the stable-reference group-by/by-example notebook session to close"
+    );
+    assert.deepEqual(
+      testing.diagnostics().sessions,
+      [],
+      "Stable-reference group-by/by-example acceptance must retain no session."
+    );
+    const identitySourceAfterReplay = await jupyter.testing.execute(
+      notebook.uri,
+      "print(identity_frame.equals(identity_frame_source))"
+    );
+    assert.match(
+      identitySourceAfterReplay,
+      /\bTrue\b/u,
+      "Recovered group-by/by-example steps must leave the notebook source immutable."
     );
 
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
@@ -2327,11 +2566,11 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           id: `${backend}-example`,
           kind: "byExample",
           params: {
-            sourceColumns: ["city"],
+            sourceColumns: [columnReference(opened.metadata, "city")],
             newColumn: "city_example",
             examples: [
-              { inputs: { city: "Milan" }, output: "MILAN" },
-              { inputs: { city: "Rome" }, output: "ROME" }
+              { inputs: ["Milan"], output: "MILAN" },
+              { inputs: ["Rome"], output: "ROME" }
             ]
           }
         },
@@ -2351,8 +2590,10 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           id: `${backend}-group`,
           kind: "groupBy",
           params: {
-            keys: ["active"],
-            aggregations: [{ column: "sales", operation: "sum", alias: "total_sales" }]
+            keys: [columnReference(opened.metadata, "active")],
+            aggregations: [
+              { column: columnReference(opened.metadata, "sales"), operation: "sum", alias: "total_sales" }
+            ]
           }
         }
       ];

@@ -101,6 +101,26 @@ describe("OperationBuilder", () => {
     expect(onPreview).not.toHaveBeenCalled();
   });
 
+  it("contains keyboard focus within the modal operation picker", () => {
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="renameColumn"
+        onClose={() => undefined}
+        onPreview={() => undefined}
+      />
+    );
+
+    const close = screen.getByRole("button", { name: "Close operation picker" });
+    const preview = screen.getByRole("button", { name: "Preview changes" });
+    close.focus();
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+    expect(preview).toHaveFocus();
+    fireEvent.keyDown(preview, { key: "Tab" });
+    expect(close).toHaveFocus();
+  });
+
   it("copies viewing filters only through an explicit filter step", () => {
     const onPreview = vi.fn();
     const filterModel = {
@@ -721,7 +741,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByText("Output order: sales — column 2 → city — column 1")).toBeInTheDocument();
+    expect(screen.getByText("Selected order: sales — column 2 → city — column 1")).toBeInTheDocument();
     expect(screen.getByRole("listbox")).toHaveAccessibleName("Columns to keep");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
@@ -749,7 +769,7 @@ describe("OperationBuilder", () => {
     fireEvent.change(columnSelect);
     columnSelect.options[0].selected = true;
     fireEvent.change(columnSelect);
-    expect(screen.getByText("Output order: sales — column 2 → city — column 1")).toBeInTheDocument();
+    expect(screen.getByText("Selected order: sales — column 2 → city — column 1")).toBeInTheDocument();
     expect(screen.getByRole("listbox")).toHaveAccessibleName("Columns to keep");
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
@@ -1030,17 +1050,227 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Examples must be valid JSON");
     expect(onPreview).not.toHaveBeenCalled();
 
-    const valid = [
+    const legacy = [
       { inputs: { city: "Milan" }, output: "MILAN" },
       { inputs: { city: "Paris" }, output: "PARIS" }
+    ];
+    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(legacy) } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Example 1 inputs must be an array with 1 values in source-column order"
+    );
+    expect(onPreview).not.toHaveBeenCalled();
+
+    for (const [unsafeIntegerJson, token] of [
+      ['[{"inputs":[9007199254740993],"output":1},{"inputs":[2],"output":3}]', "9007199254740993"],
+      ['[{"inputs":[-9007199254740992],"output":1},{"inputs":[2],"output":3}]', "-9007199254740992"],
+      ['[{"inputs":[9.007199254740993e15],"output":1},{"inputs":[2],"output":3}]', "9.007199254740993e15"]
+    ]) {
+      fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: unsafeIntegerJson } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        `Integer token ${token} is outside JavaScript's exact safe range`
+      );
+      expect(onPreview).not.toHaveBeenCalled();
+    }
+
+    const valid = [
+      { inputs: ["9007199254740993"], output: "9007199254740993" },
+      { inputs: ["-9007199254740992"], output: "-9007199254740992" }
     ];
     fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(valid) } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0]).toEqual(
       expect.objectContaining({
         kind: "byExample",
-        params: { sourceColumns: ["city"], newColumn: "example_result", examples: valid }
+        params: { sourceColumns: [{ id: "c:0", name: "city" }], newColumn: "example_result", examples: valid }
       })
     );
+  });
+
+  it("builds group keys and repeated aggregation values from stable duplicate-safe identities", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
+      { ...metadata.schema[0], id: "c:2", name: "", position: 2 },
+      { ...metadata.schema[1], id: "c:3", name: "7", position: 3 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: columns }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="groupBy"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const keys = screen.getByRole("listbox", { name: "Group keys" }) as HTMLSelectElement;
+    expect(Array.from(keys.options, (option) => option.text)).toEqual([
+      "value — column 1",
+      "value — column 2",
+      "(empty name) — column 3",
+      "7 — column 4"
+    ]);
+    keys.options[1].selected = true;
+    fireEvent.change(keys);
+    const value = screen.getByLabelText("Value 1") as HTMLSelectElement;
+    fireEvent.change(value, { target: { value: "c:3" } });
+    fireEvent.change(screen.getByLabelText("Output name"), { target: { value: "total" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add aggregation" }));
+    fireEvent.change(screen.getByLabelText("Value 2"), { target: { value: "c:3" } });
+    const aliases = screen.getAllByLabelText("Output name") as HTMLInputElement[];
+    fireEvent.change(aliases[1], { target: { value: "average" } });
+    const calculations = screen.getAllByLabelText("Calculation") as HTMLSelectElement[];
+    fireEvent.change(calculations[1], { target: { value: "mean" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      keys: [{ id: "c:1", name: "value" }],
+      aggregations: [
+        { column: { id: "c:3", name: "7" }, operation: "sum", alias: "total" },
+        { column: { id: "c:3", name: "7" }, operation: "mean", alias: "average" }
+      ]
+    });
+  });
+
+  it("preserves by-example source interaction order and aligned scalar arrays", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
+      { ...metadata.schema[0], id: "c:2", name: "", position: 2 },
+      { ...metadata.schema[1], id: "c:3", name: "7", position: 3 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: columns }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="byExample"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const sources = screen.getByRole("listbox", { name: "Source columns" }) as HTMLSelectElement;
+    sources.options[0].selected = false;
+    sources.options[1].selected = true;
+    fireEvent.change(sources);
+    sources.options[3].selected = true;
+    fireEvent.change(sources);
+    expect(screen.getByText("Selected order: value — column 2 → 7 — column 4")).toBeInTheDocument();
+    const examples = [
+      { inputs: ["a", 1], output: "a1" },
+      { inputs: ["b", 2], output: "b2" }
+    ];
+    fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: JSON.stringify(examples) } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      sourceColumns: [
+        { id: "c:1", name: "value" },
+        { id: "c:3", name: "7" }
+      ],
+      newColumn: "example_result",
+      examples
+    });
+  });
+
+  it("restores saved group and by-example IDs from the recorded input schema", () => {
+    const columns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
+      { ...metadata.schema[1], id: "c:2", name: "7", position: 2 }
+    ];
+    const groupPreview = vi.fn();
+    const groupStep = {
+      id: "saved-group",
+      kind: "groupBy",
+      params: {
+        keys: [{ id: "c:1", name: "value" }],
+        aggregations: [{ column: { id: "c:2", name: "7" }, operation: "sum", alias: "total" }]
+      }
+    } satisfies TransformStep;
+    const { unmount } = render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: columns, latestStepInputSchema: columns, steps: [groupStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={groupStep}
+        onClose={() => undefined}
+        onPreview={groupPreview}
+      />
+    );
+    expect(screen.getByText("Selected order: value — column 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Value 1")).toHaveValue("c:2");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(groupPreview.mock.calls[0][0]).toEqual(groupStep);
+    unmount();
+
+    const examplePreview = vi.fn();
+    const exampleStep = {
+      id: "saved-example",
+      kind: "byExample",
+      params: {
+        sourceColumns: [{ id: "c:1", name: "value" }],
+        newColumn: "upper",
+        examples: [
+          { inputs: ["a"], output: "A" },
+          { inputs: ["b"], output: "B" }
+        ],
+        program: { kind: "case", style: "upper", input: { kind: "column", column: { id: "c:1", name: "value" } } },
+        warnings: ["Ambiguous examples: preview carefully."],
+        candidateCount: 2
+      }
+    } satisfies TransformStep;
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: columns, latestStepInputSchema: columns, steps: [exampleStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={exampleStep}
+        onClose={() => undefined}
+        onPreview={examplePreview}
+      />
+    );
+    expect(screen.getByText("Selected order: value — column 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(examplePreview.mock.calls[0][0].params).toEqual({
+      sourceColumns: [{ id: "c:1", name: "value" }],
+      newColumn: "upper",
+      examples: exampleStep.params.examples
+    });
+  });
+
+  it("fails a saved by-example edit closed when its program uses an unselected source", () => {
+    const onClose = vi.fn();
+    const onPreview = vi.fn();
+    const step = {
+      id: "unsafe-example",
+      kind: "byExample",
+      params: {
+        sourceColumns: [{ id: "c:0", name: "city" }],
+        newColumn: "unsafe",
+        examples: [
+          { inputs: ["a"], output: "A" },
+          { inputs: ["b"], output: "B" }
+        ],
+        program: { kind: "column", column: { id: "c:1", name: "sales" } }
+      }
+    } satisfies TransformStep;
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [step] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={step}
+        onClose={onClose}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("outside its selected sources");
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onPreview).not.toHaveBeenCalled();
   });
 });

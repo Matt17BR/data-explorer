@@ -7,8 +7,10 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
+from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import OperationError, operation_catalog, validate_step
 
 PRIVATE_COLUMN = f"{INTERNAL_ROW_ID_PREFIX}guessed"
@@ -267,25 +269,29 @@ def test_optional_row_column_lists_have_strict_empty_semantics() -> None:
         (
             "groupBy",
             {
-                "keys": ["group"],
-                "aggregations": [{"column": PRIVATE_COLUMN, "operation": "first", "alias": "leaked"}],
+                "keys": [public_ref("c:source:0", "group")],
+                "aggregations": [
+                    {"column": public_ref("private", PRIVATE_COLUMN), "operation": "first", "alias": "leaked"}
+                ],
             },
         ),
         (
             "groupBy",
             {
-                "keys": ["group"],
-                "aggregations": [{"column": "value", "operation": "sum", "alias": PRIVATE_COLUMN}],
+                "keys": [public_ref("c:source:0", "group")],
+                "aggregations": [
+                    {"column": public_ref("c:source:3", "value"), "operation": "sum", "alias": PRIVATE_COLUMN}
+                ],
             },
         ),
         (
             "byExample",
             {
-                "sourceColumns": [PRIVATE_COLUMN],
+                "sourceColumns": [public_ref("private", PRIVATE_COLUMN)],
                 "newColumn": "result",
                 "examples": [
-                    {"inputs": {PRIVATE_COLUMN: "a"}, "output": "x"},
-                    {"inputs": {PRIVATE_COLUMN: "b"}, "output": "x"},
+                    {"inputs": ["a"], "output": "x"},
+                    {"inputs": ["b"], "output": "x"},
                 ],
                 "program": {"kind": "literal", "value": "x"},
             },
@@ -770,15 +776,15 @@ def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
 
     grouped = engine.apply_transform(
         frame,
-        step(
+        bound_step(
             "group",
             "groupBy",
-            keys=["group"],
+            keys=[bound_ref("c:source:0", "group", 0)],
             aggregations=[
-                {"column": "value", "operation": "sum", "alias": "total"},
-                {"column": "other", "operation": "mean", "alias": "average"},
-                {"column": "text", "operation": "count", "alias": "texts"},
-                {"column": "tags", "operation": "nUnique", "alias": "tag_sets"},
+                {"column": bound_ref("c:source:3", "value", 3), "operation": "sum", "alias": "total"},
+                {"column": bound_ref("c:source:4", "other", 4), "operation": "mean", "alias": "average"},
+                {"column": bound_ref("c:source:1", "text", 1), "operation": "count", "alias": "texts"},
+                {"column": bound_ref("c:source:2", "tags", 2), "operation": "nUnique", "alias": "tag_sets"},
             ],
         ),
     )
@@ -799,43 +805,46 @@ def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
 
 def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
     engine, frame = engine_and_frame
-    plan = [
+    public_plan = [
         step(
             "example-label",
             "byExample",
-            sourceColumns=["group", "other"],
+            sourceColumns=[public_ref("c:source:0", "group"), public_ref("c:source:4", "other")],
             newColumn="label",
             examples=[
-                {"inputs": {"group": "a", "other": 2}, "output": "a-2"},
-                {"inputs": {"group": "b", "other": 4}, "output": "b-4"},
+                {"inputs": ["a", 2], "output": "a-2"},
+                {"inputs": ["b", 4], "output": "b-4"},
             ],
         ),
         step(
             "example-month",
             "byExample",
-            sourceColumns=["date"],
+            sourceColumns=[public_ref("c:source:5", "date")],
             newColumn="month",
             examples=[
-                {"inputs": {"date": "2024-01-02"}, "output": "01/2024"},
-                {"inputs": {"date": "2024-02-03"}, "output": "02/2024"},
+                {"inputs": ["2024-01-02"], "output": "01/2024"},
+                {"inputs": ["2024-02-03"], "output": "02/2024"},
             ],
         ),
         step(
             "example-score",
             "byExample",
-            sourceColumns=["value", "other"],
+            sourceColumns=[public_ref("c:source:3", "value"), public_ref("c:source:4", "other")],
             newColumn="score",
             examples=[
-                {"inputs": {"value": 1.2, "other": 2}, "output": 3.2},
-                {"inputs": {"value": 2.8, "other": 3}, "output": 5.8},
+                {"inputs": [1.2, 2], "output": 3.2},
+                {"inputs": [2.8, 3], "output": 5.8},
             ],
         ),
     ]
-    assert [operation["params"]["program"]["kind"] for operation in plan] == [
+    assert [operation["params"]["program"]["kind"] for operation in public_plan] == [
         "concat",
         "datetimeFormat",
         "arithmetic",
     ]
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    plan = [bind_step(operation, schema, lineage) for operation in public_plan]
     transformed = apply_plan(engine, frame, plan)
     assert [row["label"] for row in records(transformed)] == ["a-2", "a-3", "b-4", "b-3"]
     assert [row["month"] for row in records(transformed)] == ["01/2024", "02/2024", "03/2024", "02/2024"]

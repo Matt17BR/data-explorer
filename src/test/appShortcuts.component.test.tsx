@@ -86,6 +86,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     const edit = screen.getByRole("button", { name: "Edit latest" });
     expect(undo).toHaveAttribute("aria-keyshortcuts", "Control+Alt+Z Meta+Alt+Z");
     expect(edit).toHaveAttribute("aria-keyshortcuts", "Control+Shift+E Meta+Shift+E");
+    edit.focus();
 
     postMessage.mockClear();
     const columnSearch = screen.getByPlaceholderText("Search columns");
@@ -94,8 +95,13 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 
     fireEvent.keyDown(edit, { key: "e", ctrlKey: true, shiftKey: true });
     expect(await screen.findByRole("dialog", { name: "Edit cleaning step" })).toBeInTheDocument();
+    expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
+    expect(screen.getByTestId("app-workspace")).toHaveAttribute("aria-hidden", "true");
     fireEvent.keyDown(screen.getByPlaceholderText("Search operations"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull());
+    await waitFor(() => expect(edit).toHaveFocus());
+    expect(screen.getByTestId("app-workspace")).not.toHaveAttribute("inert");
+    expect(screen.getByTestId("app-workspace")).not.toHaveAttribute("aria-hidden");
 
     fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
     fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });

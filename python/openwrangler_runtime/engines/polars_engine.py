@@ -24,6 +24,12 @@ from .base import (
 )
 
 SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_PORTABLE_INTEGER_MAX = 10**38 - 1
+_PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
+_POLARS_INTEGER_LIMB_BASE = 10**9
+_POLARS_INTEGER_LIMB_COUNT = 5
 
 
 class PolarsEngine(DataFrameEngine):
@@ -630,16 +636,14 @@ class PolarsEngine(DataFrameEngine):
             series_df = df.select(expression)
         if search:
             series_df = series_df.filter(pl.col(column).cast(pl.Utf8).str.contains(search, literal=True))
-        if isinstance(series_df, pl.LazyFrame):
-            counts = (
-                series_df.group_by(column)
-                .len(name="count")
-                .sort("count", descending=True)
-                .head(limit + 1)
-                .collect(engine="streaming")
-            )
-        else:
-            counts = series_df[column].value_counts(sort=True).head(limit + 1)
+        counts = (
+            series_df.group_by(column)
+            .len(name="count")
+            .sort([pl.col("count"), pl.col(column).cast(pl.String)], descending=[True, False])
+            .head(limit + 1)
+        )
+        if isinstance(counts, pl.LazyFrame):
+            counts = counts.collect(engine="streaming")
         values = [
             {"value": str(row[column]), "count": int(row["count"])} for row in counts.head(limit).iter_rows(named=True)
         ]
@@ -855,10 +859,25 @@ class PolarsEngine(DataFrameEngine):
                 expression = expression.cast(pl.String).str.to_datetime(strict=False)
             return df.with_columns(expression.dt.strftime(params["format"]).alias(params.get("newColumn", column)))
         if kind == "groupBy":
-            expressions = [_polars_aggregation(aggregation) for aggregation in params["aggregations"]]
-            return df.group_by(params["keys"], maintain_order=True).agg(expressions)
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            keys = [bound_column_name(reference, kind) for reference in params["keys"]]
+            normalized = df.with_columns(
+                [pl.col(key).fill_nan(None).alias(key) if schema[key].is_float() else pl.col(key) for key in keys]
+            )
+            expressions = [
+                _polars_aggregation(aggregation, schema[bound_column_name(aggregation["column"], kind)])
+                for aggregation in params["aggregations"]
+            ]
+            return normalized.group_by(keys, maintain_order=True).agg(expressions)
         if kind == "byExample":
-            return df.with_columns(_polars_by_example_expression(params["program"]).alias(params["newColumn"]))
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            scalar_checked_integers = _polars_program_uses_uint128(params["program"], schema)
+            return df.with_columns(
+                _polars_by_example_expression(
+                    params["program"],
+                    scalar_checked_integers=scalar_checked_integers,
+                ).alias(params["newColumn"])
+            )
         if kind == "customCode":
             row_id = self._row_id_column(df)
             namespace = {"df": df.drop(row_id) if row_id is not None else df, "pl": pl}
@@ -885,8 +904,130 @@ class PolarsEngine(DataFrameEngine):
         return [name for name in columns if not name.startswith(INTERNAL_ROW_ID_PREFIX)]
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-        lines = ["from collections import Counter", "", "import polars as pl", "", "", "def clean_data(df):"]
-        for index, step in enumerate(steps):
+        plan = list(steps)
+        lines = [
+            "from collections import Counter",
+            "",
+            "import polars as pl",
+        ]
+        if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
+            lines.extend(
+                [
+                    "",
+                    f"_OW_INTEGER_MAX = {_PORTABLE_INTEGER_MAX}",
+                    "_OW_INTEGER_MIN = -_OW_INTEGER_MAX",
+                    f"_OW_INTEGER_LIMB_BASE = {_POLARS_INTEGER_LIMB_BASE}",
+                    f"_OW_INTEGER_LIMB_COUNT = {_POLARS_INTEGER_LIMB_COUNT}",
+                    "",
+                    "",
+                    "def _ow_checked_integer_sum_parts(parts):",
+                    "    total = sum(",
+                    "        int(parts[f'_ow_limb_{index}'] or 0) * (_OW_INTEGER_LIMB_BASE ** index)",
+                    "        for index in range(_OW_INTEGER_LIMB_COUNT)",
+                    "    )",
+                    "    if not _OW_INTEGER_MIN <= total <= _OW_INTEGER_MAX:",
+                    "        raise ValueError('Open Wrangler integer result exceeds the portable 38-digit envelope.')",
+                    "    return total",
+                    "",
+                    "",
+                    "def _ow_checked_integer_sum(expression, dtype):",
+                    "    native_type = pl.UInt128 if dtype == pl.UInt128 else pl.Int128",
+                    "    remaining = expression if dtype == pl.UInt128 else expression.cast(pl.Int128)",
+                    "    base = pl.lit(_OW_INTEGER_LIMB_BASE, dtype=native_type)",
+                    "    limbs = []",
+                    "    for index in range(_OW_INTEGER_LIMB_COUNT - 1):",
+                    "        limbs.append(",
+                    "            (remaining % base).cast(pl.Int128).sum().alias(f'_ow_limb_{index}')",
+                    "        )",
+                    "        remaining = remaining // base",
+                    "    limbs.append(",
+                    "        remaining.cast(pl.Int128).sum().alias(f'_ow_limb_{_OW_INTEGER_LIMB_COUNT - 1}')",
+                    "    )",
+                    "    return pl.struct(limbs).map_elements(",
+                    "        _ow_checked_integer_sum_parts, return_dtype=pl.Int128, skip_nulls=False",
+                    "    )",
+                    "",
+                    "",
+                    "def _ow_checked_integer_value(left, right, operator):",
+                    "    if left is None or right is None:",
+                    "        return None",
+                    "    if operator == 'add':",
+                    "        result = int(left) + int(right)",
+                    "    elif operator == 'subtract':",
+                    "        result = int(left) - int(right)",
+                    "    elif operator == 'multiply':",
+                    "        result = int(left) * int(right)",
+                    "    else:",
+                    "        raise ValueError('Unsupported checked integer operator: ' + str(operator))",
+                    "    if not _OW_INTEGER_MIN <= result <= _OW_INTEGER_MAX:",
+                    "        raise ValueError('Open Wrangler integer result exceeds the portable 38-digit envelope.')",
+                    "    return result",
+                    "",
+                    "",
+                    "def _ow_checked_integer_formula_scalar(left, right, operator):",
+                    "    return pl.struct(",
+                    "        left.alias('_ow_left_operand'), right.alias('_ow_right_operand')",
+                    "    ).map_elements(",
+                    "        lambda operands: _ow_checked_integer_value(",
+                    "            operands['_ow_left_operand'], operands['_ow_right_operand'], operator",
+                    "        ),",
+                    "        return_dtype=pl.Int128,",
+                    "        skip_nulls=False,",
+                    "    )",
+                    "",
+                    "",
+                    "def _ow_checked_integer_formula(left, right, operator):",
+                    "    integer_type = pl.Int128",
+                    "    decimal_type = pl.Decimal(38, 0)",
+                    "    left = left.cast(integer_type)",
+                    "    right = right.cast(integer_type)",
+                    "    zero = pl.lit(0, dtype=integer_type)",
+                    "    maximum = pl.lit(_OW_INTEGER_MAX, dtype=integer_type)",
+                    "    minimum = pl.lit(_OW_INTEGER_MIN, dtype=integer_type)",
+                    "    if operator == 'add':",
+                    "        positive = pl.when(right > 0).then(right).otherwise(zero)",
+                    "        negative = pl.when(right < 0).then(right).otherwise(zero)",
+                    "        safe = ((right <= 0) | (left <= maximum - positive)) & (",
+                    "            (right >= 0) | (left >= minimum - negative)",
+                    "        )",
+                    "    elif operator == 'subtract':",
+                    "        positive = pl.when(right > 0).then(right).otherwise(zero)",
+                    "        negative = pl.when(right < 0).then(right).otherwise(zero)",
+                    "        safe = ((right >= 0) | (left <= maximum + negative)) & (",
+                    "            (right <= 0) | (left >= minimum + positive)",
+                    "        )",
+                    "    elif operator == 'multiply':",
+                    "        left_in_range = left.is_between(minimum, maximum)",
+                    "        right_in_range = right.is_between(minimum, maximum)",
+                    "        left_magnitude = left.clip(_OW_INTEGER_MIN, _OW_INTEGER_MAX).abs()",
+                    "        right_magnitude = right.clip(_OW_INTEGER_MIN, _OW_INTEGER_MAX).abs()",
+                    "        nonzero = right_magnitude != 0",
+                    "        divisor = pl.when(nonzero).then(right_magnitude).otherwise(pl.lit(1, dtype=integer_type))",
+                    "        safe = (left == 0) | (right == 0) | (",
+                    "            left_in_range & right_in_range & (left_magnitude <= maximum // divisor)",
+                    "        )",
+                    "    else:",
+                    "        raise ValueError('Unsupported checked integer operator: ' + str(operator))",
+                    "    safe = safe.fill_null(True)",
+                    "    checked_left = pl.when(safe).then(left).otherwise(zero)",
+                    "    checked_right = pl.when(safe).then(right).otherwise(zero)",
+                    "    result = {",
+                    "        'add': checked_left + checked_right,",
+                    "        'subtract': checked_left - checked_right,",
+                    "        'multiply': checked_left * checked_right,",
+                    "    }[operator]",
+                    "    return (",
+                    "        pl.when(safe)",
+                    "        .then(result.cast(pl.String))",
+                    "        .otherwise(pl.lit(",
+                    "            'Open Wrangler integer result exceeds the portable 38-digit envelope.'))",
+                    "        .cast(decimal_type, strict=True)",
+                    "        .cast(pl.Int128)",
+                    "    )",
+                ]
+            )
+        lines.extend(["", "", "def clean_data(df):"])
+        for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
         return "\n".join(lines) + "\n"
@@ -1145,11 +1286,66 @@ class PolarsEngine(DataFrameEngine):
                 )
             ]
         if kind == "groupBy":
-            expressions = ", ".join(_compile_polars_aggregation(aggregation) for aggregation in params["aggregations"])
-            return [f"{prefix}df = df.group_by({params['keys']!r}, maintain_order=True).agg([{expressions}])"]
+            keys = [bound_column_name(reference, kind) for reference in params["keys"]]
+            schema = f"_group_schema_{index}"
+            expressions = f"_group_expressions_{index}"
+            lines = [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                f"{prefix}df = df.with_columns([",
+                *[
+                    (
+                        f"{prefix}    pl.col({key!r}).fill_nan(None).alias({key!r}) "
+                        f"if {schema}[{key!r}].is_float() else pl.col({key!r}),"
+                    )
+                    for key in keys
+                ],
+                f"{prefix}])",
+                f"{prefix}{expressions} = []",
+            ]
+            for aggregation_index, aggregation in enumerate(params["aggregations"]):
+                column = bound_column_name(aggregation["column"], kind)
+                value = f"_group_value_{index}_{aggregation_index}"
+                lines.extend(
+                    [
+                        f"{prefix}{value} = pl.col({column!r})",
+                        f"{prefix}if {schema}[{column!r}].is_float():",
+                        f"{prefix}    {value} = {value}.fill_nan(None)",
+                    ]
+                )
+                if aggregation["operation"] == "sum":
+                    lines.extend(
+                        [
+                            f"{prefix}if {schema}[{column!r}].is_integer():",
+                            (
+                                f"{prefix}    {expressions}.append(_ow_checked_integer_sum("
+                                f"{value}, {schema}[{column!r}])"
+                                f".alias({aggregation['alias']!r}))"
+                            ),
+                            f"{prefix}else:",
+                            f"{prefix}    {expressions}.append({_compile_polars_aggregation(aggregation, value)})",
+                        ]
+                    )
+                else:
+                    lines.append(f"{prefix}{expressions}.append({_compile_polars_aggregation(aggregation, value)})")
+            lines.append(f"{prefix}df = df.group_by({keys!r}, maintain_order=True).agg({expressions})")
+            return lines
         if kind == "byExample":
-            expression = _compile_polars_by_example(params["program"])
-            return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
+            program = params["program"]
+            if not _polars_program_needs_checked_integer_helpers(program):
+                expression = _compile_polars_by_example(program)
+                return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
+            schema = f"_by_example_schema_{index}"
+            scalar = f"_by_example_scalar_integer_{index}"
+            expression = f"_by_example_expression_{index}"
+            column_names = _polars_program_column_names(program)
+            native_expression = _compile_polars_by_example(program)
+            scalar_expression = _compile_polars_by_example(program, scalar_checked_integers=True)
+            return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                (f"{prefix}{scalar} = any({schema}[name] == pl.UInt128 for name in {column_names!r})"),
+                f"{prefix}{expression} = {scalar_expression} if {scalar} else {native_expression}",
+                f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
+            ]
         if kind == "customCode":
             function_name = f"_custom_step_{index}"
             code_lines = str(params["code"]).splitlines()
@@ -1162,110 +1358,132 @@ class PolarsEngine(DataFrameEngine):
         raise EngineError(f"Polars cannot compile transformation: {kind}")
 
 
-def _polars_by_example_expression(program: Mapping[str, Any]) -> Any:
+def _polars_by_example_expression(
+    program: Mapping[str, Any],
+    *,
+    scalar_checked_integers: bool = False,
+) -> Any:
     import polars as pl
+
+    def child(value: Mapping[str, Any]) -> Any:
+        return _polars_by_example_expression(value, scalar_checked_integers=scalar_checked_integers)
 
     kind = program["kind"]
     if kind == "column":
-        return pl.col(program["column"])
+        return pl.col(bound_column_name(program["column"], "byExample"))
     if kind == "literal":
         return pl.lit(program.get("value"))
     if kind == "slice":
         start = program["start"]
         stop = program.get("stop")
         length = None if stop is None else stop - start
-        return _polars_by_example_expression(program["input"]).cast(pl.String).str.slice(start, length)
+        return child(program["input"]).cast(pl.String).str.slice(start, length)
     if kind == "split":
         return (
-            _polars_by_example_expression(program["input"])
+            child(program["input"])
             .cast(pl.String)
             .str.split(program["delimiter"])
             .list.get(program["index"], null_on_oob=True)
         )
     if kind == "concat":
-        return pl.concat_str([_polars_by_example_expression(part) for part in program["parts"]], separator="")
+        return pl.concat_str([child(part) for part in program["parts"]], separator="")
     if kind == "regexExtract":
-        return (
-            _polars_by_example_expression(program["input"])
-            .cast(pl.String)
-            .str.extract(program["pattern"], group_index=program["group"])
-        )
+        return child(program["input"]).cast(pl.String).str.extract(program["pattern"], group_index=program["group"])
     if kind == "regexReplace":
-        return (
-            _polars_by_example_expression(program["input"])
-            .cast(pl.String)
-            .str.replace_all(program["pattern"], program["replacement"])
-        )
+        replacement = str(program["replacement"]).replace("$", "$$")
+        return child(program["input"]).cast(pl.String).str.replace_all(program["pattern"], replacement)
     if kind == "case":
-        value = _polars_by_example_expression(program["input"]).cast(pl.String)
+        value = child(program["input"]).cast(pl.String)
         if program["style"] == "lower":
-            return value.str.to_lowercase()
+            return value.str.replace_many(list(_ASCII_UPPER), list(_ASCII_LOWER))
         if program["style"] == "upper":
-            return value.str.to_uppercase()
-        return value.str.slice(0, 1).str.to_uppercase() + value.str.slice(1).str.to_lowercase()
+            return value.str.replace_many(list(_ASCII_LOWER), list(_ASCII_UPPER))
+        return value.str.slice(0, 1).str.replace_many(list(_ASCII_LOWER), list(_ASCII_UPPER)) + value.str.slice(
+            1
+        ).str.replace_many(list(_ASCII_UPPER), list(_ASCII_LOWER))
     if kind == "datetimeFormat":
         return (
-            _polars_by_example_expression(program["input"])
+            child(program["input"])
             .cast(pl.String)
             .str.strptime(pl.Datetime, format=program["inputFormat"], strict=False)
             .dt.strftime(program["outputFormat"])
         )
     if kind == "arithmetic":
+        left = child(program["left"])
+        right = child(program["right"])
+        widens_integer = program.get("_owResultType") == "integer"
+        if widens_integer:
+            if scalar_checked_integers:
+                return _polars_checked_integer_formula_scalar(left, right, str(program["operator"]))
+            return _polars_checked_integer_formula(left, right, str(program["operator"]))
         return _polars_formula(
-            _polars_by_example_expression(program["left"]),
-            _polars_by_example_expression(program["right"]),
+            left,
+            right,
             program["operator"],
         )
     raise EngineError(f"Unsupported Polars by-example expression: {kind}")
 
 
-def _compile_polars_by_example(program: Mapping[str, Any]) -> str:
+def _compile_polars_by_example(
+    program: Mapping[str, Any],
+    *,
+    scalar_checked_integers: bool = False,
+) -> str:
+    def child(value: Mapping[str, Any]) -> str:
+        return _compile_polars_by_example(value, scalar_checked_integers=scalar_checked_integers)
+
     kind = program["kind"]
     if kind == "column":
-        return f"pl.col({program['column']!r})"
+        return f"pl.col({bound_column_name(program['column'], 'byExample')!r})"
     if kind == "literal":
         return f"pl.lit({program.get('value')!r})"
     if kind == "slice":
         start = program["start"]
         stop = program.get("stop")
         length = None if stop is None else stop - start
-        return f"{_compile_polars_by_example(program['input'])}.cast(pl.String).str.slice({start!r}, {length!r})"
+        return f"{child(program['input'])}.cast(pl.String).str.slice({start!r}, {length!r})"
     if kind == "split":
         return (
-            f"{_compile_polars_by_example(program['input'])}.cast(pl.String).str.split({program['delimiter']!r})"
+            f"{child(program['input'])}.cast(pl.String).str.split({program['delimiter']!r})"
             f".list.get({program['index']!r}, null_on_oob=True)"
         )
     if kind == "concat":
-        parts = ", ".join(_compile_polars_by_example(part) for part in program["parts"])
+        parts = ", ".join(child(part) for part in program["parts"])
         return f"pl.concat_str([{parts}], separator='')"
     if kind == "regexExtract":
         return (
-            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f"{child(program['input'])}.cast(pl.String)"
             f".str.extract({program['pattern']!r}, group_index={program['group']!r})"
         )
     if kind == "regexReplace":
-        return (
-            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
-            f".str.replace_all({program['pattern']!r}, {program['replacement']!r})"
-        )
+        replacement = str(program["replacement"]).replace("$", "$$")
+        return f"{child(program['input'])}.cast(pl.String).str.replace_all({program['pattern']!r}, {replacement!r})"
     if kind == "case":
-        value = f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+        value = f"{child(program['input'])}.cast(pl.String)"
         if program["style"] == "lower":
-            return f"{value}.str.to_lowercase()"
+            return f"{value}.str.replace_many(list({_ASCII_UPPER!r}), list({_ASCII_LOWER!r}))"
         if program["style"] == "upper":
-            return f"{value}.str.to_uppercase()"
-        return f"({value}.str.slice(0, 1).str.to_uppercase() + {value}.str.slice(1).str.to_lowercase())"
+            return f"{value}.str.replace_many(list({_ASCII_LOWER!r}), list({_ASCII_UPPER!r}))"
+        return (
+            f"({value}.str.slice(0, 1).str.replace_many(list({_ASCII_LOWER!r}), list({_ASCII_UPPER!r})) + "
+            f"{value}.str.slice(1).str.replace_many(list({_ASCII_UPPER!r}), list({_ASCII_LOWER!r})))"
+        )
     if kind == "datetimeFormat":
         return (
-            f"{_compile_polars_by_example(program['input'])}.cast(pl.String)"
+            f"{child(program['input'])}.cast(pl.String)"
             f".str.strptime(pl.Datetime, format={program['inputFormat']!r}, strict=False)"
             f".dt.strftime({program['outputFormat']!r})"
         )
     if kind == "arithmetic":
         symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[program["operator"]]
-        return (
-            f"({_compile_polars_by_example(program['left'])} {symbol} {_compile_polars_by_example(program['right'])})"
-        )
+        left = child(program["left"])
+        right = child(program["right"])
+        widens_integer = program.get("_owResultType") == "integer"
+        if widens_integer:
+            if scalar_checked_integers:
+                return f"_ow_checked_integer_formula_scalar({left}, {right}, {program['operator']!r})"
+            return f"_ow_checked_integer_formula({left}, {right}, {program['operator']!r})"
+        return f"({left} {symbol} {right})"
     raise EngineError(f"Unsupported Polars by-example expression: {kind}")
 
 
@@ -1291,11 +1509,179 @@ def _polars_formula(left: Any, right: Any, operator: str) -> Any:
     raise EngineError(f"Unsupported formula operator: {operator}")
 
 
-def _polars_aggregation(aggregation: Mapping[str, Any]) -> Any:
+def _polars_step_needs_checked_integer_helpers(step: Mapping[str, Any]) -> bool:
+    if step.get("kind") == "groupBy":
+        params = step.get("params")
+        return isinstance(params, Mapping) and any(
+            isinstance(aggregation, Mapping) and aggregation.get("operation") == "sum"
+            for aggregation in params.get("aggregations", [])
+        )
+    if step.get("kind") != "byExample":
+        return False
+    params = step.get("params")
+    return isinstance(params, Mapping) and _polars_program_needs_checked_integer_helpers(params.get("program"))
+
+
+def _polars_program_column_names(value: Any) -> list[str]:
+    names: list[str] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, Mapping):
+            if node.get("kind") == "column" and isinstance(node.get("column"), Mapping):
+                name = node["column"].get("name")
+                if isinstance(name, str) and name not in names:
+                    names.append(name)
+                return
+            for item in node.values():
+                visit(item)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(value)
+    return names
+
+
+def _polars_program_uses_uint128(program: Any, schema: Mapping[str, Any]) -> bool:
     import polars as pl
 
-    expression = pl.col(aggregation["column"])
+    return any(schema.get(name) == pl.UInt128 for name in _polars_program_column_names(program))
+
+
+def _polars_program_needs_checked_integer_helpers(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if value.get("kind") == "arithmetic" and value.get("_owResultType") == "integer":
+            return True
+        return any(_polars_program_needs_checked_integer_helpers(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_polars_program_needs_checked_integer_helpers(item) for item in value)
+    return False
+
+
+def _polars_checked_integer_sum_parts(parts: Mapping[str, Any]) -> int:
+    total = sum(
+        int(parts[f"_ow_limb_{index}"] or 0) * (_POLARS_INTEGER_LIMB_BASE**index)
+        for index in range(_POLARS_INTEGER_LIMB_COUNT)
+    )
+    if not _PORTABLE_INTEGER_MIN <= total <= _PORTABLE_INTEGER_MAX:
+        raise ValueError("Open Wrangler integer result exceeds the portable 38-digit envelope.")
+    return total
+
+
+def _polars_checked_integer_sum(expression: Any, dtype: Any) -> Any:
+    """Build an exact, bounded-memory Polars integer sum expression.
+
+    Polars' native Int128 accumulator wraps modulo 2**128, while Decimal(38,
+    0) rejects native-wide values before opposite signs can cancel. Splitting
+    each value into five base-1e9 limbs lets Polars aggregate a fixed amount of
+    native state per group. A single Python finalizer combines those five
+    scalars exactly; it never receives or materializes the group's rows.
+    """
+
+    import polars as pl
+
+    native_type = pl.UInt128 if dtype == pl.UInt128 else pl.Int128
+    remaining = expression if dtype == pl.UInt128 else expression.cast(pl.Int128)
+    base = pl.lit(_POLARS_INTEGER_LIMB_BASE, dtype=native_type)
+    limbs: list[Any] = []
+    for index in range(_POLARS_INTEGER_LIMB_COUNT - 1):
+        limbs.append((remaining % base).cast(pl.Int128).sum().alias(f"_ow_limb_{index}"))
+        remaining = remaining // base
+    limbs.append(remaining.cast(pl.Int128).sum().alias(f"_ow_limb_{_POLARS_INTEGER_LIMB_COUNT - 1}"))
+    return pl.struct(limbs).map_elements(
+        _polars_checked_integer_sum_parts,
+        return_dtype=pl.Int128,
+        skip_nulls=False,
+    )
+
+
+def _polars_checked_integer_value(left: Any, right: Any, operator: str) -> int | None:
+    if left is None or right is None:
+        return None
+    if operator == "add":
+        result = int(left) + int(right)
+    elif operator == "subtract":
+        result = int(left) - int(right)
+    elif operator == "multiply":
+        result = int(left) * int(right)
+    else:
+        raise EngineError(f"Unsupported checked Polars integer operator: {operator}")
+    if not _PORTABLE_INTEGER_MIN <= result <= _PORTABLE_INTEGER_MAX:
+        raise ValueError("Open Wrangler integer result exceeds the portable 38-digit envelope.")
+    return result
+
+
+def _polars_checked_integer_formula_scalar(left: Any, right: Any, operator: str) -> Any:
+    """Use Python integers only when a UInt128 operand cannot narrow to Int128."""
+
+    import polars as pl
+
+    return pl.struct(
+        left.alias("_ow_left_operand"),
+        right.alias("_ow_right_operand"),
+    ).map_elements(
+        lambda operands: _polars_checked_integer_value(
+            operands["_ow_left_operand"], operands["_ow_right_operand"], operator
+        ),
+        return_dtype=pl.Int128,
+        skip_nulls=False,
+    )
+
+
+def _polars_checked_integer_formula(left: Any, right: Any, operator: str) -> Any:
+    import polars as pl
+
+    integer_type = pl.Int128
+    decimal_type = pl.Decimal(38, 0)
+    left = left.cast(integer_type)
+    right = right.cast(integer_type)
+    zero = pl.lit(0, dtype=integer_type)
+    maximum = pl.lit(_PORTABLE_INTEGER_MAX, dtype=integer_type)
+    minimum = pl.lit(_PORTABLE_INTEGER_MIN, dtype=integer_type)
+    if operator == "add":
+        positive = pl.when(right > 0).then(right).otherwise(zero)
+        negative = pl.when(right < 0).then(right).otherwise(zero)
+        safe = ((right <= 0) | (left <= maximum - positive)) & ((right >= 0) | (left >= minimum - negative))
+    elif operator == "subtract":
+        positive = pl.when(right > 0).then(right).otherwise(zero)
+        negative = pl.when(right < 0).then(right).otherwise(zero)
+        safe = ((right >= 0) | (left <= maximum + negative)) & ((right <= 0) | (left >= minimum + positive))
+    elif operator == "multiply":
+        left_in_range = left.is_between(minimum, maximum)
+        right_in_range = right.is_between(minimum, maximum)
+        left_magnitude = left.clip(_PORTABLE_INTEGER_MIN, _PORTABLE_INTEGER_MAX).abs()
+        right_magnitude = right.clip(_PORTABLE_INTEGER_MIN, _PORTABLE_INTEGER_MAX).abs()
+        nonzero = right_magnitude != 0
+        divisor = pl.when(nonzero).then(right_magnitude).otherwise(pl.lit(1, dtype=integer_type))
+        safe = (left == 0) | (right == 0) | (left_in_range & right_in_range & (left_magnitude <= maximum // divisor))
+    else:
+        raise EngineError(f"Unsupported checked Polars integer operator: {operator}")
+    safe = safe.fill_null(True)
+    checked_left = pl.when(safe).then(left).otherwise(zero)
+    checked_right = pl.when(safe).then(right).otherwise(zero)
+    result = {
+        "add": checked_left + checked_right,
+        "subtract": checked_left - checked_right,
+        "multiply": checked_left * checked_right,
+    }[operator]
+    return (
+        pl.when(safe)
+        .then(result.cast(pl.String))
+        .otherwise(pl.lit("Open Wrangler integer result exceeds the portable 38-digit envelope."))
+        .cast(decimal_type, strict=True)
+        .cast(pl.Int128)
+    )
+
+
+def _polars_aggregation(aggregation: Mapping[str, Any], dtype: Any) -> Any:
+    import polars as pl
+
+    expression = pl.col(bound_column_name(aggregation["column"], "groupBy"))
+    if dtype.is_float():
+        expression = expression.fill_nan(None)
     operation = aggregation["operation"]
+    if operation == "sum" and dtype.is_integer():
+        return _polars_checked_integer_sum(expression, dtype).alias(aggregation["alias"])
     if operation == "nUnique":
         result = expression.drop_nulls().n_unique()
     elif operation == "count":
@@ -1307,9 +1693,9 @@ def _polars_aggregation(aggregation: Mapping[str, Any]) -> Any:
     return result.alias(aggregation["alias"])
 
 
-def _compile_polars_aggregation(aggregation: Mapping[str, Any]) -> str:
+def _compile_polars_aggregation(aggregation: Mapping[str, Any], expression: str | None = None) -> str:
     operation = aggregation["operation"]
-    expression = f"pl.col({aggregation['column']!r})"
+    expression = expression or f"pl.col({bound_column_name(aggregation['column'], 'groupBy')!r})"
     if operation in {"nUnique", "first", "last"}:
         expression += ".drop_nulls()"
     method = "n_unique" if operation == "nUnique" else operation

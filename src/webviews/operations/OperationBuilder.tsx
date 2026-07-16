@@ -1,7 +1,8 @@
-import { useId, useMemo, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import type {
+  ByExampleProgram,
   ColumnReference,
   ColumnSchema,
   OperationKind,
@@ -24,6 +25,76 @@ interface OperationBuilderProps {
 
 const formulaOperators = ["add", "subtract", "multiply", "divide", "modulo", "power"] as const;
 const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"];
+const dialogFocusableSelector = [
+  "button:not(:disabled)",
+  "input:not(:disabled):not([type='hidden'])",
+  "select:not(:disabled)",
+  "textarea:not(:disabled)",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])"
+].join(",");
+
+function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.key !== "Tab") return;
+  const dialog = event.currentTarget;
+  const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(dialogFocusableSelector))
+    .filter((element) => element.getAttribute("aria-hidden") !== "true")
+    .sort((left, right) =>
+      left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : left === right ? 0 : 1
+    );
+  if (focusable.length === 0) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable.at(-1) ?? first;
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || active === dialog || !dialog.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || active === dialog || !dialog.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function isSafeByExampleScalar(value: unknown): value is string | number | boolean | null {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  return (
+    typeof value === "number" && Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value))
+  );
+}
+
+function rejectUnsafeIntegerJsonTokens(source: string): void {
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character !== "-" && (character < "0" || character > "9")) continue;
+    const match = source.slice(index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u);
+    if (!match) continue;
+    const token = match[0];
+    const numeric = Number(token);
+    if (Number.isFinite(numeric) && Number.isInteger(numeric) && !Number.isSafeInteger(numeric)) {
+      throw new Error(
+        `Integer token ${token} is outside JavaScript's exact safe range; use smaller examples to synthesize the same operation.`
+      );
+    }
+    index += token.length - 1;
+  }
+}
 
 interface SavedReferenceCheck {
   label: string;
@@ -129,9 +200,59 @@ function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
           rejectRepeatedIds: false
         }
       ];
+    case "groupBy":
+      return [
+        {
+          label: "group keys",
+          references: step.params.keys.map((reference, index) => ({
+            label: `group key ${index + 1}`,
+            reference
+          })),
+          rejectRepeatedIds: true
+        },
+        {
+          label: "aggregation values",
+          references: step.params.aggregations.map((aggregation, index) => ({
+            label: `aggregation value ${index + 1}`,
+            reference: aggregation.column
+          })),
+          rejectRepeatedIds: false
+        }
+      ];
+    case "byExample":
+      return [
+        {
+          label: "by-example sources",
+          references: step.params.sourceColumns.map((reference, index) => ({
+            label: `by-example source ${index + 1}`,
+            reference
+          })),
+          rejectRepeatedIds: true
+        },
+        {
+          label: "by-example program operands",
+          references: step.params.program
+            ? byExampleProgramReferences(step.params.program).map((reference, index) => ({
+                label: `by-example program operand ${index + 1}`,
+                reference
+              }))
+            : [],
+          rejectRepeatedIds: false
+        }
+      ];
     default:
       return [];
   }
+}
+
+function byExampleProgramReferences(program: ByExampleProgram): ColumnReference[] {
+  if (program.kind === "column") return [program.column];
+  if (program.kind === "literal") return [];
+  if (program.kind === "concat") return program.parts.flatMap(byExampleProgramReferences);
+  if (program.kind === "arithmetic") {
+    return [...byExampleProgramReferences(program.left), ...byExampleProgramReferences(program.right)];
+  }
+  return byExampleProgramReferences(program.input);
 }
 
 function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | undefined): string | undefined {
@@ -164,6 +285,18 @@ function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | u
       seenIds.add(check.reference.id);
     }
   }
+  if (step.kind === "byExample") {
+    if (!step.params.program) {
+      return `This saved by-example step has no deterministic program. ${recovery}`;
+    }
+    const sourceIds = new Set(step.params.sourceColumns.map((reference) => reference.id));
+    const outsideSource = byExampleProgramReferences(step.params.program).find(
+      (reference) => !sourceIds.has(reference.id)
+    );
+    if (outsideSource) {
+      return `The saved by-example program uses column ID “${outsideSource.id}” outside its selected sources. ${recovery}`;
+    }
+  }
   return undefined;
 }
 
@@ -181,6 +314,7 @@ export function OperationBuilder({
   const [sortRows, setSortRows] = useState(1);
   const [aggregationRows, setAggregationRows] = useState(1);
   const [formError, setFormError] = useState<string>();
+  const dialogRef = useRef<HTMLElement | null>(null);
   const filteredCatalog = useMemo(() => {
     const query = search.trim().toLowerCase();
     return query
@@ -194,6 +328,14 @@ export function OperationBuilder({
   const availableColumns = initialStep ? (metadata.latestStepInputSchema ?? []) : metadata.schema;
   const editPreflightError = initialStep ? savedStepEditError(initialStep, metadata.latestStepInputSchema) : undefined;
   const savedFilterModel = activeInitial?.kind === "filterRows" ? activeInitial.params.filterModel : undefined;
+
+  useEffect(() => {
+    if (!busy) return;
+    const dialog = dialogRef.current;
+    const active = document.activeElement;
+    if (!dialog || (active instanceof HTMLElement && dialog.contains(active) && !active.matches(":disabled"))) return;
+    dialog?.focus();
+  }, [busy]);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -223,11 +365,14 @@ export function OperationBuilder({
       onMouseDown={(event) => !busy && event.target === event.currentTarget && onClose()}
     >
       <section
+        ref={dialogRef}
         className="operationDialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="operation-dialog-title"
         aria-busy={busy}
+        tabIndex={-1}
+        onKeyDown={trapDialogFocus}
       >
         <header className="operationDialogHeader">
           <div>
@@ -375,8 +520,6 @@ function OperationFields({
     Object.prototype.hasOwnProperty.call(params, "prefix") ? "custom" : "default"
   );
   const param = (name: string, fallback = "") => String(params[name] ?? fallback);
-  const columnNames = columns.map((column) => column.name);
-  const initialColumns = (name: string) => (Array.isArray(params[name]) ? (params[name] as string[]) : []);
   const initialColumnReference = (name: string, fallback = columns[0]?.id ?? "") =>
     columnReferenceId(params[name]) ?? fallback;
   const initialColumnReferences = (name: string) =>
@@ -736,15 +879,21 @@ function OperationFields({
     const aggregations = Array.isArray(params.aggregations) ? (params.aggregations as Record<string, unknown>[]) : [];
     return (
       <>
-        <ColumnsSelect name="keys" label="Group keys" columns={columnNames} defaultValue={initialColumns("keys")} />
+        <ColumnReferencesSelect
+          name="keys"
+          label="Group keys"
+          columns={columns}
+          defaultValue={initialColumnReferences("keys")}
+          preserveSelectionOrder
+        />
         <Fieldset legend="Aggregations">
           {Array.from({ length: Math.max(aggregationRows, aggregations.length) }, (_, index) => (
             <div className="compoundRow aggregationRow" key={index}>
-              <ColumnSelect
+              <ColumnReferenceSelect
                 name="aggregationColumn"
                 label={`Value ${index + 1}`}
-                columns={columnNames}
-                defaultValue={String(aggregations[index]?.column ?? columnNames[0] ?? "")}
+                columns={columns}
+                defaultValue={columnReferenceId(aggregations[index]?.column) ?? columns[0]?.id}
               />
               <SelectField
                 name="aggregationOperation"
@@ -772,29 +921,32 @@ function OperationFields({
       ? JSON.stringify(params.examples, null, 2)
       : JSON.stringify(
           [
-            { inputs: { [columnNames[0] ?? "value"]: "example one" }, output: "EXAMPLE ONE" },
-            { inputs: { [columnNames[0] ?? "value"]: "example two" }, output: "EXAMPLE TWO" }
+            { inputs: ["example one"], output: "EXAMPLE ONE" },
+            { inputs: ["example two"], output: "EXAMPLE TWO" }
           ],
           null,
           2
         );
     return (
       <>
-        <ColumnsSelect
+        <ColumnReferencesSelect
           name="sourceColumns"
           label="Source columns"
-          columns={columnNames}
+          columns={columns}
           defaultValue={
-            initialColumns("sourceColumns").length ? initialColumns("sourceColumns") : columnNames.slice(0, 1)
+            initialColumnReferences("sourceColumns").length
+              ? initialColumnReferences("sourceColumns")
+              : columns.slice(0, 1).map((column) => column.id)
           }
+          preserveSelectionOrder
         />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "example_result")} required />
         <label className="formField codeField">
           <span>Examples (JSON)</span>
           <textarea name="examples" rows={12} required defaultValue={examples} spellCheck={false} />
           <small>
-            Provide at least two items with <code>inputs</code> for every selected source column and an{" "}
-            <code>output</code>. Preview confirms the selected program and reports ambiguity.
+            Provide 2–64 items. Each <code>inputs</code> array must contain one value in the displayed source-column
+            order, followed by an <code>output</code>. Preview confirms the deterministic program and reports ambiguity.
           </small>
         </label>
       </>
@@ -931,20 +1083,51 @@ function buildParams(
     const operations = form.getAll("aggregationOperation").map(String);
     const aliases = form.getAll("aggregationAlias").map(String);
     return {
-      keys: form.getAll("keys").map(String),
-      aggregations: columns.map((column, index) => ({ column, operation: operations[index], alias: aliases[index] }))
+      keys: form.getAll("keys").map((id) => referenceForId(String(id), availableColumns)),
+      aggregations: columns.map((id, index) => ({
+        column: referenceForId(id, availableColumns),
+        operation: operations[index],
+        alias: aliases[index]
+      }))
     };
   }
   if (kind === "byExample") {
     let examples: unknown;
+    const examplesJson = value("examples");
+    rejectUnsafeIntegerJsonTokens(examplesJson);
     try {
-      examples = JSON.parse(value("examples"));
+      examples = JSON.parse(examplesJson);
     } catch {
       throw new Error("Examples must be valid JSON.");
     }
     if (!Array.isArray(examples)) throw new Error("Examples JSON must be an array.");
+    const sourceColumns = form.getAll("sourceColumns").map((id) => referenceForId(String(id), availableColumns));
+    if (sourceColumns.length > 16) throw new Error("By-example supports at most 16 source columns.");
+    if (examples.length < 2 || examples.length > 64) {
+      throw new Error("By-example requires between 2 and 64 examples.");
+    }
+    for (const [index, example] of examples.entries()) {
+      if (
+        typeof example !== "object" ||
+        example === null ||
+        Array.isArray(example) ||
+        !("inputs" in example) ||
+        !Array.isArray(example.inputs) ||
+        example.inputs.length !== sourceColumns.length ||
+        !("output" in example)
+      ) {
+        throw new Error(
+          `Example ${index + 1} inputs must be an array with ${sourceColumns.length} values in source-column order.`
+        );
+      }
+      if (!example.inputs.every(isSafeByExampleScalar) || !isSafeByExampleScalar(example.output)) {
+        throw new Error(
+          `Example ${index + 1} values must be JSON scalars; integer values must stay within JavaScript's exact safe range.`
+        );
+      }
+    }
     return {
-      sourceColumns: form.getAll("sourceColumns").map(String),
+      sourceColumns,
       newColumn: value("newColumn"),
       examples
     };
@@ -1077,12 +1260,12 @@ function ColumnReferencesSelect({
       </select>
       <small id={helpId}>
         {preserveSelectionOrder
-          ? "Use Ctrl/Cmd or Shift to select more than one column. Selection order becomes output order."
+          ? "Use Ctrl/Cmd or Shift to select more than one column. The displayed selected order is preserved."
           : "Use Ctrl/Cmd or Shift to select more than one column."}
       </small>
       {preserveSelectionOrder && selectedLabels.length > 0 && (
         <small id={orderId} aria-live="polite">
-          Output order: {selectedLabels.join(" → ")}
+          Selected order: {selectedLabels.join(" → ")}
         </small>
       )}
     </div>
@@ -1092,65 +1275,6 @@ function ColumnReferencesSelect({
 function columnOptionLabel(column: ColumnSchema): string {
   const displayName = column.name === "" ? "(empty name)" : column.name;
   return `${displayName} — column ${column.position + 1}`;
-}
-
-function ColumnSelect({
-  name,
-  label,
-  columns,
-  defaultValue
-}: {
-  name: string;
-  label: string;
-  columns: string[];
-  defaultValue?: string;
-}) {
-  return (
-    <label className="formField">
-      <span>{label}</span>
-      <select name={name} defaultValue={defaultValue ?? columns[0]} required>
-        {columns.map((column) => (
-          <option key={column} value={column}>
-            {column}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function ColumnsSelect({
-  name,
-  label,
-  columns,
-  defaultValue,
-  required = true
-}: {
-  name: string;
-  label: string;
-  columns: string[];
-  defaultValue: string[];
-  required?: boolean;
-}) {
-  return (
-    <label className="formField">
-      <span>{label}</span>
-      <select
-        name={name}
-        multiple
-        size={Math.min(6, Math.max(3, columns.length))}
-        defaultValue={defaultValue}
-        required={required}
-      >
-        {columns.map((column) => (
-          <option key={column} value={column}>
-            {column}
-          </option>
-        ))}
-      </select>
-      <small>Use Ctrl/Cmd or Shift to select more than one column.</small>
-    </label>
-  );
 }
 
 function SelectField({

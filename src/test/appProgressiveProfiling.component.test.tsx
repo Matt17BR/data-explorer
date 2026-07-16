@@ -827,6 +827,8 @@ describe("App progressive profiling and view correlation", () => {
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByRole("button", { name: "Add step" });
     openCityFilter();
+    const clearAll = screen.getByRole("button", { name: "Clear all" });
+    const values = screen.getByRole("button", { name: "Values" });
     dispatch({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
     await screen.findByRole("dialog", { name: "Add cleaning step" });
     const code = await screen.findByLabelText(/Engine-native Python/);
@@ -841,8 +843,10 @@ describe("App progressive profiling and view correlation", () => {
     expect(code).toBeDisabled();
     expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
+    expect(screen.getByTestId("app-workspace")).toHaveAttribute("aria-hidden", "true");
+    expect(clearAll).toBeDisabled();
+    expect(values).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
@@ -856,8 +860,8 @@ describe("App progressive profiling and view correlation", () => {
 
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
     expect(screen.getByLabelText(/Engine-native Python/)).toHaveValue("result = df.filter(pl.col('sales') > 10)");
-    expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Values" })).toBeEnabled();
+    expect(clearAll).toBeEnabled();
+    expect(values).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull());
   });

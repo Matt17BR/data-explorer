@@ -9,9 +9,11 @@ import duckdb
 import pytest
 
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines.base import EngineError
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.registry import EngineRegistry
+from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
 
@@ -481,27 +483,40 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             newColumn="month",
         ),
     ]
+    source_schema = engine.schema(source)
+    source_columns = source_lineage(source_schema)
     group_plan = [
-        step(
-            "groupBy",
-            keys=["group"],
-            aggregations=[
-                {"column": "value", "operation": "sum", "alias": "total"},
-                {"column": "other", "operation": "mean", "alias": "average"},
-                {"column": "text", "operation": "count", "alias": "texts"},
-                {"column": "tags", "operation": "nUnique", "alias": "tag_sets"},
-            ],
+        bind_step(
+            step(
+                "groupBy",
+                keys=[{"id": "c:source:0", "name": "group"}],
+                aggregations=[
+                    {"column": {"id": "c:source:3", "name": "value"}, "operation": "sum", "alias": "total"},
+                    {"column": {"id": "c:source:4", "name": "other"}, "operation": "mean", "alias": "average"},
+                    {"column": {"id": "c:source:1", "name": "text"}, "operation": "count", "alias": "texts"},
+                    {"column": {"id": "c:source:2", "name": "tags"}, "operation": "nUnique", "alias": "tag_sets"},
+                ],
+            ),
+            source_schema,
+            source_columns,
         )
     ]
     example_plan = [
-        step(
-            "byExample",
-            sourceColumns=["group", "other"],
-            newColumn="label",
-            examples=[
-                {"inputs": {"group": "a", "other": 2}, "output": "a-2"},
-                {"inputs": {"group": "b", "other": 4}, "output": "b-4"},
-            ],
+        bind_step(
+            step(
+                "byExample",
+                sourceColumns=[
+                    {"id": "c:source:0", "name": "group"},
+                    {"id": "c:source:4", "name": "other"},
+                ],
+                newColumn="label",
+                examples=[
+                    {"inputs": ["a", 2], "output": "a-2"},
+                    {"inputs": ["b", 4], "output": "b-4"},
+                ],
+            ),
+            source_schema,
+            source_columns,
         )
     ]
     custom_plan = [step("customCode", code='result = df.filter("other > 2")')]
@@ -533,6 +548,122 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
     grouped = engine.apply_transform(source, group_plan[0])
     assert records(grouped)[0] == {"group": "a", "total": 4.0, "average": 2.5, "texts": 2, "tag_sets": 2}
     engine.close()
+
+
+def test_duckdb_grouping_treats_nan_as_missing_for_keys_and_aggregates() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (NULL::DOUBLE, NULL::DOUBLE),
+            ('NaN'::DOUBLE, 'NaN'::DOUBLE),
+            (1.0, 2.0),
+            (NULL::DOUBLE, NULL::DOUBLE),
+            ('NaN'::DOUBLE, 'NaN'::DOUBLE),
+            (1.0, 3.0)
+        ) AS source("key", "value")
+        """
+    )
+    value = bound_ref("c:source:1", "value", 1)
+    operation = bound_step(
+        "groupBy",
+        keys=[bound_ref("c:source:0", "key", 0)],
+        aggregations=[
+            {"column": value, "operation": "sum", "alias": "total"},
+            {"column": value, "operation": "mean", "alias": "average"},
+            {"column": value, "operation": "min", "alias": "minimum"},
+            {"column": value, "operation": "max", "alias": "maximum"},
+            {"column": value, "operation": "median", "alias": "middle"},
+            {"column": value, "operation": "count", "alias": "count"},
+            {"column": value, "operation": "nUnique", "alias": "unique"},
+            {"column": value, "operation": "first", "alias": "first"},
+            {"column": value, "operation": "last", "alias": "last"},
+        ],
+    )
+
+    try:
+        transformed = engine.apply_transform(frame, operation)
+        generated = execute_generated(engine, frame, [operation])
+
+        assert records(transformed) == [
+            {
+                "key": None,
+                "total": 0.0,
+                "average": None,
+                "minimum": None,
+                "maximum": None,
+                "middle": None,
+                "count": 0,
+                "unique": 0,
+                "first": None,
+                "last": None,
+            },
+            {
+                "key": 1.0,
+                "total": 5.0,
+                "average": 2.5,
+                "minimum": 2.0,
+                "maximum": 3.0,
+                "middle": 2.5,
+                "count": 2,
+                "unique": 2,
+                "first": 2.0,
+                "last": 3.0,
+            },
+        ]
+        assert_same_relation(transformed, generated)
+    finally:
+        engine.close()
+
+
+def test_duckdb_decimal_median_is_a_portable_float_and_matches_generated_code() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        "SELECT * FROM (VALUES "
+        "('a', 1.10::DECIMAL(10, 2)), "
+        "('a', 2.20::DECIMAL(10, 2)), "
+        "('b', NULL::DECIMAL(10, 2))) AS source(\"group\", value)"
+    )
+    operation = bound_step(
+        "groupBy",
+        keys=[bound_ref("c:source:0", "group", 0)],
+        aggregations=[
+            {
+                "column": bound_ref("c:source:1", "value", 1),
+                "operation": "median",
+                "alias": "middle",
+            }
+        ],
+    )
+
+    try:
+        transformed = engine.apply_transform(frame, operation)
+        generated = execute_generated(engine, frame, [operation])
+
+        assert records(transformed) == [
+            {"group": "a", "middle": pytest.approx(1.65)},
+            {"group": "b", "middle": None},
+        ]
+        assert str(transformed.types[1]) == "DOUBLE"
+        assert_same_relation(transformed, generated)
+    finally:
+        engine.close()
+
+
+def test_duckdb_column_values_break_equal_counts_by_display_text() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql("SELECT * FROM (VALUES ('Milan'), ('Berlin'), ('Milan'), ('Berlin'), ('Paris')) AS source(city)")
+
+    try:
+        values, has_more = engine.column_values(frame, "city")
+        assert values == [
+            {"value": "Berlin", "count": 2},
+            {"value": "Milan", "count": 2},
+            {"value": "Paris", "count": 1},
+        ]
+        assert has_more is False
+    finally:
+        engine.close()
 
 
 def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:

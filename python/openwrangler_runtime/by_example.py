@@ -15,6 +15,10 @@ class SynthesisError(ValueError):
 
 _DELIMITERS = (" ", "-", "_", "/", ".", ",", ":")
 _REGEX_PATTERNS = (r"(\d+)", r"([A-Za-z]+)", r"([A-Za-z0-9]+)")
+_ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
+_ASCII_TO_UPPER = str.maketrans(_ASCII_LOWER, _ASCII_UPPER)
 _DATE_FORMATS = (
     "%Y-%m-%d",
     "%d/%m/%Y",
@@ -29,67 +33,122 @@ _DATE_FORMATS = (
     "%Y",
     "%m/%Y",
 )
-_SCALAR_TYPES = (str, int, float, bool, type(None))
+MAX_SOURCE_COLUMNS = 16
+MAX_EXAMPLES = 64
+MAX_PROGRAM_NODES = 256
+MAX_CONCAT_PARTS = 64
+MAX_WARNINGS = 64
+MAX_BY_EXAMPLE_STRING_UTF8_BYTES = 8 * 1024
+MAX_BY_EXAMPLE_TEXT_UTF8_BYTES = 64 * 1024
 
 
 def normalize_by_example(params: Mapping[str, Any]) -> dict[str, Any]:
     source_columns = params.get("sourceColumns")
     new_column = params.get("newColumn")
     raw_examples = params.get("examples")
-    if (
-        not isinstance(source_columns, list | tuple)
-        or not source_columns
-        or not all(isinstance(item, str) and item for item in source_columns)
-    ):
-        raise SynthesisError("byExample.sourceColumns must be a non-empty array of column names.")
-    columns = [str(item) for item in source_columns]
+    if not isinstance(source_columns, list | tuple) or not source_columns or len(source_columns) > MAX_SOURCE_COLUMNS:
+        raise SynthesisError("byExample.sourceColumns must be a non-empty array of column references.")
+    columns = [
+        _column_reference(item, f"byExample.sourceColumns[{index}]") for index, item in enumerate(source_columns)
+    ]
+    identifiers = [column["id"] for column in columns]
+    if len(identifiers) != len(set(identifiers)):
+        raise SynthesisError("byExample.sourceColumns contains duplicate column identities.")
     if not isinstance(new_column, str) or not new_column:
         raise SynthesisError("byExample.newColumn must be a non-empty string.")
-    if not isinstance(raw_examples, list) or len(raw_examples) < 2:
-        raise SynthesisError("byExample.examples must contain at least two input/output examples.")
+    if not isinstance(raw_examples, list) or not 2 <= len(raw_examples) <= MAX_EXAMPLES:
+        raise SynthesisError(f"byExample.examples must contain between 2 and {MAX_EXAMPLES} input/output examples.")
+    supplied_warnings = params.get("warnings")
+    if "warnings" in params:
+        if not isinstance(supplied_warnings, list):
+            raise SynthesisError("byExample.warnings must be an array of strings.")
+        if len(supplied_warnings) > MAX_WARNINGS:
+            raise SynthesisError(f"byExample.warnings must contain at most {MAX_WARNINGS} strings.")
+        if not all(isinstance(item, str) for item in supplied_warnings):
+            raise SynthesisError("byExample.warnings must be an array of strings.")
 
     examples: list[dict[str, Any]] = []
-    for raw in raw_examples:
-        if not isinstance(raw, Mapping) or not isinstance(raw.get("inputs"), Mapping) or "output" not in raw:
-            raise SynthesisError("Each by-example item must contain an inputs object and output value.")
+    for index, raw in enumerate(raw_examples):
+        if not isinstance(raw, Mapping) or set(raw) != {"inputs", "output"}:
+            raise SynthesisError("Each by-example item must contain only inputs and output.")
         inputs = raw["inputs"]
-        if any(column not in inputs for column in columns):
-            raise SynthesisError("Every by-example input must contain all selected source columns.")
-        if any(not isinstance(inputs[column], _SCALAR_TYPES) for column in columns) or not isinstance(
-            raw["output"], _SCALAR_TYPES
-        ):
+        if not isinstance(inputs, list | tuple) or len(inputs) != len(columns):
+            raise SynthesisError(
+                f"byExample.examples[{index}].inputs must contain one value for every selected source column."
+            )
+        if any(not _is_json_scalar(value) for value in inputs) or not _is_json_scalar(raw["output"]):
             raise SynthesisError("By-example inputs and outputs must be JSON scalar values.")
-        examples.append(
-            {
-                "inputs": {column: inputs[column] for column in columns},
-                "output": raw["output"],
-            }
-        )
+        examples.append({"inputs": list(inputs), "output": raw["output"]})
 
+    saved_program: dict[str, Any] | None = None
     program = params.get("program")
-    warnings: list[str]
-    candidate_count: int
-    if program is None:
-        program, warnings, candidate_count = synthesize_program(columns, examples)
-    else:
-        if not isinstance(program, Mapping) or not _program_matches(program, examples, columns):
-            raise SynthesisError("The saved by-example program is invalid or no longer satisfies every example.")
-        raw_warnings = params.get("warnings", [])
-        warnings = [str(item) for item in raw_warnings] if isinstance(raw_warnings, list) else []
-        raw_count = params.get("candidateCount", 1)
-        candidate_count = raw_count if isinstance(raw_count, int) and raw_count > 0 else 1
+    if program is not None:
+        if not isinstance(program, Mapping):
+            raise SynthesisError("The saved by-example program must be an object.")
+        saved_program = _public_program(_internal_program(program, columns), columns)
 
-    return {
+    # Count and structural limits above intentionally run before this complete
+    # UTF-8 walk so oversized arrays and programs fail in bounded work.
+    _validate_text_budget(params)
+    selected_program, warnings, candidate_count = synthesize_program(columns, examples)
+    if (
+        not isinstance(warnings, list)
+        or len(warnings) > MAX_WARNINGS
+        or not all(isinstance(item, str) for item in warnings)
+    ):
+        raise SynthesisError(f"Generated by-example warnings must contain at most {MAX_WARNINGS} strings.")
+    if saved_program is not None and (
+        saved_program != selected_program or not _public_program_matches(saved_program, examples, columns)
+    ):
+        raise SynthesisError(
+            "The saved by-example program is not the deterministic program selected for these examples."
+        )
+    if "candidateCount" in params and (
+        isinstance(params["candidateCount"], bool)
+        or not isinstance(params["candidateCount"], int)
+        or params["candidateCount"] < 1
+    ):
+        raise SynthesisError("byExample.candidateCount must be a positive integer.")
+
+    normalized = {
         "sourceColumns": columns,
         "newColumn": new_column,
         "examples": examples,
-        "program": dict(program),
+        "program": selected_program,
         "warnings": warnings,
         "candidateCount": candidate_count,
     }
+    _validate_text_budget(normalized)
+    return normalized
 
 
 def synthesize_program(
+    source_columns: Sequence[Mapping[str, str]], examples: Sequence[Mapping[str, Any]]
+) -> tuple[dict[str, Any], list[str], int]:
+    if not isinstance(source_columns, list | tuple) or not 1 <= len(source_columns) <= MAX_SOURCE_COLUMNS:
+        raise SynthesisError(f"By-example synthesis requires between 1 and {MAX_SOURCE_COLUMNS} source columns.")
+    if not isinstance(examples, list | tuple) or not 2 <= len(examples) <= MAX_EXAMPLES:
+        raise SynthesisError(f"By-example synthesis requires between 2 and {MAX_EXAMPLES} examples.")
+    columns = [_column_reference(column, f"sourceColumns[{index}]") for index, column in enumerate(source_columns)]
+    identifiers = [column["id"] for column in columns]
+    if len(identifiers) != len(set(identifiers)):
+        raise SynthesisError("By-example source columns must contain unique stable identities.")
+    internal_examples = _internal_examples(examples, identifiers)
+    _validate_text_budget({"sourceColumns": columns, "examples": examples})
+    program, warnings, candidate_count = _synthesize_program_ids(identifiers, internal_examples)
+    public_program = _public_program(program, columns)
+    _validate_text_budget(
+        {
+            "sourceColumns": columns,
+            "examples": examples,
+            "program": public_program,
+            "warnings": warnings,
+        }
+    )
+    return public_program, warnings, candidate_count
+
+
+def _synthesize_program_ids(
     source_columns: Sequence[str], examples: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, Any], list[str], int]:
     candidates: dict[str, tuple[int, dict[str, Any]]] = {}
@@ -137,7 +196,73 @@ def synthesize_program(
     return best, warnings, len(ranked)
 
 
-def evaluate_program(program: Mapping[str, Any], inputs: Mapping[str, Any], source_columns: Sequence[str]) -> Any:
+def evaluate_program(
+    program: Mapping[str, Any],
+    inputs: Sequence[Any],
+    source_columns: Sequence[Mapping[str, str]],
+) -> Any:
+    if not isinstance(source_columns, list | tuple) or len(source_columns) > MAX_SOURCE_COLUMNS:
+        raise SynthesisError(f"By-example evaluation accepts at most {MAX_SOURCE_COLUMNS} source columns.")
+    if not isinstance(inputs, list | tuple) or len(inputs) != len(source_columns):
+        raise SynthesisError("By-example inputs must contain one value for every selected source column.")
+    columns = [_column_reference(column, f"sourceColumns[{index}]") for index, column in enumerate(source_columns)]
+    identifiers = [column["id"] for column in columns]
+    internal = _internal_program(program, columns)
+    _validate_text_budget({"program": program, "inputs": inputs, "sourceColumns": columns})
+    values = dict(zip(identifiers, inputs, strict=True))
+    return _evaluate_program_ids(internal, values, identifiers)
+
+
+def _validate_text_budget(value: Any) -> None:
+    total_bytes = 0
+    active_containers: set[int] = set()
+
+    def visit(item: Any, depth: int) -> None:
+        nonlocal total_bytes
+        if depth > 128:
+            raise SynthesisError("By-example parameters are nested too deeply.")
+        if isinstance(item, str):
+            try:
+                byte_length = len(item.encode("utf-8", errors="strict"))
+            except UnicodeEncodeError as error:
+                raise SynthesisError("By-example text must contain valid Unicode without lone surrogates.") from error
+            if byte_length > MAX_BY_EXAMPLE_STRING_UTF8_BYTES:
+                raise SynthesisError(
+                    f"Each by-example text value must be at most {MAX_BY_EXAMPLE_STRING_UTF8_BYTES:,} UTF-8 bytes."
+                )
+            total_bytes += byte_length
+            if total_bytes > MAX_BY_EXAMPLE_TEXT_UTF8_BYTES:
+                raise SynthesisError(
+                    "By-example text must total at most "
+                    f"{MAX_BY_EXAMPLE_TEXT_UTF8_BYTES:,} UTF-8 bytes across all values."
+                )
+            return
+        if isinstance(item, Mapping):
+            identifier = id(item)
+            if identifier in active_containers:
+                raise SynthesisError("By-example parameters must not contain cyclic values.")
+            active_containers.add(identifier)
+            try:
+                for nested in item.values():
+                    visit(nested, depth + 1)
+            finally:
+                active_containers.remove(identifier)
+            return
+        if isinstance(item, list | tuple):
+            identifier = id(item)
+            if identifier in active_containers:
+                raise SynthesisError("By-example parameters must not contain cyclic values.")
+            active_containers.add(identifier)
+            try:
+                for nested in item:
+                    visit(nested, depth + 1)
+            finally:
+                active_containers.remove(identifier)
+
+    visit(value, 0)
+
+
+def _evaluate_program_ids(program: Mapping[str, Any], inputs: Mapping[str, Any], source_columns: Sequence[str]) -> Any:
     kind = program.get("kind")
     if kind == "column":
         column = program.get("column")
@@ -146,18 +271,24 @@ def evaluate_program(program: Mapping[str, Any], inputs: Mapping[str, Any], sour
         return inputs[column]
     if kind == "literal":
         value = program.get("value")
-        if not isinstance(value, _SCALAR_TYPES):
+        if not _is_json_scalar(value):
             raise SynthesisError("By-example literal must be a JSON scalar.")
         return value
     if kind == "slice":
-        value = str(evaluate_program(_child(program, "input"), inputs, source_columns))
+        raw_value = _evaluate_program_ids(_child(program, "input"), inputs, source_columns)
+        if raw_value is None:
+            return None
+        value = str(raw_value)
         start = _integer(program, "start")
         stop = program.get("stop")
         if stop is not None and not isinstance(stop, int):
             raise SynthesisError("Slice stop must be an integer or null.")
         return value[start:stop]
     if kind == "split":
-        value = str(evaluate_program(_child(program, "input"), inputs, source_columns))
+        raw_value = _evaluate_program_ids(_child(program, "input"), inputs, source_columns)
+        if raw_value is None:
+            return None
+        value = str(raw_value)
         delimiter = _string(program, "delimiter")
         index = _integer(program, "index")
         parts = value.split(delimiter)
@@ -166,31 +297,45 @@ def evaluate_program(program: Mapping[str, Any], inputs: Mapping[str, Any], sour
         parts = program.get("parts")
         if not isinstance(parts, list) or not parts:
             raise SynthesisError("Concat requires at least one part.")
-        return "".join(str(evaluate_program(_mapping(part), inputs, source_columns)) for part in parts)
+        values = [_evaluate_program_ids(_mapping(part), inputs, source_columns) for part in parts]
+        return None if any(value is None for value in values) else "".join(str(value) for value in values)
     if kind == "regexExtract":
-        value = str(evaluate_program(_child(program, "input"), inputs, source_columns))
+        raw_value = _evaluate_program_ids(_child(program, "input"), inputs, source_columns)
+        if raw_value is None:
+            return None
+        value = str(raw_value)
         match = re.search(_string(program, "pattern"), value)
         group = _integer(program, "group")
         return match.group(group) if match else None
     if kind == "regexReplace":
-        value = str(evaluate_program(_child(program, "input"), inputs, source_columns))
-        return re.sub(_string(program, "pattern"), _string(program, "replacement"), value)
+        raw_value = _evaluate_program_ids(_child(program, "input"), inputs, source_columns)
+        if raw_value is None:
+            return None
+        value = str(raw_value)
+        replacement = _string(program, "replacement")
+        return re.sub(_string(program, "pattern"), lambda _match: replacement, value)
     if kind == "case":
-        value = str(evaluate_program(_child(program, "input"), inputs, source_columns))
+        raw_value = _evaluate_program_ids(_child(program, "input"), inputs, source_columns)
+        if raw_value is None:
+            return None
+        value = str(raw_value)
         style = program.get("style")
         if style == "lower":
-            return value.lower()
+            return value.translate(_ASCII_TO_LOWER)
         if style == "upper":
-            return value.upper()
+            return value.translate(_ASCII_TO_UPPER)
         if style == "capitalize":
-            return value.capitalize()
+            return value[:1].translate(_ASCII_TO_UPPER) + value[1:].translate(_ASCII_TO_LOWER) if value else value
         raise SynthesisError("Unsupported by-example case style.")
     if kind == "datetimeFormat":
-        value = str(evaluate_program(_child(program, "input"), inputs, source_columns))
+        raw_value = _evaluate_program_ids(_child(program, "input"), inputs, source_columns)
+        if raw_value is None:
+            return None
+        value = str(raw_value)
         return datetime.strptime(value, _string(program, "inputFormat")).strftime(_string(program, "outputFormat"))
     if kind == "arithmetic":
-        left = _number(evaluate_program(_child(program, "left"), inputs, source_columns))
-        right = _number(evaluate_program(_child(program, "right"), inputs, source_columns))
+        left = _number(_evaluate_program_ids(_child(program, "left"), inputs, source_columns))
+        right = _number(_evaluate_program_ids(_child(program, "right"), inputs, source_columns))
         operator = program.get("operator")
         if operator == "add":
             return left + right
@@ -205,7 +350,10 @@ def evaluate_program(program: Mapping[str, Any], inputs: Mapping[str, Any], sour
 
 
 def _add_slice_candidates(add, column: str, examples: Sequence[Mapping[str, Any]]) -> None:
-    value = str(examples[0]["inputs"][column])[:128]
+    raw_value = examples[0]["inputs"][column]
+    if raw_value is None:
+        return
+    value = str(raw_value)[:128]
     output = str(examples[0]["output"])
     base = {"kind": "column", "column": column}
     for start in range(len(value) + 1):
@@ -227,6 +375,8 @@ def _add_regex_candidates(add, column: str, examples: Sequence[Mapping[str, Any]
         add({"kind": "regexExtract", "input": base, "pattern": pattern, "group": 1}, 3)
     replacements = []
     for example in examples:
+        if example["inputs"][column] is None or example["output"] is None:
+            return
         before = str(example["inputs"][column])
         after = str(example["output"])
         prefix = 0
@@ -276,12 +426,18 @@ def _add_constant_arithmetic_candidates(add, column: str, examples: Sequence[Map
     if not _is_number(first_input) or not _is_number(first_output):
         return
     base = {"kind": "column", "column": column}
-    add(_arithmetic(base, "add", _literal(float(first_output) - float(first_input))), 2)
-    add(_arithmetic(base, "subtract", _literal(float(first_input) - float(first_output))), 2)
-    if float(first_input) != 0:
-        add(_arithmetic(base, "multiply", _literal(float(first_output) / float(first_input))), 2)
-    if float(first_output) != 0:
-        add(_arithmetic(base, "divide", _literal(float(first_input) / float(first_output))), 2)
+    add_delta = first_output - first_input
+    subtract_delta = first_input - first_output
+    if _is_number(add_delta):
+        add(_arithmetic(base, "add", _literal(add_delta)), 2)
+    if _is_number(subtract_delta):
+        add(_arithmetic(base, "subtract", _literal(subtract_delta)), 2)
+    multiply_factor = _numeric_ratio(first_output, first_input)
+    if multiply_factor is not None:
+        add(_arithmetic(base, "multiply", _literal(multiply_factor)), 2)
+    divide_factor = _numeric_ratio(first_input, first_output)
+    if divide_factor is not None:
+        add(_arithmetic(base, "divide", _literal(divide_factor)), 2)
 
 
 def _add_column_arithmetic_candidates(add, source_columns: Sequence[str]) -> None:
@@ -313,6 +469,8 @@ def _add_concat_candidates(add, source_columns: Sequence[str], examples: Sequenc
 
 
 def _concat_literals(columns: Sequence[str], example: Mapping[str, Any]) -> list[str] | None:
+    if example["output"] is None or any(example["inputs"][column] is None for column in columns):
+        return None
     output = str(example["output"])
     cursor = 0
     literals = []
@@ -332,17 +490,200 @@ def _program_matches(
 ) -> bool:
     try:
         return all(
-            _equal(evaluate_program(program, example["inputs"], source_columns), example["output"])
+            _equal(_evaluate_program_ids(program, example["inputs"], source_columns), example["output"])
             for example in examples
         )
-    except (SynthesisError, ValueError, TypeError, ZeroDivisionError, IndexError, re.error):
+    except (SynthesisError, ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, re.error):
         return False
 
 
+def _public_program_matches(
+    program: Mapping[str, Any],
+    examples: Sequence[Mapping[str, Any]],
+    source_columns: Sequence[Mapping[str, str]],
+) -> bool:
+    try:
+        return all(
+            _equal(evaluate_program(program, example["inputs"], source_columns), example["output"])
+            for example in examples
+        )
+    except (SynthesisError, ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, re.error):
+        return False
+
+
+def _column_reference(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != {"id", "name"}:
+        raise SynthesisError(f"{label} must be a column reference containing only id and name.")
+    identifier = value.get("id")
+    name = value.get("name")
+    if not isinstance(identifier, str) or not identifier or not isinstance(name, str):
+        raise SynthesisError(f"{label} must contain a non-empty id and string name.")
+    return {"id": identifier, "name": name}
+
+
+def _internal_examples(
+    examples: Sequence[Mapping[str, Any]], source_identifiers: Sequence[str]
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for index, example in enumerate(examples):
+        if not isinstance(example, Mapping) or set(example) != {"inputs", "output"}:
+            raise SynthesisError(f"examples[{index}] must contain only inputs and output.")
+        inputs = example["inputs"]
+        if not isinstance(inputs, list | tuple) or len(inputs) != len(source_identifiers):
+            raise SynthesisError(f"examples[{index}].inputs must align with every source column.")
+        if any(not _is_json_scalar(value) for value in inputs) or not _is_json_scalar(example["output"]):
+            raise SynthesisError("By-example inputs and outputs must be JSON scalar values.")
+        normalized.append(
+            {
+                "inputs": dict(zip(source_identifiers, inputs, strict=True)),
+                "output": example["output"],
+            }
+        )
+    return normalized
+
+
+def _internal_program(
+    program: Mapping[str, Any],
+    source_columns: Sequence[Mapping[str, str]],
+    depth: int = 0,
+    budget: list[int] | None = None,
+) -> dict[str, Any]:
+    if budget is None:
+        budget = [MAX_PROGRAM_NODES]
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise SynthesisError(f"By-example programs may contain at most {MAX_PROGRAM_NODES} nodes.")
+    if depth > 64 or not isinstance(program, Mapping):
+        raise SynthesisError("By-example programs must be objects no deeper than 64 levels.")
+    kind = program.get("kind")
+    source_by_id = {column["id"]: column["name"] for column in source_columns}
+
+    def exact(required: set[str], optional: set[str] | None = None) -> None:
+        fields = set(program)
+        allowed = required | (optional or set())
+        if fields != required and not (required <= fields <= allowed):
+            raise SynthesisError(f"Invalid fields for by-example {kind!r} program.")
+
+    def nested(key: str) -> dict[str, Any]:
+        child = program.get(key)
+        if not isinstance(child, Mapping):
+            raise SynthesisError(f"By-example {kind!r}.{key} must be a program object.")
+        return _internal_program(child, source_columns, depth + 1, budget)
+
+    if kind == "column":
+        exact({"kind", "column"})
+        reference = _column_reference(program.get("column"), "By-example program column")
+        if source_by_id.get(reference["id"]) != reference["name"]:
+            raise SynthesisError("By-example program references an unavailable or stale source column.")
+        return {"kind": "column", "column": reference["id"]}
+    if kind == "literal":
+        exact({"kind", "value"})
+        value = program.get("value")
+        if not _is_json_scalar(value):
+            raise SynthesisError("By-example literal must be a JSON scalar.")
+        return {"kind": "literal", "value": value}
+    if kind == "slice":
+        exact({"kind", "input", "start"}, {"stop"})
+        start = program.get("start")
+        stop = program.get("stop")
+        if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+            raise SynthesisError("By-example slice start must be a non-negative integer.")
+        if stop is not None and (isinstance(stop, bool) or not isinstance(stop, int) or stop < start):
+            raise SynthesisError("By-example slice stop must be null or an integer no smaller than start.")
+        result: dict[str, Any] = {"kind": "slice", "input": nested("input"), "start": start}
+        if "stop" in program:
+            result["stop"] = stop
+        return result
+    if kind == "split":
+        exact({"kind", "input", "delimiter", "index"})
+        delimiter = program.get("delimiter")
+        index = program.get("index")
+        if not isinstance(delimiter, str) or isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise SynthesisError("By-example split requires a string delimiter and non-negative integer index.")
+        return {"kind": "split", "input": nested("input"), "delimiter": delimiter, "index": index}
+    if kind == "concat":
+        exact({"kind", "parts"})
+        parts = program.get("parts")
+        if (
+            not isinstance(parts, list)
+            or not 1 <= len(parts) <= MAX_CONCAT_PARTS
+            or not all(isinstance(part, Mapping) for part in parts)
+        ):
+            raise SynthesisError(f"By-example concat requires between 1 and {MAX_CONCAT_PARTS} program parts.")
+        return {
+            "kind": "concat",
+            "parts": [_internal_program(part, source_columns, depth + 1, budget) for part in parts],
+        }
+    if kind == "regexExtract":
+        exact({"kind", "input", "pattern", "group"})
+        pattern = program.get("pattern")
+        group = program.get("group")
+        if not isinstance(pattern, str) or isinstance(group, bool) or not isinstance(group, int):
+            raise SynthesisError("By-example regex extraction requires a string pattern and integer group.")
+        return {"kind": kind, "input": nested("input"), "pattern": pattern, "group": group}
+    if kind == "regexReplace":
+        exact({"kind", "input", "pattern", "replacement"})
+        pattern = program.get("pattern")
+        replacement = program.get("replacement")
+        if not isinstance(pattern, str) or not isinstance(replacement, str):
+            raise SynthesisError("By-example regex replacement requires string pattern and replacement values.")
+        return {"kind": kind, "input": nested("input"), "pattern": pattern, "replacement": replacement}
+    if kind == "case":
+        exact({"kind", "style", "input"})
+        style = program.get("style")
+        if style not in {"lower", "upper", "capitalize"}:
+            raise SynthesisError("Unsupported by-example case style.")
+        return {"kind": "case", "style": style, "input": nested("input")}
+    if kind == "datetimeFormat":
+        exact({"kind", "input", "inputFormat", "outputFormat"})
+        input_format = program.get("inputFormat")
+        output_format = program.get("outputFormat")
+        if not isinstance(input_format, str) or not isinstance(output_format, str):
+            raise SynthesisError("By-example datetime formats must be strings.")
+        return {
+            "kind": kind,
+            "input": nested("input"),
+            "inputFormat": input_format,
+            "outputFormat": output_format,
+        }
+    if kind == "arithmetic":
+        exact({"kind", "left", "operator", "right"})
+        operator = program.get("operator")
+        if operator not in {"add", "subtract", "multiply", "divide"}:
+            raise SynthesisError("Unsupported by-example arithmetic operator.")
+        return {"kind": kind, "left": nested("left"), "operator": operator, "right": nested("right")}
+    raise SynthesisError(f"Unsupported by-example program kind: {kind!r}.")
+
+
+def _public_program(program: Mapping[str, Any], source_columns: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+    kind = program.get("kind")
+    if kind == "column":
+        identifier = program.get("column")
+        reference = next((column for column in source_columns if column["id"] == identifier), None)
+        if reference is None:
+            raise SynthesisError("By-example program references an unavailable source column identity.")
+        return {"kind": "column", "column": dict(reference)}
+    result = dict(program)
+    for key in ("input", "left", "right"):
+        if key in result:
+            result[key] = _public_program(_mapping(result[key]), source_columns)
+    if "parts" in result:
+        result["parts"] = [_public_program(_mapping(part), source_columns) for part in result["parts"]]
+    return result
+
+
 def _equal(left: Any, right: Any) -> bool:
-    if _is_number(left) and _is_number(right):
-        return math.isclose(float(left), float(right), rel_tol=1e-9, abs_tol=1e-9)
-    return left == right or str(left) == str(right)
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, int) and isinstance(right, int):
+        return left == right
+    if isinstance(left, int) and isinstance(right, float):
+        return math.isfinite(right) and left == right
+    if isinstance(left, float) and isinstance(right, int):
+        return math.isfinite(left) and left == right
+    if isinstance(left, float) and isinstance(right, float):
+        return math.isfinite(left) and math.isfinite(right) and math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+    return type(left) is type(right) and left == right
 
 
 def _arithmetic(left: dict[str, Any], operator: str, right: dict[str, Any]) -> dict[str, Any]:
@@ -377,14 +718,32 @@ def _integer(program: Mapping[str, Any], key: str) -> int:
     return value
 
 
-def _number(value: Any) -> float:
+def _number(value: Any) -> int | float:
     if not _is_number(value):
         raise SynthesisError("By-example arithmetic inputs must be numeric.")
-    return float(value)
+    return value
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(float(value))
+    return (isinstance(value, int) and not isinstance(value, bool)) or (
+        isinstance(value, float) and math.isfinite(value)
+    )
+
+
+def _numeric_ratio(numerator: int | float, denominator: int | float) -> int | float | None:
+    if denominator == 0:
+        return None
+    if isinstance(numerator, int) and isinstance(denominator, int) and numerator % denominator == 0:
+        return numerator // denominator
+    try:
+        result = numerator / denominator
+    except OverflowError:
+        return None
+    return result if _is_number(result) else None
+
+
+def _is_json_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, str | bool | int) or (isinstance(value, float) and math.isfinite(value))
 
 
 def _is_string_list(value: Any) -> bool:

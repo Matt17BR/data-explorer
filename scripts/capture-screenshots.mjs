@@ -142,11 +142,11 @@ example_draft = example_manager.preview_step(
         "id": "uppercase-example",
         "kind": "byExample",
         "params": {
-            "sourceColumns": ["value"],
+            "sourceColumns": [{"id": "c:source:0", "name": "value"}],
             "newColumn": "upper",
             "examples": [
-                {"inputs": {"value": "a"}, "output": "A"},
-                {"inputs": {"value": "b"}, "output": "B"},
+                {"inputs": ["a"], "output": "A"},
+                {"inputs": ["b"], "output": "B"},
             ],
         },
     },
