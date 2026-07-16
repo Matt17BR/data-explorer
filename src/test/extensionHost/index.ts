@@ -1021,6 +1021,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
       "duplicate_frame = pd.DataFrame([[2, 10.26, 'a', 'red', 'x', '2024-01-02', '2020-05-06'], [1, 20.74, 'b', 'blue', 'y', '2024-02-03', '2021-06-07'], [2, 10.26, 'c', 'red', 'z', '2024-03-04', '2022-07-08'], [2, None, 'd', 'green', 'x', '2024-04-05', '2023-08-09']], columns=['duplicate', 'duplicate', 7, 'category', 'category', 'when', 'when'])",
       "duplicate_frame_source = duplicate_frame.copy(deep=True)",
+      "structural_frame = duplicate_frame.copy(deep=True)",
+      "structural_frame_source = structural_frame.copy(deep=True)",
       "identity_frame = duplicate_frame.copy(deep=True)",
       "identity_frame.iloc[:, 2] = ['alpha', 'bravo', 'charlie', 'delta']",
       "identity_frame_source = identity_frame.copy(deep=True)",
@@ -1441,6 +1443,378 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /\bTrue\b/u,
       "Cleaning steps must not mutate the originating notebook dataframe."
     );
+
+    await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
+      variableName: "structural_frame",
+      notebookUri: notebook.uri
+    });
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.variableName === "structural_frame",
+      30_000,
+      "the packaged structural duplicate-column Pandas notebook variable session"
+    );
+    active = testing.activeSession();
+    assert.equal(active?.metadata.backend, "pandas");
+    if (!active) throw new Error("Structural duplicate-column Pandas session did not become active.");
+    const structuralSessionId = active.sessionId;
+    const structuralFirstDuplicate = columnReferenceAt(active.metadata, 0);
+    const structuralSecondDuplicate = columnReferenceAt(active.metadata, 1);
+    const structuralIntegerLabel = columnReferenceAt(active.metadata, 2);
+    const structuralFirstCategory = columnReferenceAt(active.metadata, 3);
+    const structuralSecondCategory = columnReferenceAt(active.metadata, 4);
+    const structuralFirstDatetime = columnReferenceAt(active.metadata, 5);
+    const structuralSecondDatetime = columnReferenceAt(active.metadata, 6);
+    assert.equal(structuralFirstDuplicate.name, "duplicate");
+    assert.equal(structuralSecondDuplicate.name, "duplicate");
+    assert.notEqual(
+      structuralFirstDuplicate.id,
+      structuralSecondDuplicate.id,
+      "Structural acceptance requires independently addressable duplicate labels."
+    );
+    assert.equal(structuralIntegerLabel.name, "7");
+
+    const structuralRenamedFirst = {
+      id: structuralFirstDuplicate.id,
+      name: "renamed_first"
+    } as const;
+    const structuralSteps: TransformStep[] = [
+      {
+        id: "structural-select-reordered",
+        kind: "selectColumns",
+        params: {
+          columns: [
+            structuralSecondDuplicate,
+            structuralIntegerLabel,
+            structuralFirstDuplicate,
+            structuralSecondCategory,
+            structuralFirstCategory,
+            structuralSecondDatetime,
+            structuralFirstDatetime
+          ]
+        }
+      },
+      {
+        id: "structural-clone-second",
+        kind: "cloneColumn",
+        params: { column: structuralSecondDuplicate, newName: "second_copy" }
+      },
+      {
+        id: "structural-cast-first",
+        kind: "castColumn",
+        params: { column: structuralFirstDuplicate, dtype: "float" }
+      },
+      {
+        id: "structural-formula-duplicates",
+        kind: "formula",
+        params: {
+          leftColumn: structuralFirstDuplicate,
+          operator: "add",
+          rightColumn: structuralSecondDuplicate,
+          newColumn: "combined"
+        }
+      },
+      {
+        id: "structural-text-length-integer",
+        kind: "textLength",
+        params: { column: structuralIntegerLabel, newColumn: "label_length" }
+      },
+      {
+        id: "structural-drop-second-duplicate",
+        kind: "dropColumns",
+        params: { columns: [structuralSecondDuplicate] }
+      },
+      {
+        id: "structural-rename-first-duplicate",
+        kind: "renameColumn",
+        params: { column: structuralFirstDuplicate, newName: structuralRenamedFirst.name }
+      }
+    ];
+    const structuralCodeMarkers = [
+      /df = df\.iloc\[:, \[1, 2, 0, 4, 3, 6, 5\]\]\.copy\(\)/u,
+      /df = pd\.concat\(\[df, df\.iloc\[:, 0\]\.rename\('second_copy'\)\], axis=1\)/u,
+      /df\.isetitem\(2, df\.iloc\[:, 2\]\.astype\('Float64'\)\)/u,
+      /df = pd\.concat\(\[df, \(df\.iloc\[:, 2\] \+ df\.iloc\[:, 0\]\)\.rename\('combined'\)\], axis=1\)/u,
+      /df = pd\.concat\(\[df, df\.iloc\[:, 1\]\.astype\('string'\)\.str\.len\(\)\.rename\('label_length'\)\], axis=1\)/u,
+      /df = df\.iloc\[:, \[position for position in range\(df\.shape\[1\]\) if position not in \[0\]\]\]\.copy\(\)/u,
+      /_columns_6\[1\] = 'renamed_first'/u
+    ] as const;
+    const secondDuplicateCells = [
+      { kind: "number", raw: 10.26, display: "10.26", isNull: false, isNaN: false },
+      { kind: "number", raw: 20.74, display: "20.74", isNull: false, isNaN: false },
+      { kind: "number", raw: 10.26, display: "10.26", isNull: false, isNaN: false },
+      { kind: "nan", raw: null, display: "NaN", isNull: false, isNaN: true }
+    ] as const;
+    const castDuplicateCells = [
+      { kind: "number", raw: 2, display: "2.0", isNull: false, isNaN: false },
+      { kind: "number", raw: 1, display: "1.0", isNull: false, isNaN: false },
+      { kind: "number", raw: 2, display: "2.0", isNull: false, isNaN: false },
+      { kind: "number", raw: 2, display: "2.0", isNull: false, isNaN: false }
+    ] as const;
+    const combinedCells = [
+      { kind: "number", raw: 12.26, display: "12.26", isNull: false, isNaN: false },
+      { kind: "number", raw: 21.74, display: "21.74", isNull: false, isNaN: false },
+      { kind: "number", raw: 12.26, display: "12.26", isNull: false, isNaN: false },
+      { kind: "null", raw: null, display: "", isNull: true, isNaN: false }
+    ] as const;
+    const lengthCells = ["a", "b", "c", "d"].map(() => ({
+      kind: "integer" as const,
+      raw: 1,
+      display: "1",
+      isNull: false,
+      isNaN: false
+    }));
+    const integerLabelCells = ["a", "b", "c", "d"].map((value) => ({
+      kind: "string" as const,
+      raw: value,
+      display: value,
+      isNull: false,
+      isNaN: false
+    }));
+
+    let structuralRevision = active.metadata.revision;
+    let structuralMetadata = active.metadata;
+    let structuralPage: GridPage | undefined;
+    let structuralClone: ColumnReference | undefined;
+    let structuralCombined: ColumnReference | undefined;
+    let structuralLength: ColumnReference | undefined;
+    for (const [index, step] of structuralSteps.entries()) {
+      const structuralPreview = await testing.request({
+        kind: "previewStep",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: structuralSessionId,
+        revision: structuralRevision,
+        step,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(structuralPreview.kind, "stepPreview", `Packaged ${step.kind} must preview structural labels.`);
+      if (structuralPreview.kind !== "stepPreview") {
+        throw new Error(`Packaged ${step.kind} structural preview did not resolve.`);
+      }
+      assert.match(
+        structuralPreview.code,
+        structuralCodeMarkers[index],
+        `${step.kind} generated code must use the exact position after the preceding lineage changes.`
+      );
+      assert.doesNotMatch(
+        structuralPreview.code,
+        /df\[['"]duplicate['"]\]/u,
+        `${step.kind} generated code must not fall back to an ambiguous duplicate label.`
+      );
+      assert.doesNotMatch(
+        JSON.stringify(structuralPreview.metadata.draftStep),
+        /"position"\s*:/u,
+        "Private structural bindings must not leak into the public draft."
+      );
+      assert.deepEqual(
+        structuralPreview.metadata.draftStep,
+        step,
+        "Structural previews must preserve the submitted public stable references verbatim."
+      );
+
+      if (step.kind === "selectColumns") {
+        assert.deepEqual(
+          structuralPreview.metadata.schema.map(({ id, name, position }) => ({ id, name, position })),
+          [
+            { ...structuralSecondDuplicate, position: 0 },
+            { ...structuralIntegerLabel, position: 1 },
+            { ...structuralFirstDuplicate, position: 2 },
+            { ...structuralSecondCategory, position: 3 },
+            { ...structuralFirstCategory, position: 4 },
+            { ...structuralSecondDatetime, position: 5 },
+            { ...structuralFirstDatetime, position: 6 }
+          ],
+          "Select Columns must reorder duplicate and non-string identities before later operations bind them."
+        );
+        assert.deepEqual(gridColumnCells(structuralPreview.page, structuralSecondDuplicate.id), secondDuplicateCells);
+        assert.deepEqual(gridColumnCells(structuralPreview.page, structuralIntegerLabel.id), integerLabelCells);
+      } else if (step.kind === "cloneColumn") {
+        const clone = columnReference(structuralPreview.metadata, "second_copy");
+        assert.equal(clone.id, `c:step:${step.id}:0`);
+        assert.deepEqual(gridColumnCells(structuralPreview.page, clone.id), secondDuplicateCells);
+        assert.equal(structuralPreview.metadata.schema.at(-1)?.id, clone.id);
+      } else if (step.kind === "castColumn") {
+        assert.deepEqual(gridColumnCells(structuralPreview.page, structuralFirstDuplicate.id), castDuplicateCells);
+        assert.deepEqual(
+          gridColumnCells(structuralPreview.page, structuralSecondDuplicate.id),
+          secondDuplicateCells,
+          "Casting the first duplicate must not change its same-named neighbor."
+        );
+      } else if (step.kind === "formula") {
+        const combined = columnReference(structuralPreview.metadata, "combined");
+        assert.equal(combined.id, `c:step:${step.id}:0`);
+        assert.deepEqual(gridColumnCells(structuralPreview.page, combined.id), combinedCells);
+        assert.equal(structuralPreview.metadata.schema.at(-1)?.id, combined.id);
+      } else if (step.kind === "textLength") {
+        const length = columnReference(structuralPreview.metadata, "label_length");
+        assert.equal(length.id, `c:step:${step.id}:0`);
+        assert.deepEqual(gridColumnCells(structuralPreview.page, length.id), lengthCells);
+        assert.equal(structuralPreview.metadata.schema.at(-1)?.id, length.id);
+      } else if (step.kind === "dropColumns") {
+        assert.equal(
+          structuralPreview.metadata.schema.some((column) => column.id === structuralSecondDuplicate.id),
+          false,
+          "Drop Columns must remove only the exact reordered second duplicate identity."
+        );
+        assert.ok(
+          structuralPreview.metadata.schema.some((column) => column.id === structuralFirstDuplicate.id),
+          "Drop Columns must retain the same-named first duplicate."
+        );
+      } else if (step.kind === "renameColumn") {
+        const renamed = structuralPreview.metadata.schema.find((column) => column.id === structuralFirstDuplicate.id);
+        assert.ok(renamed, "Rename Column must preserve the surviving duplicate identity.");
+        assert.equal(renamed.name, structuralRenamedFirst.name);
+        assert.equal(renamed.position, 1, "Rename Column must bind after select and drop shifted the input twice.");
+      }
+
+      const structuralApplied = await testing.request({
+        kind: "applyDraft",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: structuralSessionId,
+        revision: structuralPreview.revision,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(structuralApplied.kind, "planUpdated", `Packaged ${step.kind} must apply structural labels.`);
+      if (structuralApplied.kind !== "planUpdated") {
+        throw new Error(`Packaged ${step.kind} structural apply did not resolve.`);
+      }
+      assert.equal(structuralApplied.metadata.steps.length, index + 1);
+      assert.deepEqual(
+        structuralApplied.metadata.steps,
+        structuralSteps.slice(0, index + 1),
+        "Applied structural plans must preserve every submitted public stable reference verbatim."
+      );
+      assert.deepEqual(
+        structuralApplied.metadata.schema,
+        structuralPreview.metadata.schema,
+        "Applying a structural preview must publish the exact previewed schema atomically."
+      );
+      assert.deepEqual(
+        structuralApplied.page,
+        structuralPreview.page,
+        "Applying a structural preview must publish the exact previewed typed page atomically."
+      );
+      assert.doesNotMatch(
+        JSON.stringify(structuralApplied.metadata.steps),
+        /"position"\s*:/u,
+        "Applied structural steps must remain position-free at the public boundary."
+      );
+      structuralRevision = structuralApplied.revision;
+      structuralMetadata = structuralApplied.metadata;
+      structuralPage = structuralApplied.page;
+      if (step.kind === "cloneColumn") {
+        structuralClone = columnReference(structuralApplied.metadata, "second_copy");
+      } else if (step.kind === "formula") {
+        structuralCombined = columnReference(structuralApplied.metadata, "combined");
+      } else if (step.kind === "textLength") {
+        structuralLength = columnReference(structuralApplied.metadata, "label_length");
+      }
+    }
+
+    assert.ok(structuralPage, "The structural plan must publish its final typed page.");
+    assert.ok(structuralClone, "Clone Column must publish deterministic output lineage.");
+    assert.ok(structuralCombined, "Formula must publish deterministic output lineage.");
+    assert.ok(structuralLength, "Text Length must publish deterministic output lineage.");
+    assert.deepEqual(
+      structuralMetadata.schema.map(({ id, name, position }) => ({ id, name, position })),
+      [
+        { ...structuralIntegerLabel, position: 0 },
+        { ...structuralRenamedFirst, position: 1 },
+        { ...structuralSecondCategory, position: 2 },
+        { ...structuralFirstCategory, position: 3 },
+        { ...structuralSecondDatetime, position: 4 },
+        { ...structuralFirstDatetime, position: 5 },
+        { ...structuralClone, position: 6 },
+        { ...structuralCombined, position: 7 },
+        { ...structuralLength, position: 8 }
+      ]
+    );
+    assert.deepEqual(gridColumnCells(structuralPage, structuralLength.id), lengthCells);
+    assert.deepEqual(gridColumnCells(structuralPage, structuralIntegerLabel.id), integerLabelCells);
+    assert.deepEqual(gridColumnCells(structuralPage, structuralRenamedFirst.id), castDuplicateCells);
+    assert.deepEqual(gridColumnCells(structuralPage, structuralCombined.id), combinedCells);
+    assert.deepEqual(gridColumnCells(structuralPage, structuralClone.id), secondDuplicateCells);
+    const structuralSourceBeforeRestart = await jupyter.testing.execute(
+      notebook.uri,
+      "print(structural_frame.equals(structural_frame_source))"
+    );
+    assert.match(
+      structuralSourceBeforeRestart,
+      /\bTrue\b/u,
+      "Structural operations must not mutate the originating duplicate-column dataframe."
+    );
+
+    const structuralGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
+    const structuralReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
+    assert.ok(structuralReplacementGeneration > structuralGeneration);
+    const structuralReplayed = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "notebook-pandas-structural-duplicate-replay",
+      sessionId: structuralSessionId,
+      revision: structuralRevision,
+      offset: 0,
+      limit: 10,
+      filterModel: structuralMetadata.filterModel
+    });
+    assert.equal(structuralReplayed.kind, "page", "Structural duplicate/non-string operations must replay.");
+    if (structuralReplayed.kind !== "page") {
+      throw new Error("Structural duplicate/non-string replay failed.");
+    }
+    assert.equal(jupyter.testing.stats(notebook.uri)?.generation, structuralReplacementGeneration);
+    assert.equal(structuralReplayed.metadata.steps.length, structuralSteps.length);
+    assert.deepEqual(
+      structuralReplayed.metadata.steps,
+      structuralSteps,
+      "Kernel replay must preserve the exact public structural plan."
+    );
+    assert.deepEqual(
+      structuralReplayed.metadata.schema.map(({ id, name, position }) => ({ id, name, position })),
+      [
+        { ...structuralIntegerLabel, position: 0 },
+        { ...structuralRenamedFirst, position: 1 },
+        { ...structuralSecondCategory, position: 2 },
+        { ...structuralFirstCategory, position: 3 },
+        { ...structuralSecondDatetime, position: 4 },
+        { ...structuralFirstDatetime, position: 5 },
+        { ...structuralClone, position: 6 },
+        { ...structuralCombined, position: 7 },
+        { ...structuralLength, position: 8 }
+      ]
+    );
+    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralLength.id), lengthCells);
+    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralIntegerLabel.id), integerLabelCells);
+    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralRenamedFirst.id), castDuplicateCells);
+    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralCombined.id), combinedCells);
+    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralClone.id), secondDuplicateCells);
+    assert.doesNotMatch(
+      JSON.stringify(structuralReplayed.metadata.steps),
+      /"position"\s*:/u,
+      "Kernel replay must retain position-free public structural references."
+    );
+    const structuralSourceAfterRestart = await jupyter.testing.execute(
+      notebook.uri,
+      "print(structural_frame.equals(structural_frame_source))"
+    );
+    assert.match(
+      structuralSourceAfterRestart,
+      /\bTrue\b/u,
+      "Structural replay must leave the recreated notebook dataframe immutable."
+    );
+    const structuralClosed = await testing.request({
+      kind: "closeSession",
+      sessionId: structuralSessionId,
+      revision: structuralReplayed.revision
+    });
+    assert.equal(structuralClosed.kind, "sessionClosed");
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0,
+      10_000,
+      "the structural duplicate-column Pandas notebook session to close"
+    );
+    assert.deepEqual(testing.diagnostics().sessions, [], "Structural acceptance must retain no session.");
 
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "identity_frame",
