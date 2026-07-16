@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- Added **Open in Open Wrangler** to supported-file editor toolbars and editor-tab context menus alongside the existing Explorer and Command Palette entry points, with actual workbench click acceptance in isolated VS Code and Cursor profiles. A declarative Cursor configuration default pins the canonical action because Cursor hides third-party title actions by default; explicit user settings still take precedence.
 - Added selectable Cleaning Steps history: each applied step opens a paged input→output inspection with identity-aware cell/column highlighting and generated code through that step, while Original Data restores the exact confirmed view.
 - Added a native, lazy DuckDB file backend for UTF-8 CSV/TSV, Parquet, and JSONL viewing, profiling, all 27 deterministic operations, executable code generation, draft/history workflows, and atomic CSV/Parquet export without conversion through Pandas, Polars, or Arrow.
 - Added opt-in Pandas and DuckDB runtime benchmark modes with deterministic synthetic fixtures, native/lazy frame evidence, machine and package provenance, process-memory samples, and an explicit boundary separating runtime timings from editor first paint. Polars remains the strict release-performance gate.
@@ -13,6 +14,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Hardened file launches to prefer the menu-supplied URI, recover text/custom/diff editor resources, preserve exact VS Code remote URIs during Python environment resolution, accept supported extensions case-insensitively, and reject untitled, virtual, unsupported, disabled, missing, inaccessible, directory, or special-filesystem targets before runtime startup. Corrected custom-editor menu/keybinding predicates to use VS Code's `activeCustomEditorId` context key.
 - Established the Open Wrangler identity across the VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts.
 - Consolidated commands, settings, custom-editor state, and notebook rendering on the canonical `openWrangler.*` namespace and MIME v2 identifier.
 - Removed the unused pre-release identity and compatibility paths instead of carrying aliases or migrations into the experimental package.

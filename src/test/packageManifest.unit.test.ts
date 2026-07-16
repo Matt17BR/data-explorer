@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 interface CommandContribution {
   command?: string;
   title?: string;
+  shortTitle?: string;
+  icon?: string;
 }
 
 interface MenuContribution {
@@ -19,6 +21,7 @@ interface WalkthroughStep {
 
 interface PackageManifest {
   contributes?: {
+    configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
     menus?: Record<string, MenuContribution[]>;
     walkthroughs?: Array<{ steps?: WalkthroughStep[] }>;
@@ -48,5 +51,50 @@ describe("operation command contributions", () => {
       when: "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
       group: "inline@10"
     });
+  });
+});
+
+describe("file launch contributions", () => {
+  const resourcePredicate =
+    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i";
+
+  it("uses one canonical, compact command for every file launch surface", () => {
+    expect(manifest.contributes?.configurationDefaults?.["cursor.general.pinnedTitleActions"]).toEqual([
+      "openWrangler.openFile"
+    ]);
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.openFile",
+      title: "Open in Open Wrangler",
+      icon: "$(open-preview)"
+    });
+
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual({
+      command: "openWrangler.openFile",
+      when: `!explorerResourceIsFolder && ${resourcePredicate}`,
+      group: "navigation@50"
+    });
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
+      command: "openWrangler.openFile",
+      when: `${resourcePredicate} && ` + "(!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+      group: "navigation@1"
+    });
+    expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
+      command: "openWrangler.openFile",
+      when: `${resourcePredicate} && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)`,
+      group: "navigation@50"
+    });
+    expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
+      command: "openWrangler.launchDataViewer",
+      when: "false"
+    });
+  });
+
+  it("keeps the supported extension predicate case-insensitive and closed to unrelated files", () => {
+    const match = /\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i;
+    for (const file of ["data.csv", "DATA.TSV", "frame.PARQUET", "rows.jsonl", "book.XLSX", "legacy.xls"]) {
+      expect(match.test(file)).toBe(true);
+    }
+    expect(match.test("notes.txt")).toBe(false);
+    expect(match.test("data.csv.backup")).toBe(false);
   });
 });

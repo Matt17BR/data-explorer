@@ -64,10 +64,30 @@ export const extensions = {
 };
 
 export const Uri = {
-  file(path: string): { fsPath: string; toString(): string } {
+  file(path: string): { scheme: string; authority: string; path: string; fsPath: string; toString(): string } {
     return {
+      scheme: "file",
+      authority: "",
+      path,
       fsPath: path,
       toString: () => `file://${path}`
+    };
+  },
+  parse(
+    value: string,
+    strict = false
+  ): { scheme: string; authority: string; path: string; fsPath: string; toString(): string } {
+    const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/?#]*))?([^?#]*)/.exec(value);
+    if (!match && strict) throw new Error(`Invalid URI: ${value}`);
+    const scheme = match?.[1] ?? "";
+    const authority = match?.[2] ?? "";
+    const path = match?.[3] ?? value;
+    return {
+      scheme,
+      authority,
+      path,
+      fsPath: path,
+      toString: () => value
     };
   }
 };

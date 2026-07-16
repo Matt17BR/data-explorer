@@ -31,7 +31,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 ## Features
 
 - Native Polars, DuckDB, and Pandas runtime backends for files; live notebook sessions remain Pandas/Polars and run in the active Jupyter kernel.
-- Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
+- Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor-tab menu, editor-title icon, or Command Palette.
 - Typed rendering and profiling for nullable values, large integers, decimals, time zones, nested Polars lists/structs, binary, categorical, duration, NaN, and infinity values.
 - Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, progressive Quick Insights, and source/backend-scoped restoration of widths, selection, filters, sorts, and visible position.
 - Exact first-grid metadata with deferred per-column profiling, bounded block caching, foreground paging that stays responsive during insights work, source-version detection, and transactional runtime replay after a crash.
@@ -55,13 +55,15 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 ### Open a file
 
 1. Install the extension in Cursor or VS Code.
-2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
-3. Choose **Open Wrangler: Open Current File**.
+2. Open a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file, then use the **Open in Open Wrangler** editor-title icon; alternatively, right-click its editor tab or Explorer item.
+3. Choose **Open in Open Wrangler** when using a context menu.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
 5. Choose **Add step**, run **Open Wrangler: Add Cleaning Step** without arguments from the Command Palette to open the unselected catalog, or choose a preselected operation in the Activity Bar. Configure it, inspect the draft grid/diff/code, then explicitly apply or discard it before starting another operation. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, optional draft, viewing query, column widths/selection, and visible position are restored for the same source and backend in the workspace.
 6. Run **Open Wrangler: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `openWrangler.*` settings.
+
+Cursor 3.11 hides third-party editor-title actions by default, so Open Wrangler declaratively pins its canonical file action there without writing to the user's settings. To hide that icon intentionally, set `cursor.general.pinnedTitleActions` to a list that omits `openWrangler.openFile`; Cursor's normal **Configure Icon Visibility** toggle does not override its pinned-action list in that version.
 
 File-backed sessions use `auto` by default. Candidate order is Polars, then DuckDB, then Pandas; unavailable or format-incompatible candidates are skipped. The `utf8-lossy` import option is a replacement-decoding policy rather than a Python codec name, so automatic selection routes directly to Pandas and reads invalid UTF-8 bytes as `�`. Set `openWrangler.defaultBackend` to `polars`, `duckdb`, or `pandas` to pin one engine.
 
@@ -108,6 +110,10 @@ DuckDB file sessions remain native lazy `DuckDBPyRelation` plans for CSV, TSV, P
 
 The selected Python environment must provide `duckdb>=1.4.5,<1.6`. The editable `python[dev]` install below includes that dependency; the packaged extension probes the selected interpreter and asks before installing anything. DuckDB support is currently file-backed: DuckDB Excel ingestion, browsing tables inside `.duckdb` database files, and DuckDB notebook variables/formatters are explicitly deferred. Excel remains available through Polars or Pandas, and notebook sessions remain Pandas/Polars.
 
+## PySpark Status
+
+PySpark dataframes are not supported yet. Native classic-Spark and Spark Connect support is tracked in the [PySpark engine expansion](https://github.com/Matt17BR/openwrangler/issues/36), scheduled after the Pandas/Polars parity contract is green. That work must preserve distributed execution—no implicit Pandas/Polars conversion or full-frame collection—and define deterministic paging, ordering, counts, cancellation, recovery, code generation, and cluster/session ownership before it is advertised as available.
+
 ## Test Locally In Cursor Or Another VS Code-Compatible Editor
 
 ```bash
@@ -121,7 +127,7 @@ cursor --install-extension openwrangler-0.3.0.vsix --force
 
 Reload the editor after installing the VSIX. Then:
 
-- Open `fixtures/sample.csv`, right-click its Explorer item, and run **Open Wrangler: Open Current File**. Editor-tab and editor-title launch actions are tracked for the next slice in [issue #35](https://github.com/Matt17BR/openwrangler/issues/35).
+- Open `fixtures/sample.csv`, then click the **Open in Open Wrangler** editor-title icon or choose the same action from the editor-tab or Explorer context menu.
 - Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. The dataframe is a real Polars dataframe.
 - From the notebook, use **Open in Open Wrangler** when Jupyter offers it for `df`, or run **Open Wrangler: Open Notebook Variable** and enter `df`. The full Open Wrangler webview should page, filter, sort, and summarize the live kernel dataframe.
 

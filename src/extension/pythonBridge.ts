@@ -10,7 +10,8 @@ import type {
   OpenWranglerResponse,
   ErrorResponse,
   RuntimeRequestEnvelope,
-  RuntimeResponseEnvelope
+  RuntimeResponseEnvelope,
+  SessionSource
 } from "../shared/protocol";
 import { PROTOCOL_VERSION } from "../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
@@ -243,8 +244,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.runtimeExitError = undefined;
     this.stderrBuffer = "";
 
-    const resource =
-      request.kind === "openSession" && request.source.path ? vscode.Uri.file(request.source.path) : undefined;
+    const resource = request.kind === "openSession" ? sourceResource(request.source) : undefined;
     const environment = await this.environment(resource);
     if (this.disposed || epoch !== this.runtimeEpoch) {
       throw new Error("Open Wrangler runtime start was cancelled.");
@@ -409,7 +409,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
     if (request.kind !== "openSession" || request.source.kind !== "file") return request;
-    const environment = await this.environment(vscode.Uri.file(request.source.path ?? request.source.label));
+    const environment = await this.environment(sourceResource(request.source));
     const backends = request.backend ? [request.backend] : automaticBackends(request.source);
     const failures: Array<{ backend: DataBackend; missing: string[] }> = [];
     for (const backend of backends) {
@@ -444,4 +444,15 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         "Select a compatible Python 3.10-3.14 environment with the Open Wrangler: Change Runtime command."
     );
   }
+}
+
+function sourceResource(source: SessionSource): vscode.Uri | undefined {
+  if (source.uri) {
+    try {
+      return vscode.Uri.parse(source.uri, true);
+    } catch {
+      // Malformed URI metadata can still fall back to its concrete file path.
+    }
+  }
+  return source.path ? vscode.Uri.file(source.path) : undefined;
 }

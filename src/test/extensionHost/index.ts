@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { chromium } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import { getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
@@ -117,6 +117,8 @@ export async function run(): Promise<void> {
   }
 
   const contributions = extension.packageJSON.contributes as {
+    configurationDefaults?: Record<string, unknown>;
+    commands?: Array<{ command?: string; title?: string; shortTitle?: string; icon?: string }>;
     viewsContainers?: { activitybar?: Array<{ id?: string; icon?: string }> };
     views?: Record<string, Array<{ id?: string }>>;
     configuration?: { properties?: Record<string, unknown> };
@@ -139,6 +141,54 @@ export async function run(): Promise<void> {
     { items?: { enum?: string[] }; default?: string[] } | undefined;
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
   assert.ok(enabledFileTypes?.default?.includes("xls"));
+  assert.deepEqual(contributions.configurationDefaults?.["cursor.general.pinnedTitleActions"], [
+    "openWrangler.openFile"
+  ]);
+  assert.deepEqual(
+    contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
+    {
+      command: "openWrangler.openFile",
+      title: "Open in Open Wrangler",
+      icon: "$(open-preview)"
+    }
+  );
+  const fileResourcePredicate =
+    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i";
+  assert.ok(
+    contributions.menus?.["explorer/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.openFile" &&
+        item.when === `!explorerResourceIsFolder && ${fileResourcePredicate}` &&
+        item.group === "navigation@50"
+    ),
+    "Explorer data files must expose the canonical Open in Open Wrangler action."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title"]?.some(
+      (item) =>
+        item.command === "openWrangler.openFile" &&
+        item.when ===
+          `${fileResourcePredicate} && ` + "(!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)" &&
+        item.group === "navigation@1"
+    ),
+    "Supported source editors must expose the Open Wrangler title action."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.openFile" &&
+        item.when ===
+          `${fileResourcePredicate} && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)` &&
+        item.group === "navigation@50"
+    ),
+    "Supported source tabs must expose Open in Open Wrangler in their context menu."
+  );
+  assert.ok(
+    contributions.menus?.commandPalette?.some(
+      (item) => item.command === "openWrangler.launchDataViewer" && item.when === "false"
+    ),
+    "The argument-only Jupyter viewer command must stay out of the Command Palette."
+  );
   assert.deepEqual(
     contributions.keybindings?.map((binding) => ({
       command: binding.command,
@@ -151,25 +201,25 @@ export async function run(): Promise<void> {
         command: "openWrangler.applyStep",
         key: "ctrl+enter",
         mac: "cmd+enter",
-        when: "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
         command: "openWrangler.discardStep",
         key: "escape",
         mac: undefined,
-        when: "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
         command: "openWrangler.editLatestStep",
         key: "ctrl+shift+e",
         mac: "cmd+shift+e",
-        when: "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
       },
       {
         command: "openWrangler.undoStep",
         key: "ctrl+alt+z",
         mac: "cmd+alt+z",
-        when: "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
+        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
       }
     ]
   );
@@ -243,6 +293,13 @@ export async function run(): Promise<void> {
   await exercisePackagedViewingQueries(testing, fixture);
   await exercisePackagedOperationGroups(testing, fixture);
   await exercisePackagedNotebookFlows(testing);
+  if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    await exercisePackagedFileLaunchSurfaces(
+      testing,
+      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.jsonl")),
+      process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+    );
+  }
   if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
     await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
@@ -337,6 +394,323 @@ async function waitForSettledViewState(testing: TestApi, expectation: string): P
   throw new Error(`Timed out waiting for ${expectation}.`);
 }
 
+async function exercisePackagedFileLaunchSurfaces(
+  testing: TestApi,
+  fixture: vscode.Uri,
+  outputDirectory?: string
+): Promise<void> {
+  const sourceBytes = readFileSync(fixture.fsPath);
+  const page = await connectToEditorWorkbench();
+  const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
+  const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
+  const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible');
+
+  if (editor === "cursor") {
+    const pinnedTitleActions = vscode.workspace
+      .getConfiguration("cursor.general")
+      .inspect<string[]>("pinnedTitleActions");
+    assert.ok(pinnedTitleActions, "Cursor must register its pinned-title-action setting.");
+    assert.ok(
+      pinnedTitleActions.defaultValue?.includes("openWrangler.openFile"),
+      "The packaged Cursor default must pin the canonical file action."
+    );
+    assert.equal(
+      pinnedTitleActions.globalValue,
+      undefined,
+      "Cursor acceptance must not persist a user-level title-action setting."
+    );
+    assert.equal(
+      pinnedTitleActions.workspaceValue,
+      undefined,
+      "Cursor acceptance must not persist a workspace title-action setting."
+    );
+  }
+
+  const availableCommands = new Set(await vscode.commands.getCommands(true));
+  const auxiliaryBar = page.locator(".part.auxiliarybar");
+  if ((await auxiliaryBar.count()) > 0 && (await auxiliaryBar.isVisible())) {
+    const closeAuxiliaryBar = availableCommands.has("workbench.action.closeAuxiliaryBar")
+      ? "workbench.action.closeAuxiliaryBar"
+      : availableCommands.has("workbench.action.toggleAuxiliaryBar")
+        ? "workbench.action.toggleAuxiliaryBar"
+        : undefined;
+    if (closeAuxiliaryBar) await vscode.commands.executeCommand(closeAuxiliaryBar);
+  }
+  if (availableCommands.has("notifications.clearAll")) {
+    await vscode.commands.executeCommand("notifications.clearAll");
+  }
+  if (availableCommands.has("notifications.hideList")) {
+    await vscode.commands.executeCommand("notifications.hideList");
+  }
+
+  await vscode.commands.executeCommand("vscode.open", fixture, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.One
+  });
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    10_000,
+    "the source text editor before file-launch interaction"
+  );
+  await page.bringToFront();
+  try {
+    await titleAction.first().waitFor({ state: "visible", timeout: 10_000 });
+  } catch (error) {
+    const visibleEditorLabels = await page
+      .locator(".part.editor .editor-group-container.active [aria-label]:visible")
+      .evaluateAll((elements) => elements.map((element) => element.getAttribute("aria-label")));
+    const moreActions = activeEditorGroup.locator('[aria-label="More Actions..."]:visible').first();
+    let overflowItems: string[] = [];
+    if ((await moreActions.count()) > 0) {
+      await moreActions.click();
+      overflowItems = await page
+        .locator('.context-view.monaco-menu-container [role="menuitem"]:visible')
+        .allInnerTexts();
+      await page.keyboard.press("Escape");
+    }
+    throw new Error(
+      `Open Wrangler editor-title action was not visible. Visible editor labels: ${JSON.stringify(visibleEditorLabels)}. Editor overflow items: ${JSON.stringify(overflowItems)}`,
+      { cause: error }
+    );
+  }
+  if (outputDirectory) {
+    mkdirSync(outputDirectory, { recursive: true });
+    await titleAction.first().hover();
+    await page
+      .locator(".monaco-hover:visible")
+      .filter({ hasText: "Open in Open Wrangler" })
+      .waitFor({ state: "visible", timeout: 2_000 })
+      .catch(() => {});
+    await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-file-title-action.png`));
+    await page.keyboard.press("Escape");
+  }
+
+  await titleAction.first().click();
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
+    30_000,
+    "the editor-title action to open the selected source"
+  );
+  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the editor-title launch session to dispose"
+  );
+
+  const sourceTab = page
+    .locator(".part.editor .tabs-container .tab")
+    .filter({ hasText: path.basename(fixture.fsPath) })
+    .last();
+  const activeSourceTab = page
+    .locator(".part.editor .editor-group-container.active .tabs-container .tab.active")
+    .filter({ hasText: path.basename(fixture.fsPath) })
+    .last();
+  await sourceTab.waitFor({ state: "visible", timeout: 10_000 });
+  await page.keyboard.press("Escape");
+  await page.bringToFront();
+  await sourceTab.click();
+  await activeSourceTab.waitFor({ state: "visible", timeout: 10_000 });
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    10_000,
+    "the source tab to become active before opening its context menu"
+  );
+  const tabMenuAction = page
+    .locator('.context-view.monaco-menu-container:visible [role="menuitem"]')
+    .filter({
+      has: page.locator('.action-label[aria-label="Open in Open Wrangler"]')
+    })
+    .last();
+  await activeSourceTab.click({ button: "right" });
+  try {
+    await tabMenuAction.waitFor({ state: "visible", timeout: 3_000 });
+  } catch {
+    await page.keyboard.press("Escape");
+    await activeSourceTab.click({ button: "right" });
+    await tabMenuAction.waitFor({ state: "visible", timeout: 10_000 });
+  }
+  await page.waitForTimeout(350);
+  assert.equal(
+    (await tabMenuAction.innerText()).trim(),
+    "Open in Open Wrangler",
+    "The editor-tab context action must use the compact product label."
+  );
+  if (outputDirectory) {
+    await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-tab-context-menu.png`));
+  }
+  await tabMenuAction.click();
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
+    30_000,
+    "the editor-tab context action to open the selected source"
+  );
+  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-tab action must not modify its source.");
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the editor-tab launch session to dispose"
+  );
+
+  const customEditorFixture = vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.csv"));
+  const customEditorSourceBytes = readFileSync(customEditorFixture.fsPath);
+  await vscode.commands.executeCommand(
+    "vscode.openWith",
+    customEditorFixture,
+    "openwrangler-tests.csvEditor",
+    vscode.ViewColumn.One
+  );
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return (
+        input instanceof vscode.TabInputCustom &&
+        input.viewType === "openwrangler-tests.csvEditor" &&
+        input.uri.toString() === customEditorFixture.toString()
+      );
+    },
+    10_000,
+    "the third-party CSV custom editor before file-launch interaction"
+  );
+  await page.bringToFront();
+  await titleAction.first().waitFor({ state: "visible", timeout: 10_000 });
+  await titleAction.first().click();
+  await acceptDefaultDelimitedImport(page);
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.path === customEditorFixture.fsPath,
+    30_000,
+    "the third-party custom-editor title action to open the selected CSV source"
+  );
+  assert.deepEqual(testing.activeSession()?.metadata.source.importOptions, {
+    delimiter: ",",
+    encoding: "utf-8",
+    quoteChar: '"',
+    hasHeader: true
+  });
+  assert.deepEqual(
+    readFileSync(customEditorFixture.fsPath),
+    customEditorSourceBytes,
+    "The third-party custom-editor title action must not modify its source."
+  );
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the third-party custom-editor launch session to dispose"
+  );
+
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
+    30_000,
+    "the custom editor before duplicate-action verification"
+  );
+  await page.bringToFront();
+  await page.waitForTimeout(250);
+  assert.equal(await titleAction.count(), 0, "The Open Wrangler custom editor must not offer a duplicate open action.");
+  const openWranglerTab = activeEditorGroup
+    .locator(".tabs-container .tab.active")
+    .filter({ hasText: path.basename(fixture.fsPath) })
+    .last();
+  await openWranglerTab.click({ button: "right" });
+  await page.waitForTimeout(350);
+  assert.equal(
+    await tabMenuAction.count(),
+    0,
+    "The Open Wrangler custom-editor tab must not offer a duplicate open action."
+  );
+  await page.keyboard.press("Escape");
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the launch-surface custom editor to dispose"
+  );
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+}
+
+async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
+  for (const title of ["Delimiter", "Text encoding", "Header row", "Quote character"]) {
+    const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+    await quickInput.waitFor({ state: "visible", timeout: 10_000 });
+    await page.waitForTimeout(150);
+    await page.keyboard.press("Enter");
+  }
+}
+
+async function connectToEditorWorkbench(): Promise<Page> {
+  const cdpPort = Number(process.env.OPEN_WRANGLER_EDITOR_CDP_PORT);
+  assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Editor workbench interaction requires a CDP port.");
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+  const pages = browser.contexts().flatMap((context) => context.pages());
+  for (const page of pages) {
+    if ((await page.locator(".monaco-workbench").count()) > 0) return page;
+  }
+  const workbench = pages.find((page) => page.url().includes("workbench"));
+  assert.ok(workbench, "The editor CDP endpoint must expose its workbench page.");
+  return workbench;
+}
+
+async function captureWorkbenchScreenshot(page: Page, destination: string): Promise<void> {
+  await page.bringToFront();
+  const viewport = await page.evaluate(() => {
+    const pageWindow = globalThis as unknown as {
+      innerWidth: number;
+      innerHeight: number;
+      devicePixelRatio: number;
+    };
+    return {
+      width: pageWindow.innerWidth,
+      height: pageWindow.innerHeight,
+      scale: Math.max(1, pageWindow.devicePixelRatio)
+    };
+  });
+  const workbenchOffsets: number[] = [];
+  for (const selector of [".monaco-workbench", ".part.sidebar", ".part.editor", ".part.activitybar"]) {
+    const locator = page.locator(selector).first();
+    if ((await locator.count()) === 0) continue;
+    const bounds = await locator.boundingBox({ timeout: 2_000 }).catch(() => null);
+    if (bounds && bounds.y > 0) workbenchOffsets.push(bounds.y);
+  }
+  const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY) * viewport.scale);
+  const screenshotOptions = {
+    path: destination,
+    animations: "disabled" as const,
+    timeout: 60_000,
+    ...(Number.isFinite(titleBarHeight) && titleBarHeight > 0 && titleBarHeight < viewport.height
+      ? {
+          clip: {
+            x: 0,
+            y: titleBarHeight,
+            width: viewport.width,
+            height: viewport.height - titleBarHeight
+          }
+        }
+      : {})
+  };
+  try {
+    await page.screenshot(screenshotOptions);
+  } catch (error) {
+    await page.bringToFront();
+    await page.waitForTimeout(500);
+    try {
+      await page.screenshot(screenshotOptions);
+    } catch {
+      throw error;
+    }
+  }
+  const image = readFileSync(destination);
+  assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+}
+
 async function capturePackagedEditorScreenshots(
   testing: TestApi,
   fixture: vscode.Uri,
@@ -368,19 +742,7 @@ async function capturePackagedEditorScreenshots(
   const originalTypescriptValidation = typescript.get<boolean>("validate.enable");
   const originalJavascriptValidation = javascript.get<boolean>("validate.enable");
   const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
-  const cdpPort = Number(process.env.OPEN_WRANGLER_EDITOR_CDP_PORT);
-  assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Editor screenshot capture requires a CDP port.");
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  const pages = browser.contexts().flatMap((context) => context.pages());
-  let workbenchPage = pages.find((page) => page.url().includes("workbench"));
-  for (const page of pages) {
-    if ((await page.locator(".monaco-workbench").count()) > 0) {
-      workbenchPage = page;
-      break;
-    }
-  }
-  assert.ok(workbenchPage, "The editor CDP endpoint must expose its workbench page.");
-  const capturePage = workbenchPage;
+  const capturePage = await connectToEditorWorkbench();
   const darkTheme = contributedTheme("vs-dark", "Default Dark Modern");
   const lightTheme = contributedTheme("vs", "Default Light Modern");
   const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
@@ -470,42 +832,7 @@ async function capturePackagedEditorScreenshots(
       .locator(".monaco-hover")
       .waitFor({ state: "hidden", timeout: 2_000 })
       .catch(() => {});
-    const workbenchOffsets: number[] = [];
-    for (const selector of [".monaco-workbench", ".part.sidebar", ".part.editor", ".part.activitybar"]) {
-      const locator = capturePage.locator(selector).first();
-      if ((await locator.count()) === 0) continue;
-      const bounds = await locator.boundingBox({ timeout: 2_000 }).catch(() => null);
-      if (bounds && bounds.y > 0) workbenchOffsets.push(bounds.y);
-    }
-    const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY) * viewport.scale);
-    const screenshotOptions = {
-      path: destination,
-      animations: "disabled" as const,
-      timeout: 60_000,
-      ...(viewport && Number.isFinite(titleBarHeight) && titleBarHeight > 0 && titleBarHeight < viewport.height
-        ? {
-            clip: {
-              x: 0,
-              y: titleBarHeight,
-              width: viewport.width,
-              height: viewport.height - titleBarHeight
-            }
-          }
-        : {})
-    };
-    try {
-      await capturePage.screenshot(screenshotOptions);
-    } catch (error) {
-      await capturePage.bringToFront();
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      try {
-        await capturePage.screenshot(screenshotOptions);
-      } catch {
-        throw error;
-      }
-    }
-    const image = readFileSync(destination);
-    assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    await captureWorkbenchScreenshot(capturePage, destination);
   }
 
   async function prepareWorkbenchForEvidence(): Promise<void> {
@@ -1165,6 +1492,35 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       ],
       { encoding: "utf8" }
     );
+    const parquetLaunchUri = vscode.Uri.file(path.join(directory, "sample.parquet"));
+    const parquetSource = readFileSync(parquetLaunchUri.fsPath);
+    await config.update("defaultBackend", "polars", vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand("openWrangler.openFile", parquetLaunchUri);
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.path === parquetLaunchUri.fsPath &&
+          active.metadata.backend === "polars" &&
+          active.metadata.shape.rows === 2 &&
+          active.metadata.shape.columns === 3
+        );
+      },
+      30_000,
+      "the editor-menu file URI to open through the canonical launch command"
+    );
+    assert.deepEqual(
+      readFileSync(parquetLaunchUri.fsPath),
+      parquetSource,
+      "Opening a source from an editor menu must not modify it."
+    );
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      "the editor-menu file session to dispose"
+    );
+
     const fixtures = [
       {
         uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
