@@ -42,9 +42,18 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 Open Wrangler requires desktop VS Code or Cursor and Python 3.10–3.14.
 
-1. Download the latest `.vsix` from [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
-2. In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select the file.
-3. Open a supported data file, then click the **Open in Open Wrangler** editor action or choose it from the Explorer/editor-tab context menu.
+Prebuilt releases are not published yet. To try the current preview from a clone of this repository:
+
+```bash
+npm install
+python3 -m venv .venv
+.venv/bin/python -m pip install -e "python[dev]"
+npm run package -- --out openwrangler.vsix
+```
+
+On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equivalent commands.
+
+In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select `openwrangler.vsix`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu. Future preview builds will appear on [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
 
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently.
 
@@ -76,13 +85,7 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 ## Develop and contribute
 
-```bash
-npm install
-python3 -m venv .venv
-.venv/bin/python -m pip install -e "python[dev]"
-npm run build
-npm test
-```
+After the source setup above, use `npm run build` while iterating and `npm test` for the complete TypeScript and Python regression suites.
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md). The [architecture guide](docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](SECURITY.md).
 

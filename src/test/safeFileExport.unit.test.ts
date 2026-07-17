@@ -336,10 +336,18 @@ describe("safe Python-script file export", () => {
     const first = Buffer.from("# first\n".repeat(4_096));
     const second = Buffer.from("# second\n".repeat(4_096));
 
-    await Promise.all([
+    const outcomes = await Promise.allSettled([
       exportFileSafely({ destination: fileUri(destination), contents: first }),
       exportFileSafely({ destination: fileUri(destination), contents: second })
     ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled").length).toBeGreaterThanOrEqual(1);
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        expect(outcome.reason).toBeInstanceOf(Error);
+        expect((outcome.reason as Error).message).toMatch(/destination changed/u);
+      }
+    }
 
     const result = await readFile(destination);
     expect([result.equals(first), result.equals(second)]).toContain(true);
