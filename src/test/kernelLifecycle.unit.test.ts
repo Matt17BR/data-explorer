@@ -141,6 +141,26 @@ describe("RestartableKernel", () => {
     expect(bootstrap).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects a late successful result from an invalidated generation", async () => {
+    const firstExecution = deferred<number>();
+    const kernels = [{ generation: 1 }, { generation: 2 }];
+    const acquire = vi.fn(async () => kernels.shift()!);
+    const bootstrap = vi.fn(async () => undefined);
+    const lifecycle = new RestartableKernel(acquire);
+
+    const stale = lifecycle.run(bootstrap, (kernel) =>
+      kernel.generation === 1 ? firstExecution.promise : Promise.resolve(kernel.generation)
+    );
+    await vi.waitFor(() => expect(bootstrap).toHaveBeenCalledOnce());
+    lifecycle.invalidate();
+    await expect(lifecycle.run(bootstrap, async (kernel) => kernel.generation)).resolves.toBe(2);
+
+    firstExecution.resolve(1);
+    await expect(stale).rejects.toThrow("stale kernel generation");
+    await expect(lifecycle.run(bootstrap, async (kernel) => kernel.generation)).resolves.toBe(2);
+    expect(acquire).toHaveBeenCalledTimes(2);
+  });
+
   it("does not let a stale acquisition failure clear a replacement", async () => {
     const staleAcquisition = deferred<{ generation: number }>();
     const replacement = { generation: 2 };

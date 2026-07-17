@@ -24,19 +24,25 @@ interface JupyterLikeApi {
 export const registerNotebookCommands = (context: vscode.ExtensionContext, coordinator: SessionCoordinator): void => {
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.launchDataViewer", async (...args: unknown[]) => {
+      const notebookResolution = resolveNotebookAtCommandReceipt(args);
       const variableName = variableNameFromArgs(args);
       if (!variableName) {
         vscode.window.showWarningMessage("Open Wrangler could not determine the notebook variable name to open.");
         return;
       }
+      if (!notebookResolution.notebook) {
+        vscode.window.showWarningMessage(notebookResolution.error);
+        return;
+      }
 
-      await openLiveNotebookVariable(context, coordinator, variableName, notebookUriFromArgs(args));
+      await openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.openNotebookVariable", async () => {
-      const notebook = vscode.window.activeNotebookEditor?.notebook;
+      const notebookResolution = resolveNotebookAtCommandReceipt([]);
+      const notebook = notebookResolution.notebook;
       if (!notebook) {
         vscode.window.showWarningMessage(
           "Open a Jupyter notebook before launching a notebook variable in Open Wrangler."
@@ -54,12 +60,13 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         return;
       }
 
-      await openLiveNotebookVariable(context, coordinator, variableName, notebook.uri);
+      await openLiveNotebookVariable(context, coordinator, variableName, notebook);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.checkJupyterIntegration", async () => {
+      const notebookResolution = resolveNotebookAtCommandReceipt([]);
       const jupyter = vscode.extensions.getExtension<JupyterLikeApi>("ms-toolsai.jupyter");
       if (!jupyter) {
         vscode.window.showInformationMessage(
@@ -68,8 +75,20 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         return;
       }
       const api = await jupyter.activate();
-      const notebook = vscode.window.activeNotebookEditor?.notebook.uri;
-      const kernel = notebook ? await api.kernels.getKernel(notebook) : undefined;
+      const notebook = notebookResolution.notebook;
+      if (notebook && !isExactOpenNotebook(notebook)) {
+        vscode.window.showWarningMessage(
+          "The originating notebook is no longer open. Reopen it and check the Jupyter integration again."
+        );
+        return;
+      }
+      const kernel = notebook ? await api.kernels.getKernel(notebook.uri) : undefined;
+      if (notebook && !isExactOpenNotebook(notebook)) {
+        vscode.window.showWarningMessage(
+          "The originating notebook is no longer open. Reopen it and check the Jupyter integration again."
+        );
+        return;
+      }
       vscode.window.showInformationMessage(
         kernel
           ? "Open Wrangler can access the selected Jupyter kernel."
@@ -83,11 +102,10 @@ async function openLiveNotebookVariable(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   variableName: string,
-  notebookUri?: vscode.Uri
+  notebook: vscode.NotebookDocument
 ): Promise<void> {
-  const notebook = notebookUri ?? vscode.window.activeNotebookEditor?.notebook.uri;
-  if (!notebook) {
-    vscode.window.showWarningMessage("Open a Jupyter notebook before launching a notebook variable in Open Wrangler.");
+  if (!isExactOpenNotebook(notebook)) {
+    vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
     return;
   }
 
@@ -95,9 +113,9 @@ async function openLiveNotebookVariable(
     kind: "notebookVariable",
     label: variableName,
     variableName,
-    uri: notebook.toString()
+    uri: notebook.uri.toString()
   };
-  OpenWranglerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook)), source);
+  OpenWranglerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook), notebook), source);
 }
 
 function variableNameFromArgs(args: unknown[]): string | undefined {
@@ -123,23 +141,63 @@ function variableNameFromArgs(args: unknown[]): string | undefined {
   return undefined;
 }
 
-function notebookUriFromArgs(args: unknown[]): vscode.Uri | undefined {
+function explicitNotebookUrisFromArgs(args: unknown[]): vscode.Uri[] {
+  const uris: vscode.Uri[] = [];
   for (const arg of args) {
     if (arg instanceof vscode.Uri) {
-      return arg;
+      uris.push(arg);
+      continue;
     }
     if (typeof arg !== "object" || arg === null) {
       continue;
     }
     const candidate = arg as NotebookVariableArgument;
     if (candidate.notebookUri instanceof vscode.Uri) {
-      return candidate.notebookUri;
+      uris.push(candidate.notebookUri);
     }
     if (candidate.uri instanceof vscode.Uri) {
-      return candidate.uri;
+      uris.push(candidate.uri);
     }
   }
-  return vscode.window.activeNotebookEditor?.notebook.uri;
+  return uris;
+}
+
+type NotebookResolution = { notebook: vscode.NotebookDocument; error?: never } | { notebook?: never; error: string };
+
+function resolveNotebookAtCommandReceipt(args: unknown[]): NotebookResolution {
+  const explicitUris = explicitNotebookUrisFromArgs(args);
+  if (explicitUris.length > 0) {
+    const uriKeys = new Set(explicitUris.map((uri) => uri.toString()));
+    if (uriKeys.size !== 1) {
+      return {
+        error: "Open Wrangler received more than one originating notebook. Launch the variable again from one notebook."
+      };
+    }
+    const uriKey = explicitUris[0]?.toString();
+    if (!uriKey) {
+      return { error: "The originating notebook is no longer open. Reopen it and try again." };
+    }
+    const matches = vscode.workspace.notebookDocuments.filter(
+      (document) => !document.isClosed && document.uri.toString() === uriKey
+    );
+    if (matches.length === 1 && matches[0]) return { notebook: matches[0] };
+    if (matches.length > 1) {
+      return {
+        error:
+          "Open Wrangler could not identify one originating notebook. Close duplicate notebook views and try again."
+      };
+    }
+    return { error: "The originating notebook is no longer open. Reopen it and try again." };
+  }
+
+  const notebook = vscode.window.activeNotebookEditor?.notebook;
+  return notebook && isExactOpenNotebook(notebook)
+    ? { notebook }
+    : { error: "Open a Jupyter notebook before launching a notebook variable in Open Wrangler." };
+}
+
+function isExactOpenNotebook(notebook: vscode.NotebookDocument): boolean {
+  return !notebook.isClosed && vscode.workspace.notebookDocuments.includes(notebook);
 }
 
 function stringValue(value: unknown): string | undefined {

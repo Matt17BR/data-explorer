@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Memento } from "vscode";
+import * as vscode from "vscode";
+import type { Memento, NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
@@ -32,6 +33,61 @@ const inspectionStep: TransformStep = {
 };
 
 describe("SessionCoordinator", () => {
+  it("retains notebook provenance only in host session state", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/origin.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    setOpenNotebookDocuments(notebook);
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(
+      { request: vi.fn(async (): Promise<OpenWranglerResponse> => openedResponse()) },
+      notebook
+    );
+
+    const opened = await bridge.request({
+      ...openRequest,
+      source: {
+        kind: "notebookVariable",
+        label: "frame",
+        variableName: "frame",
+        uri: notebook.uri.toString()
+      }
+    });
+
+    expect(opened.kind).toBe("sessionOpened");
+    expect(coordinator.activeNotebookDocument()).toBe(notebook);
+    expect(coordinator.activeSession()).not.toHaveProperty("notebookDocument");
+    setOpenNotebookDocuments();
+  });
+
+  it("rejects mismatched notebook provenance before opening a runtime session", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/origin.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    setOpenNotebookDocuments(notebook);
+    const delegateRequest = vi.fn(async (): Promise<OpenWranglerResponse> => openedResponse());
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+
+    const opened = await bridge.request({
+      ...openRequest,
+      source: {
+        kind: "notebookVariable",
+        label: "frame",
+        variableName: "frame",
+        uri: "file:///workspace/replacement.ipynb"
+      }
+    });
+
+    expect(opened).toMatchObject({ kind: "error", code: "invalid_notebook_origin" });
+    expect(delegateRequest).not.toHaveBeenCalled();
+    expect(coordinator.activeNotebookDocument()).toBeUndefined();
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+    setOpenNotebookDocuments();
+  });
+
   it("pins public source metadata to the immutable open request across runtime responses", async () => {
     const runtimeOpened = openedResponse();
     const substitutedSource = {
@@ -3591,6 +3647,13 @@ function datasetStatsResponse(viewRequestId: string): Extract<OpenWranglerRespon
     viewRequestId,
     stats: { missingCells: 0, missingRows: 0, duplicateRows: 0, missingValuesByColumn: [] }
   };
+}
+
+function setOpenNotebookDocuments(...documents: NotebookDocument[]): void {
+  Object.defineProperty(vscode.workspace, "notebookDocuments", {
+    configurable: true,
+    value: documents
+  });
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {

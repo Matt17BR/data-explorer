@@ -452,10 +452,20 @@ This hardens the existing **Done** code-export row without changing the remainin
 
 Zero-window editor-acceptance harness, 2026-07-17:
 
-- Four script-level lifecycle tests prove the Linux default removes desktop display and live-editor IPC access, creates and removes private mode-0700 runtime, home, config, cache, and data roots, disables login-shell resolution and persistent auxiliary services, restores the caller environment, requires an explicit visible-debug override, and keeps Xvfb as an explicit compatibility mode.
+- Six script-level lifecycle tests prove the Linux default removes desktop display and live-editor IPC access, creates and removes private mode-0700 runtime, home, config, cache, and data roots, disables login-shell resolution and persistent auxiliary services, restores the caller environment, reports the last durable acceptance checkpoint, scopes POSIX timeout cleanup to the spawned editor process group, requires an explicit visible-debug override, and keeps Xvfb as an explicit compatibility mode.
 - The complete packaged-editor flow for the checksum-pinned artifact above passed on the default zero-window Ozone platform in disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. A focused Cursor rerun after private-home isolation produced no normal-profile, NSS, Crashpad, analytics-database, or GPU-display errors; the final combined run passed with the same isolated environment.
 
 This changes test isolation, not product behavior or parity status. No result from this harness is treated as cross-platform evidence.
+
+Notebook-origin provenance hardening, 2026-07-17:
+
+- Renderer, variable-viewer, manual-launch, integration-check, coordinator, and insertion paths retain the exact open `NotebookDocument`; renderer messages additionally retain the exact visible sender editor. Focus changes, other splits, closed origins, and same-URI replacement objects are rejected instead of falling back to the active editor or a URI match.
+- Every dispatched live-kernel session identity remains mapped to its exact kernel. Cancellation, timeout, malformed output, transport failure, late stale generations, wrong returned identities, duplicate IDs, provenance loss, early coordinator shutdown, and terminal close tests prove bounded one-time candidate cleanup without URI reacquisition. A wrong ID that names an existing live session cannot retire it, and an early idle notification cannot discard the mapping needed by delayed cleanup.
+- Generated-code insertion repeats exact-object, version, cell-count, and same-URI uniqueness checks immediately before dispatch, serializes its own requests, and reports success only after the same object contains the uniquely marked Python cell. The stable VS Code notebook-edit API is URI-addressed; a deliberately emulated replacement after dispatch is therefore reported as indeterminate and is never retried, rolled back, or misreported as success.
+- All 35 TypeScript suites pass with 542 tests and one platform skip; all 765 Python tests and six editor-isolation script tests pass. The strict native-Polars benchmark passes with 65.148 ms CSV and 52.519 ms Parquet cold-source protocol opens, 0.165/0.195 ms cached-page p95, and zero retained sessions. The exact 64-entry allowlisted `Matt17BR.openwrangler@0.3.0` candidate has SHA-256 `d8b8a322401c8682e4b8bdbf6262e07dd6dbcf62ec51a07784fe1a7f2760a71a`.
+- Those exact bytes passed the complete zero-window packaged matrix in disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. With notebooks A and B visible and B active, clicking A's real renderer action opened A's Polars variable and returned `101`, never acquired a kernel for B, inserted edited code only into A, preserved every existing cell in both notebooks, and closed with zero retained sessions.
+
+This hardens notebook provenance and originating-notebook insertion without changing parity status. The notebook-variable row remains **Partial** until the released Jupyter extension is exercised in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52); inline full-view expansion remains **Partial** until saved snapshots become coordinator-owned active sessions in [issue #53](https://github.com/Matt17BR/openwrangler/issues/53).
 
 ## Explicitly deferred from 1.0
 

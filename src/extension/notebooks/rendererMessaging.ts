@@ -21,7 +21,7 @@ export function registerNotebookRendererMessaging(
   }
   const messaging = vscode.notebooks.createRendererMessaging("openWrangler.renderer");
   context.subscriptions.push(
-    messaging.onDidReceiveMessage(({ message }) => {
+    messaging.onDidReceiveMessage(({ editor, message }) => {
       if (!isOpenInOpenWranglerMessage(message)) {
         return;
       }
@@ -31,26 +31,51 @@ export function registerNotebookRendererMessaging(
         return;
       }
 
-      const notebook = vscode.window.activeNotebookEditor?.notebook.uri;
-      const variableName = payload.metadata.source.variableName;
-      if (notebook && variableName && isPythonIdentifier(variableName)) {
-        OpenWranglerPanel.create(
-          context,
-          coordinator.createBridge(new KernelBridge(context, notebook)),
-          {
-            kind: "notebookVariable",
-            label: variableName,
-            variableName,
-            uri: notebook.toString()
-          },
-          payload.metadata.backend
+      const notebook = originatingNotebook(editor);
+      if (!notebook) {
+        void vscode.window.showErrorMessage(
+          "The notebook that sent this Open Wrangler action is no longer open. Reopen it and try again."
         );
+        return;
+      }
+
+      const variableName = payload.metadata.source.variableName;
+      if (variableName && isPythonIdentifier(variableName)) {
+        try {
+          OpenWranglerPanel.create(
+            context,
+            coordinator.createBridge(new KernelBridge(context, notebook), notebook),
+            {
+              kind: "notebookVariable",
+              label: variableName,
+              variableName,
+              uri: notebook.uri.toString()
+            },
+            payload.metadata.backend
+          );
+        } catch (error) {
+          const detail = error instanceof Error ? ` ${error.message}` : "";
+          void vscode.window.showErrorMessage(`Open Wrangler could not open the originating notebook.${detail}`);
+        }
         return;
       }
 
       OpenWranglerPanel.createFromPayload(context, bridge, notebookPayloadAsOpened(payload));
     })
   );
+}
+
+function originatingNotebook(editor: vscode.NotebookEditor): vscode.NotebookDocument | undefined {
+  const notebook = editor?.notebook;
+  if (
+    !notebook ||
+    notebook.isClosed ||
+    !vscode.window.visibleNotebookEditors.includes(editor) ||
+    !vscode.workspace.notebookDocuments.includes(notebook)
+  ) {
+    return undefined;
+  }
+  return notebook;
 }
 
 function isOpenInOpenWranglerMessage(message: unknown): message is OpenInOpenWranglerMessage {
