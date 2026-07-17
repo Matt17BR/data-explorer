@@ -281,43 +281,51 @@ export function registerNativeViews(
       }
     }),
     vscode.commands.registerCommand("openWrangler.insertNotebookCode", async () => {
-      if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return;
+      if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return false;
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
       if (!snapshot || !code) {
         await vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
-        return;
+        return false;
       }
       if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
         await vscode.window.showWarningMessage(
           "The active Open Wrangler session did not originate from a notebook variable."
         );
-        return;
+        return false;
       }
-      const sourceUri = snapshot.metadata.source.uri;
-      const notebookUri = sourceUri ? vscode.Uri.parse(sourceUri) : vscode.window.activeNotebookEditor?.notebook.uri;
-      const notebook = notebookUri
-        ? vscode.workspace.notebookDocuments.find((document) => document.uri.toString() === notebookUri.toString())
-        : undefined;
-      if (!notebook || !notebookUri) {
+      const notebook = coordinator.activeNotebookDocument();
+      if (!notebook || notebook.isClosed || !vscode.workspace.notebookDocuments.includes(notebook)) {
         await vscode.window.showWarningMessage("Reopen the originating notebook before inserting generated code.");
-        return;
+        return false;
       }
       const activeEditor = vscode.window.activeNotebookEditor;
       const insertionIndex =
-        activeEditor?.notebook.uri.toString() === notebookUri.toString()
+        activeEditor?.notebook === notebook
           ? (activeEditor.selections[0]?.end ?? notebook.cellCount)
           : notebook.cellCount;
-      if (
-        !(await insertGeneratedNotebookCell(notebook, insertionIndex, code, {
-          source: snapshot.metadata.source.label,
-          backend: snapshot.metadata.backend
-        }))
-      ) {
+      const insertion = await insertGeneratedNotebookCell(notebook, insertionIndex, code, {
+        source: snapshot.metadata.source.label,
+        backend: snapshot.metadata.backend
+      });
+      if (insertion.status === "stale") {
+        await vscode.window.showWarningMessage(
+          "The originating notebook changed or was replaced before Open Wrangler could insert the generated function. Reopen it and try again."
+        );
+        return false;
+      }
+      if (insertion.status === "indeterminate") {
+        await vscode.window.showWarningMessage(
+          "VS Code accepted the notebook edit, but Open Wrangler could not confirm it was applied to the originating notebook. Inspect the notebook before retrying."
+        );
+        return false;
+      }
+      if (insertion.status === "rejected") {
         await vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler function.");
-        return;
+        return false;
       }
       void vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
+      return true;
     }),
     vscode.commands.registerCommand("openWrangler.exportData", async () => {
       if (!(await requireTrustedWorkspace("export cleaned data"))) return;

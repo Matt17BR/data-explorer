@@ -7,6 +7,7 @@ import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/ses
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
 
 type CommandHandler = (...args: unknown[]) => unknown;
+type NotebookInsertionStatus = "applied" | "stale" | "indeterminate" | "rejected";
 
 const nativeMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
@@ -17,7 +18,12 @@ const nativeMocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(async () => undefined),
   showSaveDialog: vi.fn(async () => undefined as unknown),
   workspaceFolders: [] as Array<{ uri: unknown }>,
-  workspaceTrusted: true
+  workspaceTrusted: true,
+  notebookDocuments: [] as Array<{ uri: unknown; isClosed: boolean; cellCount: number }>,
+  activeNotebookEditor: undefined as
+    | { notebook: { uri: unknown; isClosed: boolean; cellCount: number }; selections: Array<{ end: number }> }
+    | undefined,
+  insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
 }));
 
 vi.mock("vscode", () => {
@@ -91,6 +97,9 @@ vi.mock("vscode", () => {
       }
     },
     window: {
+      get activeNotebookEditor() {
+        return nativeMocks.activeNotebookEditor;
+      },
       registerTreeDataProvider: () => disposable(),
       registerWebviewViewProvider: () => disposable(),
       showInformationMessage: nativeMocks.showInformationMessage,
@@ -106,7 +115,9 @@ vi.mock("vscode", () => {
       get workspaceFolders() {
         return nativeMocks.workspaceFolders;
       },
-      notebookDocuments: [],
+      get notebookDocuments() {
+        return nativeMocks.notebookDocuments;
+      },
       getConfiguration: () => ({ get: <T>(_key: string, fallback: T): T => fallback }),
       fs: {}
     },
@@ -121,7 +132,7 @@ vi.mock("../extension/webviewPanel", () => ({
   OpenWranglerPanel: { sendEditorAction: nativeMocks.sendEditorAction }
 }));
 vi.mock("../extension/notebooks/notebookInsertion", () => ({
-  insertGeneratedNotebookCell: vi.fn(async () => true)
+  insertGeneratedNotebookCell: nativeMocks.insertGeneratedNotebookCell
 }));
 vi.mock("../extension/configuration", () => ({
   getSetting: <T>(_key: string, fallback: T): T => fallback
@@ -148,6 +159,10 @@ describe("native operation commands", () => {
     nativeMocks.showSaveDialog.mockResolvedValue(undefined);
     nativeMocks.workspaceFolders.length = 0;
     nativeMocks.workspaceTrusted = true;
+    nativeMocks.notebookDocuments.length = 0;
+    nativeMocks.activeNotebookEditor = undefined;
+    nativeMocks.insertGeneratedNotebookCell.mockReset();
+    nativeMocks.insertGeneratedNotebookCell.mockResolvedValue({ status: "applied" });
   });
 
   it("forwards startOperation without a kind to the generic webview operation picker", async () => {
@@ -293,11 +308,79 @@ describe("native operation commands", () => {
       expect.stringContaining("active source no longer belongs to the current VS Code remote workspace host")
     );
   });
+
+  it("inserts notebook code into the exact originating document while another notebook is active", async () => {
+    const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+    const other = notebookDocument("file:///workspace/other.ipynb", 5);
+    nativeMocks.notebookDocuments.push(origin, other);
+    nativeMocks.activeNotebookEditor = { notebook: other, selections: [{ end: 1 }] };
+    register(notebookVariableSnapshot(), origin);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(true);
+
+    expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledWith(
+      origin,
+      3,
+      "def clean_data(df):\n    return df\n",
+      { source: "frame", backend: "pandas" }
+    );
+  });
+
+  it("rejects a same-URI replacement instead of retargeting notebook insertion", async () => {
+    const origin = notebookDocument("file:///workspace/shared.ipynb", 3, true);
+    const replacement = notebookDocument("file:///workspace/shared.ipynb", 4);
+    nativeMocks.notebookDocuments.push(replacement);
+    nativeMocks.activeNotebookEditor = { notebook: replacement, selections: [{ end: 2 }] };
+    register(notebookVariableSnapshot(), origin);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
+
+    expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Reopen the originating notebook before inserting generated code."
+    );
+  });
+
+  it.each([
+    {
+      status: "stale" as const,
+      channel: "warning" as const,
+      message: "changed or was replaced"
+    },
+    {
+      status: "indeterminate" as const,
+      channel: "warning" as const,
+      message: "Inspect the notebook before retrying"
+    },
+    {
+      status: "rejected" as const,
+      channel: "error" as const,
+      message: "VS Code could not insert"
+    }
+  ])("does not report insertion success when the helper result is $status", async ({ status, channel, message }) => {
+    const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+    nativeMocks.notebookDocuments.push(origin);
+    nativeMocks.insertGeneratedNotebookCell.mockResolvedValueOnce({ status });
+    register(notebookVariableSnapshot(), origin);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
+
+    const messageMock = channel === "warning" ? nativeMocks.showWarningMessage : nativeMocks.showErrorMessage;
+    expect(messageMock).toHaveBeenCalledWith(expect.stringContaining(message));
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Inserted the generated cleaning function into its notebook."
+    );
+    expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledOnce();
+  });
 });
 
-function register(snapshot: ActiveSessionSnapshot): void {
+function register(
+  snapshot: ActiveSessionSnapshot,
+  notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number }
+): void {
   const coordinator = {
     activeSession: () => snapshot,
+    activeNotebookDocument: () => notebookDocument,
     onDidChangeActiveSession: () => ({ dispose: () => undefined })
   } as unknown as SessionCoordinator;
   const context = {
@@ -343,6 +426,37 @@ function snapshotWithDraft(): ActiveSessionSnapshot {
       params: {}
     }
   });
+}
+
+function notebookVariableSnapshot(): ActiveSessionSnapshot {
+  const result = noDraftSnapshot();
+  result.metadata = {
+    ...result.metadata,
+    backend: "pandas",
+    source: {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/shared.ipynb"
+    },
+    capabilities: {
+      editable: true,
+      lazy: false,
+      cancel: true,
+      exportCsv: true,
+      exportParquet: true,
+      notebookInsert: true
+    }
+  };
+  return result;
+}
+
+function notebookDocument(uri: string, cellCount: number, isClosed = false) {
+  return {
+    uri: { toString: () => uri },
+    isClosed,
+    cellCount
+  };
 }
 
 function snapshot(

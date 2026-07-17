@@ -3,7 +3,54 @@ import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import test from "node:test";
-import { editorDisplayLaunchArgs, startIsolatedEditorDisplay } from "./editor-acceptance.mjs";
+import {
+  acceptanceProgressDetail,
+  EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS,
+  editorDisplayLaunchArgs,
+  editorProcessGroupRunning,
+  startIsolatedEditorDisplay
+} from "./editor-acceptance.mjs";
+
+test("editor phases retain a bounded slow-editor allowance and report their last checkpoint", async () => {
+  assert.equal(EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS, 300_000);
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-progress-"));
+  const progressPath = join(directory, "result.progress");
+  try {
+    assert.equal(acceptanceProgressDetail(progressPath), "No acceptance checkpoint was recorded.");
+    await writeFile(progressPath, "verify:notebook-flows\n");
+    assert.equal(acceptanceProgressDetail(progressPath), "Last acceptance checkpoint: verify:notebook-flows.");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("POSIX editor process-group probes include descendants and tolerate a fully exited tree", () => {
+  const probes = [];
+  assert.equal(
+    editorProcessGroupRunning(731, (pid, signal) => {
+      probes.push([pid, signal]);
+    }),
+    true
+  );
+  assert.deepEqual(probes, [[-731, 0]]);
+  assert.equal(
+    editorProcessGroupRunning(731, () => {
+      const error = new Error("missing process group");
+      error.code = "ESRCH";
+      throw error;
+    }),
+    false
+  );
+  assert.throws(
+    () =>
+      editorProcessGroupRunning(731, () => {
+        const error = new Error("permission denied");
+        error.code = "EPERM";
+        throw error;
+      }),
+    { code: "EPERM" }
+  );
+});
 
 test("Linux editor acceptance defaults to an isolated zero-window platform", async () => {
   const environment = {

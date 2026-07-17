@@ -66,7 +66,9 @@ export class RestartableKernel<TKernel> {
         options.beforeDispatch?.();
         dispatched = true;
         phase = "execute";
-        return await execute(generation.kernel);
+        const result = await execute(generation.kernel);
+        this.assertCurrent(generation);
+        return result;
       } catch (error) {
         // A failed bootstrap or execution leaves that generation's state
         // uncertain. The identity check prevents a late failure from clearing a

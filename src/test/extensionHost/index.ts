@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -16,7 +17,7 @@ import * as vscode from "vscode";
 import { chromium, type Locator, type Page } from "playwright-core";
 import { getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
-import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
+import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
 import type {
   ColumnReference,
   GridPage,
@@ -101,12 +102,14 @@ function gridColumnDisplays(page: GridPage, columnId: string): string[] {
 }
 
 export async function run(): Promise<void> {
+  recordAcceptanceProgress("activation:start");
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The Open Wrangler extension must be discoverable.");
   const extensionApi = await extension.activate();
   const testing = extensionApi?.testing;
   assert.ok(testing, "The isolated acceptance harness must enable the test-only extension API.");
   assert.equal(extension.isActive, true, "The extension must activate successfully.");
+  recordAcceptanceProgress("activation:complete");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
   assert.match(extension.packageJSON.description, /open-source dataframe wrangler/i);
@@ -279,13 +282,17 @@ export async function run(): Promise<void> {
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
   if (phase === "seed") {
+    recordAcceptanceProgress("seed:start");
     await seedPersistedPlan(testing, fixture);
+    recordAcceptanceProgress("seed:complete");
     console.log("Open Wrangler extension-host persistence seed passed.");
     return;
   }
 
   if (phase === "single") await seedPersistedPlan(testing, fixture);
+  recordAcceptanceProgress("verify:replay-recovery");
   await verifyPersistedReplayAndRecovery(testing, workspace, fixture);
+  recordAcceptanceProgress("verify:custom-editor");
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => {
@@ -321,14 +328,20 @@ export async function run(): Promise<void> {
   );
 
   if (testPython) {
+    recordAcceptanceProgress("verify:runtime-and-file-inputs");
     await exerciseRuntimeSelectionCommands(testing, fixture, testPython);
     await exercisePackagedFileInputs(testing, workspace, testPython);
   }
+  recordAcceptanceProgress("verify:viewing-queries");
   await exercisePackagedViewingQueries(testing, fixture);
+  recordAcceptanceProgress("verify:wide-projection");
   await exerciseWideColumnProjection(testing);
+  recordAcceptanceProgress("verify:operation-groups");
   await exercisePackagedOperationGroups(testing, fixture);
+  recordAcceptanceProgress("verify:notebook-flows");
   await exercisePackagedNotebookFlows(testing);
   if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    recordAcceptanceProgress("verify:file-launch-surfaces");
     await exercisePackagedFileLaunchSurfaces(
       testing,
       vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.jsonl")),
@@ -336,10 +349,24 @@ export async function run(): Promise<void> {
     );
   }
   if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+    recordAcceptanceProgress("verify:screenshots");
     await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
 
+  recordAcceptanceProgress("verify:complete");
   console.log("Open Wrangler extension-host acceptance passed.");
+}
+
+function recordAcceptanceProgress(checkpoint: string): void {
+  const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
+  if (!progressPath) return;
+  const temporaryPath = `${progressPath}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporaryPath, `${checkpoint}\n`, { encoding: "utf8", flag: "w" });
+    renameSync(temporaryPath, progressPath);
+  } catch {
+    rmSync(temporaryPath, { force: true });
+  }
 }
 
 async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -980,7 +1007,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   const notebookPath = path.join(directory, "notebook-acceptance.ipynb");
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
-  const page = {
+  const page: GridPage = {
     offset: 0,
     limit: 1,
     totalRows: 1,
@@ -993,8 +1020,10 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       }
     ]
   };
-  const schema = [{ id: "c:0", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }];
-  const currentPayload = {
+  const schema: SessionMetadata["schema"] = [
+    { id: "c:0", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }
+  ];
+  const currentPayload: NotebookOutputPayload = {
     mimeVersion: 2,
     metadata: {
       protocolVersion: 2,
@@ -1002,7 +1031,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       revision: 0,
       backend: "polars",
       mode: "viewing",
-      source: { kind: "notebookOutput", label: "current frame" },
+      source: {
+        kind: "notebookOutput",
+        label: "renderer provenance A",
+        variableName: "renderer_frame"
+      },
       capabilities: {
         editable: false,
         lazy: false,
@@ -1058,14 +1091,16 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       source: "df",
       backend: "polars"
     });
-    assert.equal(inserted, true);
+    assert.deepEqual(inserted, { status: "applied" });
     assert.equal(notebook.cellCount, 2);
     assert.equal(notebook.cellAt(1).document.getText(), "def clean_data(df):\n    return df\n");
     assert.deepEqual(notebook.cellAt(1).metadata.openWrangler, {
       source: "df",
       backend: "polars",
-      generated: true
+      generated: true,
+      insertionId: notebook.cellAt(1).metadata.openWrangler.insertionId
     });
+    assert.equal(typeof notebook.cellAt(1).metadata.openWrangler.insertionId, "string");
 
     const jupyterExtension = vscode.extensions.getExtension<FakeJupyterApi>("ms-toolsai.jupyter");
     assert.ok(jupyterExtension, "The stable Jupyter API acceptance extension must be available.");
@@ -1081,7 +1116,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "identity_frame = duplicate_frame.copy(deep=True)",
       "identity_frame.iloc[:, 2] = ['alpha', 'bravo', 'charlie', 'delta']",
       "identity_frame_source = identity_frame.copy(deep=True)",
-      "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})"
+      "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})",
+      "renderer_frame = pl.DataFrame({'value': [101]})"
     ].join("\n");
     await jupyter.testing.execute(notebook.uri, setupCode);
 
@@ -1151,11 +1187,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "the notebook export command to insert a cell"
     );
     assert.equal(notebook.cellAt(insertionIndex).document.getText(), editedNotebookCode);
-    assert.deepEqual(notebook.cellAt(insertionIndex).metadata.openWrangler, {
+    const pandasInsertionMetadata = notebook.cellAt(insertionIndex).metadata.openWrangler;
+    assert.deepEqual(pandasInsertionMetadata, {
       source: "pandas_frame",
       backend: "pandas",
-      generated: true
+      generated: true,
+      insertionId: pandasInsertionMetadata.insertionId
     });
+    assert.equal(typeof pandasInsertionMetadata.insertionId, "string");
     const pandasClosed = await testing.request({
       kind: "closeSession",
       sessionId: active.sessionId,
@@ -2144,6 +2183,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Polars notebook session to close");
 
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      recordAcceptanceProgress("verify:notebook-renderer-provenance");
+      await exercisePackagedRendererProvenance(testing, jupyter, notebook, currentPayload, directory);
+    }
+
     const denialCalls = jupyter.testing.denialCalls();
     jupyter.testing.setDenied(true);
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
@@ -2160,6 +2204,261 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+async function exercisePackagedRendererProvenance(
+  testing: TestApi,
+  jupyter: FakeJupyterApi,
+  originNotebook: vscode.NotebookDocument,
+  payloadTemplate: NotebookOutputPayload,
+  directory: string
+): Promise<void> {
+  recordAcceptanceProgress("verify:notebook-renderer:fixtures");
+  const secondNotebookPath = path.join(directory, "renderer-provenance-b.ipynb");
+  const secondPayload: NotebookOutputPayload = {
+    ...payloadTemplate,
+    metadata: {
+      ...payloadTemplate.metadata,
+      sessionId: "snapshot-renderer-provenance-b",
+      source: {
+        kind: "notebookOutput",
+        label: "renderer provenance B",
+        variableName: "renderer_frame"
+      }
+    }
+  };
+  writeFileSync(
+    secondNotebookPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: 1,
+          metadata: {},
+          outputs: [
+            {
+              output_type: "display_data",
+              metadata: {},
+              data: {
+                "text/plain": [`Open Wrangler ${secondPayload.metadata.source.label}`],
+                [OPEN_WRANGLER_MIME_V2]: secondPayload
+              }
+            }
+          ],
+          source: ["renderer_frame"]
+        }
+      ],
+      metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+  recordAcceptanceProgress("verify:notebook-renderer:fixture-written");
+
+  let secondNotebook: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress("verify:notebook-renderer:open-b");
+    secondNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(secondNotebookPath));
+    recordAcceptanceProgress("verify:notebook-renderer:opened-b");
+    assert.equal(
+      jupyter.testing.stats(secondNotebook.uri),
+      undefined,
+      "Notebook B must not acquire a kernel before notebook A's renderer action."
+    );
+    recordAcceptanceProgress("verify:notebook-renderer:show-a");
+    const originEditor = await vscode.window.showNotebookDocument(originNotebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    originEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    recordAcceptanceProgress("verify:notebook-renderer:show-b");
+    await vscode.window.showNotebookDocument(secondNotebook, {
+      viewColumn: vscode.ViewColumn.Two,
+      preserveFocus: false,
+      preview: false
+    });
+    recordAcceptanceProgress("verify:notebook-renderer:shown-b");
+    assert.equal(
+      vscode.window.activeNotebookEditor?.notebook,
+      secondNotebook,
+      "Notebook B must remain active while the renderer event is emitted from notebook A."
+    );
+
+    recordAcceptanceProgress("verify:notebook-renderer:button");
+    const workbench = await connectToEditorWorkbench();
+    const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A");
+    recordAcceptanceProgress("verify:notebook-renderer:click");
+    await originButton.evaluate((button: unknown) => (button as { click(): void }).click());
+    recordAcceptanceProgress("verify:notebook-renderer:session");
+    await waitFor(
+      () => {
+        const source = testing.activeSession()?.metadata.source;
+        return (
+          source?.kind === "notebookVariable" &&
+          source.variableName === "renderer_frame" &&
+          source.uri === originNotebook.uri.toString()
+        );
+      },
+      30_000,
+      "notebook A's renderer event to open notebook A while notebook B was active"
+    );
+
+    const active = testing.activeSession();
+    assert.ok(active, "The renderer provenance scenario must open a live notebook session.");
+    assert.equal(active.metadata.backend, "polars");
+    const provenancePage = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "notebook-renderer-provenance-page",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(provenancePage.kind, "page");
+    if (provenancePage.kind !== "page") throw new Error("Renderer provenance page did not resolve.");
+    assert.equal(
+      provenancePage.page.rows[0]?.values[0]?.display,
+      "101",
+      "The renderer event must read notebook A's kernel variable."
+    );
+    assert.equal(
+      jupyter.testing.stats(secondNotebook.uri),
+      undefined,
+      "Notebook A's renderer event must not acquire notebook B's active kernel."
+    );
+
+    recordAcceptanceProgress("verify:notebook-renderer:insertion");
+    const generatedCode = "# renderer provenance A\ndef clean_data(df):\n    return df\n";
+    testing.setCodeForExport(generatedCode);
+    const originCellCount = originNotebook.cellCount;
+    const originCellsBeforeInsertion = Array.from({ length: originCellCount }, (_, index) =>
+      originNotebook.cellAt(index).document.getText()
+    );
+    const secondCellCount = secondNotebook.cellCount;
+    assert.equal(await vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode"), true);
+    await waitFor(
+      () => originNotebook.cellCount === originCellCount + 1,
+      10_000,
+      "generated code from notebook A's renderer session to return to notebook A"
+    );
+    assert.equal(secondNotebook.cellCount, secondCellCount, "Notebook B must remain unchanged by notebook A's export.");
+    const rendererInsertionIndices = Array.from({ length: originNotebook.cellCount }, (_, index) => index).filter(
+      (index) => {
+        const cell = originNotebook.cellAt(index);
+        return cell.document.getText() === generatedCode && cell.metadata.openWrangler?.source === "renderer_frame";
+      }
+    );
+    assert.equal(rendererInsertionIndices.length, 1, "Exactly one renderer-provenance cell must be inserted.");
+    const rendererInsertionIndex = rendererInsertionIndices[0];
+    if (rendererInsertionIndex === undefined) throw new Error("The renderer-provenance insertion index was missing.");
+    assert.deepEqual(
+      Array.from({ length: originNotebook.cellCount }, (_, index) => index)
+        .filter((index) => index !== rendererInsertionIndex)
+        .map((index) => originNotebook.cellAt(index).document.getText()),
+      originCellsBeforeInsertion,
+      "Notebook A's existing cells must retain their exact order and contents."
+    );
+    const rendererInsertionMetadata = originNotebook.cellAt(rendererInsertionIndex).metadata.openWrangler;
+    assert.deepEqual(rendererInsertionMetadata, {
+      source: "renderer_frame",
+      backend: "polars",
+      generated: true,
+      insertionId: rendererInsertionMetadata.insertionId
+    });
+    assert.equal(typeof rendererInsertionMetadata.insertionId, "string");
+    assert.equal(
+      await originNotebook.save(),
+      true,
+      "The renderer provenance fixture must close without a save prompt."
+    );
+    // VS Code retains an API-opened NotebookDocument after its final tab closes
+    // while this live session pins the document. Closed/reopened same-URI
+    // rejection is therefore exercised deterministically in coordinator/native
+    // command unit tests instead of manufacturing a false packaged lifecycle.
+
+    recordAcceptanceProgress("verify:notebook-renderer:session-close");
+    const closed = await testing.request({
+      kind: "closeSession",
+      sessionId: active.sessionId,
+      revision: provenancePage.revision
+    });
+    assert.equal(closed.kind, "sessionClosed");
+    await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
+    recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
+    const tabsToClose = rendererProvenanceTabs(secondNotebook);
+    if (tabsToClose.length > 0) assert.equal(await vscode.window.tabGroups.close(tabsToClose, true), true);
+    recordAcceptanceProgress("verify:notebook-renderer:complete");
+  } catch (error) {
+    await bestEffortRendererProvenanceCleanup(testing, originNotebook, secondNotebook);
+    throw error;
+  }
+}
+
+async function bestEffortRendererProvenanceCleanup(
+  testing: TestApi,
+  originNotebook: vscode.NotebookDocument,
+  secondNotebook: vscode.NotebookDocument | undefined
+): Promise<void> {
+  const active = testing.activeSession();
+  if (
+    active?.metadata.source.kind === "notebookVariable" &&
+    active.metadata.source.uri === originNotebook.uri.toString()
+  ) {
+    try {
+      await testing.request({
+        kind: "closeSession",
+        sessionId: active.sessionId,
+        revision: active.metadata.revision
+      });
+    } catch {
+      // Editor-process-group teardown remains the final bounded fallback.
+    }
+  }
+  const tabsToClose = rendererProvenanceTabs(secondNotebook);
+  if (tabsToClose.length > 0) {
+    try {
+      await vscode.window.tabGroups.close(tabsToClose, true);
+    } catch {
+      // Preserve the original acceptance failure.
+    }
+  }
+}
+
+function rendererProvenanceTabs(secondNotebook: vscode.NotebookDocument | undefined): vscode.Tab[] {
+  return [
+    ...(secondNotebook ? [notebookTab(secondNotebook.uri)] : []),
+    ...vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter((tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType === "openWrangler.viewer")
+  ].filter((tab): tab is vscode.Tab => Boolean(tab));
+}
+
+function notebookTab(uri: vscode.Uri): vscode.Tab | undefined {
+  return vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .find((tab) => tab.input instanceof vscode.TabInputNotebook && tab.input.uri.toString() === uri.toString());
+}
+
+async function waitForNotebookRendererButton(workbench: Page, label: string): Promise<Locator> {
+  const deadline = Date.now() + 15_000;
+  do {
+    const browser = workbench.context().browser();
+    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+    for (const page of pages) {
+      for (const frame of page.frames()) {
+        const preview = frame.locator("section.openwrangler-notebook").filter({
+          hasText: `Open Wrangler preview: ${label}`
+        });
+        const button = preview.getByRole("button", { name: "Open in Open Wrangler" }).first();
+        if ((await button.count()) > 0 && (await button.isVisible())) return button;
+      }
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for the real notebook renderer button for ${JSON.stringify(label)}.`);
 }
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {

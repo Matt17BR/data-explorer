@@ -143,7 +143,7 @@ export async function exportFileSafely({
     await assertProtectedSourcesUnchanged(fileSystem, protectedSourceAnchors);
     await assertDestinationUnchanged(fileSystem, destinationAnchor);
     await assertKnownTemporary(fileSystem, temporaryPath, temporaryIdentity);
-    await fileSystem.replace(temporaryPath, resolvedDestination);
+    await replaceAfterFinalValidation(fileSystem, temporaryPath, resolvedDestination, destinationAnchor);
     temporaryPath = undefined;
     temporaryIdentity = undefined;
   } catch (error) {
@@ -375,7 +375,41 @@ function sourceCollisionError(): Error {
 }
 
 function destinationChangedError(): Error {
-  return new Error("The selected Python-script destination changed before it could be replaced safely.");
+  return new DestinationChangedError();
+}
+
+class DestinationChangedError extends Error {
+  constructor(cause?: unknown) {
+    super(
+      "The selected Python-script destination changed before it could be replaced safely.",
+      cause === undefined ? undefined : { cause }
+    );
+    this.name = "DestinationChangedError";
+  }
+}
+
+async function replaceAfterFinalValidation(
+  fileSystem: AtomicExportFileSystem,
+  temporaryPath: string,
+  destinationPath: string,
+  destinationAnchor: DestinationAnchor
+): Promise<void> {
+  try {
+    await fileSystem.replace(temporaryPath, destinationPath);
+  } catch (replaceError) {
+    try {
+      await assertDestinationUnchanged(fileSystem, destinationAnchor);
+    } catch (validationError) {
+      if (validationError instanceof DestinationChangedError) {
+        throw new DestinationChangedError(replaceError);
+      }
+      throw new AggregateError(
+        [replaceError, validationError],
+        "Python-script replacement failed and the destination state could not be verified."
+      );
+    }
+    throw replaceError;
+  }
 }
 
 function nodeHandle(handle: FileHandle, identity: AtomicExportHandle["identity"]): AtomicExportHandle {

@@ -9,6 +9,7 @@ const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const XVFB_STOP_TIMEOUT_MS = 5_000;
+export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
 const ISOLATED_EDITOR_ARGS = [
   "--force-disable-user-env",
   "--disable-updates",
@@ -544,6 +545,8 @@ export async function runEditorAcceptancePhase({
   resultPath
 }) {
   rmSync(resultPath, { force: true });
+  const progressPath = `${resultPath}.progress`;
+  rmSync(progressPath, { force: true });
   const cdpPort =
     phase === "verify" || process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ? await reservePort() : undefined;
   const sandboxArgs = process.platform === "linux" ? ["--no-sandbox", ...editorDisplayLaunchArgs()] : [];
@@ -568,6 +571,7 @@ export async function runEditorAcceptancePhase({
       ...sandboxArgs
     ],
     {
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         OPEN_WRANGLER_EXTENSION_TESTS: "1",
@@ -576,7 +580,8 @@ export async function runEditorAcceptancePhase({
         ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
         OPEN_WRANGLER_TEST_PYTHON: python,
         OPEN_WRANGLER_TEST_MODULE: testModule,
-        OPEN_WRANGLER_TEST_RESULT: resultPath
+        OPEN_WRANGLER_TEST_RESULT: resultPath,
+        OPEN_WRANGLER_TEST_PROGRESS: progressPath
       },
       encoding: "utf8",
       stdio: "inherit"
@@ -588,16 +593,34 @@ export async function runEditorAcceptancePhase({
     child.once("exit", (code, signal) => resolveExit({ code, signal }));
   });
   const isRunning = () => child.exitCode === null && child.signalCode === null && child.pid !== undefined;
+  const ownsProcessGroup = process.platform !== "win32";
+  let interruptedSignal;
+  const recordInterruption = (signal) => {
+    if (interruptedSignal) {
+      signalEditorTree(child, isRunning, ownsProcessGroup, "SIGKILL");
+      return;
+    }
+    interruptedSignal = signal;
+  };
+  const onSigint = () => recordInterruption("SIGINT");
+  const onSigterm = () => recordInterruption("SIGTERM");
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
   let outcome;
   let acceptanceError;
   try {
-    const deadline = Date.now() + 180_000;
-    while (!existsSync(resultPath) && isRunning() && Date.now() < deadline) {
+    const deadline = Date.now() + EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS;
+    while (!existsSync(resultPath) && isRunning() && !interruptedSignal && Date.now() < deadline) {
       await delay(100);
     }
 
+    if (interruptedSignal) {
+      throw new Error(`${editor.name} ${phase} acceptance was interrupted by ${interruptedSignal}.`);
+    }
     if (!existsSync(resultPath)) {
-      throw new Error(`${editor.name} ${phase} acceptance exited without writing a result.`);
+      throw new Error(
+        `${editor.name} ${phase} acceptance exited without writing a result. ${acceptanceProgressDetail(progressPath)}`
+      );
     }
 
     try {
@@ -614,7 +637,7 @@ export async function runEditorAcceptancePhase({
   }
 
   try {
-    await terminateEditorChild(child, exit, isRunning);
+    await terminateEditorChild(child, exit, isRunning, ownsProcessGroup, interruptedSignal ? 0 : 3_500);
   } catch (error) {
     acceptanceError = acceptanceError
       ? new AggregateError(
@@ -622,6 +645,13 @@ export async function runEditorAcceptancePhase({
           `${editor.name} ${phase} acceptance failed and its editor process did not shut down cleanly.`
         )
       : error;
+  } finally {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  }
+
+  if (interruptedSignal && !acceptanceError) {
+    acceptanceError = new Error(`${editor.name} ${phase} acceptance was interrupted by ${interruptedSignal}.`);
   }
 
   if (acceptanceError) throw acceptanceError;
@@ -631,16 +661,58 @@ export async function runEditorAcceptancePhase({
   }
 }
 
-async function terminateEditorChild(child, exit, isRunning) {
-  if (await waitForChildExit(exit, 3_500)) return;
+export function acceptanceProgressDetail(progressPath) {
+  if (!existsSync(progressPath)) return "No acceptance checkpoint was recorded.";
+  try {
+    const checkpoint = readFileSync(progressPath, "utf8").trim();
+    return checkpoint ? `Last acceptance checkpoint: ${checkpoint}.` : "The acceptance checkpoint file was empty.";
+  } catch (error) {
+    return `The acceptance checkpoint could not be read: ${error instanceof Error ? error.message : String(error)}.`;
+  }
+}
 
-  if (isRunning()) child.kill("SIGTERM");
-  if (await waitForChildExit(exit, 10_000)) return;
+async function terminateEditorChild(child, exit, isRunning, ownsProcessGroup, gracefulExitMs) {
+  if (await waitForEditorTreeExit(child, exit, isRunning, ownsProcessGroup, gracefulExitMs)) return;
 
-  if (isRunning()) child.kill("SIGKILL");
-  if (await waitForChildExit(exit, 10_000)) return;
+  signalEditorTree(child, isRunning, ownsProcessGroup, "SIGTERM");
+  if (await waitForEditorTreeExit(child, exit, isRunning, ownsProcessGroup, 10_000)) return;
 
-  throw new Error(`The spawned editor process ${child.pid ?? "(unknown pid)"} did not exit after SIGKILL.`);
+  signalEditorTree(child, isRunning, ownsProcessGroup, "SIGKILL");
+  if (await waitForEditorTreeExit(child, exit, isRunning, ownsProcessGroup, 10_000)) return;
+
+  throw new Error(`The spawned editor process tree ${child.pid ?? "(unknown pid)"} did not exit after SIGKILL.`);
+}
+
+async function waitForEditorTreeExit(child, exit, isRunning, ownsProcessGroup, timeoutMs) {
+  if (!ownsProcessGroup || child.pid === undefined) return waitForChildExit(exit, timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (!editorProcessGroupRunning(child.pid) && !isRunning()) return true;
+    await delay(50);
+  } while (Date.now() < deadline);
+  return !editorProcessGroupRunning(child.pid) && !isRunning();
+}
+
+function signalEditorTree(child, isRunning, ownsProcessGroup, signal) {
+  if (ownsProcessGroup && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (!(error && typeof error === "object" && error.code === "ESRCH")) throw error;
+    }
+  }
+  if (isRunning()) child.kill(signal);
+}
+
+export function editorProcessGroupRunning(pid, signalProcess = process.kill) {
+  try {
+    signalProcess(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 async function waitForChildExit(exit, timeoutMs) {

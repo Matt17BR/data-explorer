@@ -518,6 +518,72 @@ describe("safe Python-script file export", () => {
     await expectExportFailure(fixture, fileSystem, replaceFailure);
   });
 
+  it.each(["EPERM", "EACCES", "EEXIST"])(
+    "normalizes %s from a failed replacement when the previously absent destination appeared",
+    async (code) => {
+      const source = path.join(directory, "source.csv");
+      const destination = path.join(directory, "clean.py");
+      await writeFile(source, SOURCE_CONTENTS);
+      const replaceFailure = fileSystemError(code, `injected Windows ${code} replacement contention`);
+      const fileSystem = actualFileSystem({
+        replace: async (_temporary, target) => {
+          await writeFile(target, "concurrent destination");
+          throw replaceFailure;
+        }
+      });
+
+      const error = await captureFailure(() =>
+        exportFileSafely({
+          destination: fileUri(destination),
+          protectedSources: [fileUri(source)],
+          contents: Buffer.from(DESTINATION_CONTENTS),
+          fileSystem,
+          createTemporaryId: () => "windows-contention"
+        })
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/destination changed/u);
+      expect((error as Error).cause).toBe(replaceFailure);
+      expect(await readFile(source, "utf8")).toBe(SOURCE_CONTENTS);
+      expect(await readFile(destination, "utf8")).toBe("concurrent destination");
+      expect(await temporaryFiles(directory)).toEqual([]);
+    }
+  );
+
+  it("preserves a raw Windows EPERM replacement failure when the destination did not change", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const replaceFailure = fileSystemError("EPERM", "injected unchanged-destination replacement failure");
+    const fileSystem = actualFileSystem({ replace: async () => Promise.reject(replaceFailure) });
+
+    await expectExportFailure(fixture, fileSystem, replaceFailure);
+  });
+
+  it("reports both replacement and post-failure validation errors without losing either cause", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const replaceFailure = fileSystemError("EPERM", "injected replacement failure");
+    const validationFailure = fileSystemError("EIO", "injected post-replacement validation failure");
+    const base = actualFileSystem();
+    let replacementAttempted = false;
+    const fileSystem = actualFileSystem({
+      replace: async () => {
+        replacementAttempted = true;
+        throw replaceFailure;
+      },
+      stat: async (target) => {
+        if (replacementAttempted && target === fixture.directory) throw validationFailure;
+        return base.stat(target);
+      }
+    });
+
+    const error = await captureFailure(() => exportFixture(fixture, fileSystem));
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([replaceFailure, validationFailure]);
+    expect((error as Error).message).toMatch(/destination state could not be verified/u);
+    await expectFixturePreserved(fixture);
+  });
+
   it("reports both a primary failure and a failed cleanup close while still removing the temporary file", async () => {
     const fixture = await sourceAndDestination(directory);
     const writeFailure = new Error("injected write failure");
