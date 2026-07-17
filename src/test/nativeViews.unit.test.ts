@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { link, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
@@ -9,7 +12,12 @@ const nativeMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   executeCommand: vi.fn(async () => undefined),
   sendEditorAction: vi.fn(() => true),
-  showInformationMessage: vi.fn(async () => undefined)
+  showInformationMessage: vi.fn(async () => undefined),
+  showWarningMessage: vi.fn(async () => undefined),
+  showErrorMessage: vi.fn(async () => undefined),
+  showSaveDialog: vi.fn(async () => undefined as unknown),
+  workspaceFolders: [] as Array<{ uri: unknown }>,
+  workspaceTrusted: true
 }));
 
 vi.mock("vscode", () => {
@@ -41,19 +49,27 @@ vi.mock("vscode", () => {
   class Uri {
     private constructor(
       readonly fsPath: string,
-      readonly scheme: string
+      readonly scheme: string,
+      readonly authority = ""
     ) {}
     static file(path: string): Uri {
       return new Uri(path, "file");
     }
     static parse(value: string): Uri {
-      return new Uri(value, value.split(":", 1)[0] ?? "file");
+      const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/?#]*))?([^?#]*)/u.exec(value);
+      return new Uri(match?.[3] ?? value, match?.[1] ?? "file", match?.[2] ?? "");
     }
     static joinPath(base: Uri, ...parts: string[]): Uri {
-      return Uri.file([base.fsPath, ...parts].join("/"));
+      const segments: string[] = [];
+      for (const segment of [base.fsPath, ...parts].join("/").split("/")) {
+        if (!segment || segment === ".") continue;
+        if (segment === "..") segments.pop();
+        else segments.push(segment);
+      }
+      return new Uri(`/${segments.join("/")}`, base.scheme, base.authority);
     }
     toString(): string {
-      return this.scheme === "file" ? `file://${this.fsPath}` : this.fsPath;
+      return `${this.scheme}://${this.authority}${this.fsPath}`;
     }
   }
 
@@ -78,17 +94,21 @@ vi.mock("vscode", () => {
       registerTreeDataProvider: () => disposable(),
       registerWebviewViewProvider: () => disposable(),
       showInformationMessage: nativeMocks.showInformationMessage,
-      showWarningMessage: vi.fn(async () => undefined),
-      showErrorMessage: vi.fn(async () => undefined),
-      showSaveDialog: vi.fn(async () => undefined),
+      showWarningMessage: nativeMocks.showWarningMessage,
+      showErrorMessage: nativeMocks.showErrorMessage,
+      showSaveDialog: nativeMocks.showSaveDialog,
       showQuickPick: vi.fn(async () => undefined)
     },
     workspace: {
-      isTrusted: true,
-      workspaceFolders: [],
+      get isTrusted(): boolean {
+        return nativeMocks.workspaceTrusted;
+      },
+      get workspaceFolders() {
+        return nativeMocks.workspaceFolders;
+      },
       notebookDocuments: [],
       getConfiguration: () => ({ get: <T>(_key: string, fallback: T): T => fallback }),
-      fs: { writeFile: vi.fn(async () => undefined) }
+      fs: {}
     },
     env: {
       clipboard: { writeText: vi.fn(async () => undefined) },
@@ -122,6 +142,12 @@ describe("native operation commands", () => {
     nativeMocks.sendEditorAction.mockClear();
     nativeMocks.sendEditorAction.mockReturnValue(true);
     nativeMocks.showInformationMessage.mockClear();
+    nativeMocks.showWarningMessage.mockClear();
+    nativeMocks.showErrorMessage.mockClear();
+    nativeMocks.showSaveDialog.mockReset();
+    nativeMocks.showSaveDialog.mockResolvedValue(undefined);
+    nativeMocks.workspaceFolders.length = 0;
+    nativeMocks.workspaceTrusted = true;
   });
 
   it("forwards startOperation without a kind to the generic webview operation picker", async () => {
@@ -141,6 +167,130 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
       "Apply or discard the current draft before editing the latest step."
+    );
+  });
+
+  it("ignores caller-provided export destinations and still opens the Save dialog", async () => {
+    register(noDraftSnapshot());
+
+    const hostileDestination = vscodeUri("/workspace/source.csv");
+    await expect(command("openWrangler.exportCode")(hostileDestination)).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Export Open Wrangler Python Code",
+        filters: { "Python script": ["py"] },
+        saveLabel: "Export code"
+      })
+    );
+    expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("rechecks Workspace Trust after the Save dialog before writing", async () => {
+    register(noDraftSnapshot());
+    nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
+      nativeMocks.workspaceTrusted = false;
+      return vscodeUri("/workspace/clean.py");
+    });
+
+    await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Trust this workspace before Open Wrangler can export code."
+    );
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining("Exported Open Wrangler code")
+    );
+  });
+
+  it("routes a hard-link source alias returned by the public Save dialog through the source guard", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-native-export-"));
+    const source = path.join(directory, "source.csv");
+    const alias = path.join(directory, "source-alias.py");
+    const contents = "value\n1\n";
+    try {
+      await writeFile(source, contents);
+      await link(source, alias);
+      register(
+        snapshot({
+          mode: "editing",
+          steps: [appliedStep],
+          source: {
+            kind: "file",
+            label: "source.csv",
+            path: source,
+            uri: "file://malformed-source-metadata"
+          }
+        })
+      );
+      nativeMocks.showSaveDialog.mockResolvedValueOnce(resourceUri("file", alias));
+
+      await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+
+      expect(await readFile(source, "utf8")).toBe(contents);
+      expect(await readFile(alias, "utf8")).toBe(contents);
+      expect((await readdir(directory)).filter((name) => name.startsWith(".openwrangler-"))).toEqual([]);
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(
+        expect.stringContaining("never overwrites the active source")
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an exact remote source URI in the default script destination", async () => {
+    register(
+      snapshot({
+        mode: "editing",
+        steps: [appliedStep],
+        source: {
+          kind: "file",
+          label: "sales.csv",
+          path: "/workspace/data/sales.csv",
+          uri: "vscode-remote://ssh-remote+example/workspace/data/sales.csv"
+        }
+      })
+    );
+
+    await command("openWrangler.exportCode")();
+
+    const calls = nativeMocks.showSaveDialog.mock.calls as unknown[][];
+    const options = calls[0]?.[0] as {
+      defaultUri?: { scheme?: string; authority?: string; fsPath?: string };
+    };
+    expect(options.defaultUri).toMatchObject({
+      scheme: "vscode-remote",
+      authority: "ssh-remote+example",
+      fsPath: "/workspace/data/sales.clean.py"
+    });
+  });
+
+  it("rejects a remote source authority that differs from the active workspace host", async () => {
+    register(
+      snapshot({
+        mode: "editing",
+        steps: [appliedStep],
+        source: {
+          kind: "file",
+          label: "sales.csv",
+          path: "/workspace/data/sales.csv",
+          uri: "vscode-remote://ssh-remote+stale/workspace/data/sales.csv"
+        }
+      })
+    );
+    nativeMocks.workspaceFolders.push({
+      uri: resourceUri("vscode-remote", "/workspace", "ssh-remote+current")
+    });
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(
+      resourceUri("vscode-remote", "/workspace/data/sales.clean.py", "ssh-remote+current")
+    );
+
+    await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining("active source no longer belongs to the current VS Code remote workspace host")
     );
   });
 });
@@ -163,6 +313,19 @@ function command(id: string): CommandHandler {
   return handler;
 }
 
+function vscodeUri(path: string): unknown {
+  return resourceUri("file", path);
+}
+
+function resourceUri(scheme: string, fsPath: string, authority = ""): unknown {
+  return {
+    scheme,
+    authority,
+    fsPath,
+    toString: () => `${scheme}://${authority}${fsPath}`
+  };
+}
+
 function noDraftSnapshot(): ActiveSessionSnapshot {
   return snapshot({
     mode: "editing",
@@ -183,14 +346,14 @@ function snapshotWithDraft(): ActiveSessionSnapshot {
 }
 
 function snapshot(
-  plan: Pick<SessionMetadata, "mode" | "steps"> & { draftStep?: TransformStep }
+  plan: Pick<SessionMetadata, "mode" | "steps"> & { draftStep?: TransformStep; source?: SessionMetadata["source"] }
 ): ActiveSessionSnapshot {
   return {
     sessionId: "session",
-    code: "",
+    code: "def clean_data(df):\n    return df\n",
     metadata: {
-      ...plan,
-      source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" }
+      source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
+      ...plan
     } as SessionMetadata,
     viewState: {
       filterModel: { filters: [], sort: [] },

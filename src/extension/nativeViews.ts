@@ -6,6 +6,7 @@ import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordin
 import { OpenWranglerPanel } from "./webviewPanel";
 import { insertGeneratedNotebookCell } from "./notebooks/notebookInsertion";
 import { getSetting } from "./configuration";
+import { exportFileSafely } from "./files/safeFileExport";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 
@@ -147,6 +148,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 export interface NativeViewsTestController {
   setCodeForExport(code: string): void;
+  exportCodeTo(destination: vscode.Uri): Promise<void>;
 }
 
 export function registerNativeViews(
@@ -250,7 +252,7 @@ export function registerNativeViews(
       void vscode.window.showInformationMessage("Open Wrangler code copied to the clipboard.");
       return code;
     }),
-    vscode.commands.registerCommand("openWrangler.exportCode", async (providedDestination?: unknown) => {
+    vscode.commands.registerCommand("openWrangler.exportCode", async () => {
       if (!(await requireTrustedWorkspace("export code"))) return;
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
@@ -258,18 +260,25 @@ export function registerNativeViews(
         await vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
         return;
       }
-      const destination =
-        providedDestination instanceof vscode.Uri
-          ? providedDestination
-          : await vscode.window.showSaveDialog({
-              title: "Export Open Wrangler Python Code",
-              defaultUri: defaultExportUri(snapshot, ".clean.py"),
-              filters: { "Python script": ["py"] },
-              saveLabel: "Export code"
-            });
-      if (!destination) return;
-      await vscode.workspace.fs.writeFile(destination, Buffer.from(code, "utf8"));
-      void vscode.window.showInformationMessage(`Exported Open Wrangler code to ${destination.fsPath}.`);
+      const destination = await vscode.window.showSaveDialog({
+        title: "Export Open Wrangler Python Code",
+        defaultUri: defaultExportUri(snapshot, ".clean.py"),
+        filters: { "Python script": ["py"] },
+        saveLabel: "Export code"
+      });
+      if (!destination) return false;
+      if (!(await requireTrustedWorkspace("export code"))) return false;
+      try {
+        await exportGeneratedCode(snapshot, code, destination);
+        const destinationLabel = destination.scheme === "file" ? destination.fsPath : destination.toString();
+        void vscode.window.showInformationMessage(`Exported Open Wrangler code to ${destinationLabel}.`);
+        return true;
+      } catch (error) {
+        await vscode.window.showErrorMessage(
+          `Could not export Open Wrangler code: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return false;
+      }
     }),
     vscode.commands.registerCommand("openWrangler.insertNotebookCode", async () => {
       if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return;
@@ -394,7 +403,14 @@ export function registerNativeViews(
   );
 
   return {
-    setCodeForExport: (code) => codePreview.setCodeForExportForTests(code)
+    setCodeForExport: (code) => codePreview.setCodeForExportForTests(code),
+    exportCodeTo: async (destination) => {
+      if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler can export code.");
+      const snapshot = coordinator.activeSession();
+      const code = codePreview.codeForExport();
+      if (!snapshot || !code) throw new Error("Add a cleaning step before exporting generated code.");
+      await exportGeneratedCode(snapshot, code, destination);
+    }
   };
 }
 
@@ -422,13 +438,14 @@ async function waitForActiveSession(
 
 export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefined {
   const source = snapshot.metadata.source;
-  if (source.path) return vscode.Uri.file(source.path);
-  if (!source.uri) return undefined;
-  try {
-    return vscode.Uri.parse(source.uri, true);
-  } catch {
-    return undefined;
+  if (source.uri) {
+    try {
+      return vscode.Uri.parse(source.uri, true);
+    } catch {
+      // Fall back to a concrete path retained by older or malformed source metadata.
+    }
   }
+  return source.path ? vscode.Uri.file(source.path) : undefined;
 }
 
 function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
@@ -537,13 +554,59 @@ function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
     : "# Open a dataframe to preview generated code.";
 }
 
-function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string): vscode.Uri {
-  const sourcePath = snapshot.metadata.source.path;
+export function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string): vscode.Uri {
   const baseName = path.basename(snapshot.metadata.source.label, path.extname(snapshot.metadata.source.label));
   const fileName = `${baseName || "cleaned-data"}${suffix}`;
-  if (sourcePath) return vscode.Uri.file(path.join(path.dirname(sourcePath), fileName));
+  const source = sourceUri(snapshot);
+  if (source && (source.scheme === "file" || source.scheme === "vscode-remote")) {
+    return vscode.Uri.joinPath(source, "..", fileName);
+  }
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   return workspace ? vscode.Uri.joinPath(workspace, fileName) : vscode.Uri.file(path.join(process.cwd(), fileName));
+}
+
+async function exportGeneratedCode(
+  snapshot: ActiveSessionSnapshot,
+  code: string,
+  destination: vscode.Uri
+): Promise<void> {
+  const protectedSources = sourceUris(snapshot);
+  const remoteSource = protectedSources.find((source) => source.scheme === "vscode-remote");
+  const remoteWorkspace = vscode.workspace.workspaceFolders?.find(
+    (folder) => folder.uri.scheme === "vscode-remote"
+  )?.uri;
+  if (remoteSource && remoteWorkspace && remoteSource.authority !== remoteWorkspace.authority) {
+    throw new Error("The active source no longer belongs to the current VS Code remote workspace host.");
+  }
+  await exportFileSafely({
+    destination,
+    protectedSources,
+    contents: Buffer.from(code, "utf8"),
+    remoteAuthority: remoteWorkspace?.authority ?? remoteSource?.authority
+  });
+}
+
+function sourceUris(snapshot: ActiveSessionSnapshot): vscode.Uri[] {
+  const source = snapshot.metadata.source;
+  const candidates: vscode.Uri[] = [];
+  if (source.uri) {
+    try {
+      candidates.push(vscode.Uri.parse(source.uri, true));
+    } catch {
+      // The concrete path below still protects a file source with malformed URI metadata.
+    }
+  }
+  if (source.path) candidates.push(vscode.Uri.file(source.path));
+  const concreteCandidates = candidates.filter((candidate) => Boolean(candidate.fsPath));
+  return concreteCandidates.filter(
+    (candidate, index) =>
+      concreteCandidates.findIndex(
+        (other) =>
+          other.scheme === candidate.scheme &&
+          other.authority === candidate.authority &&
+          other.fsPath === candidate.fsPath
+      ) === index
+  );
 }
 
 async function requireTrustedWorkspace(action: string): Promise<boolean> {

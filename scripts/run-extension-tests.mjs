@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
 import {
   downloadEditorWithRetry,
+  editorDisplayLaunchArgs,
   runEditorAcceptancePhase,
+  startIsolatedEditorDisplay,
   writeEditorAcceptanceHarness,
   writeEditorSettings,
   writeFakeJupyterExtension
@@ -40,6 +42,7 @@ const vscodeExecutablePath = requestedVersion
     : await downloadEditorWithRetry(downloadAndUnzipVSCode, "stable");
 const fakeJupyter = resolve(profile, "fake-jupyter");
 writeFakeJupyterExtension(fakeJupyter);
+const editorDisplay = await startIsolatedEditorDisplay();
 
 try {
   process.env.OPEN_WRANGLER_TEST_PHASE = "single";
@@ -57,7 +60,7 @@ try {
       "--disable-workspace-trust",
       "--skip-welcome",
       "--skip-release-notes",
-      ...(process.platform === "linux" ? ["--no-sandbox"] : [])
+      ...(process.platform === "linux" ? ["--no-sandbox", ...editorDisplayLaunchArgs()] : [])
     ]
   });
 
@@ -67,7 +70,7 @@ try {
   const resultPath = resolve(profile, "reload-result.json");
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
   writeEditorAcceptanceHarness(harness);
-  writeEditorSettings(userData, { "window.dialogStyle": "custom" });
+  writeEditorSettings(userData, { "window.dialogStyle": "custom", "files.simpleDialog.enable": true });
   const editor = { name: "VS Code", key: "vscode", executable: vscodeExecutablePath, sharedDataDir: true };
   for (const phase of ["seed", "verify"]) {
     await runEditorAcceptancePhase({
@@ -84,4 +87,5 @@ try {
   }
 } finally {
   rmSync(profile, { recursive: true, force: true });
+  await editorDisplay.stop();
 }
