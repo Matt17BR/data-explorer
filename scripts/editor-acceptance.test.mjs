@@ -116,6 +116,7 @@ setInterval(() => undefined, 1_000);
     DISPLAY: ":desktop",
     OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
     OPEN_WRANGLER_XVFB_EXECUTABLE: executable,
+    PATH: process.env.PATH,
     XDG_RUNTIME_DIR: "/desktop/runtime"
   };
 
