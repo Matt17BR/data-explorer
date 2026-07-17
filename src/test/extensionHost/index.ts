@@ -1,6 +1,15 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -44,6 +53,7 @@ interface TestApi {
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
   setCodeForExport(code: string): void;
+  exportCodeTo(destination: vscode.Uri): Promise<void>;
 }
 
 interface ExtensionApi {
@@ -687,7 +697,14 @@ async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
   await field.press("Enter");
 }
 
+let editorWorkbenchPage: Promise<Page> | undefined;
+
 async function connectToEditorWorkbench(): Promise<Page> {
+  editorWorkbenchPage ??= connectToEditorWorkbenchOnce();
+  return editorWorkbenchPage;
+}
+
+async function connectToEditorWorkbenchOnce(): Promise<Page> {
   const cdpPort = Number(process.env.OPEN_WRANGLER_EDITOR_CDP_PORT);
   assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Editor workbench interaction requires a CDP port.");
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -3167,8 +3184,23 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         await vscode.env.clipboard.writeText(priorClipboard);
       }
       const scriptPath = path.join(directory, `${backend}.clean.py`);
-      await vscode.commands.executeCommand("openWrangler.exportCode", vscode.Uri.file(scriptPath));
+      await assert.rejects(
+        testing.exportCodeTo(vscode.Uri.file(sourcePath)),
+        /never overwrites the active source/u,
+        `${backend} deterministic export must reject the active source.`
+      );
+      if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT && backend === "pandas") {
+        const page = await connectToEditorWorkbench();
+        await exerciseRealScriptSaveDialog(page, vscode.Uri.file(sourcePath), scriptPath);
+      } else {
+        await testing.exportCodeTo(vscode.Uri.file(scriptPath));
+      }
       assert.equal(readFileSync(scriptPath, "utf8"), editedCode, `${backend} must export the edited code buffer.`);
+      assert.deepEqual(
+        readdirSync(directory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
+        [],
+        `${backend} script export must not retain sibling temporary files.`
+      );
 
       const closed = await testing.request({
         kind: "closeSession",
@@ -3191,6 +3223,49 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+async function exerciseRealScriptSaveDialog(
+  page: Page,
+  hostileDestination: vscode.Uri,
+  destination: string
+): Promise<void> {
+  const commandOutcome = vscode.commands.executeCommand<boolean>("openWrangler.exportCode", hostileDestination);
+  const earlyOutcome = await Promise.race([
+    commandOutcome.then((value) => ({ kind: "settled" as const, value })),
+    new Promise<{ kind: "pending" }>((resolve) => setTimeout(() => resolve({ kind: "pending" }), 500))
+  ]);
+  assert.equal(
+    earlyOutcome.kind,
+    "pending",
+    `A caller-provided export URI must not bypass the real Save dialog: ${JSON.stringify(earlyOutcome)}`
+  );
+  const dialog = page
+    .locator(".quick-input-widget:visible")
+    .filter({ hasText: "Export Open Wrangler Python Code" })
+    .last();
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const input = dialog.locator(".quick-input-box input").first();
+  await input.waitFor({ state: "visible", timeout: 10_000 });
+  assert.match(
+    await input.inputValue(),
+    /\.clean\.py$/u,
+    "The hostile command argument must not become the default URI."
+  );
+
+  await input.fill(path.resolve(destination));
+  await input.press("Enter");
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(await commandOutcome, true, "The real Save dialog must commit the selected script destination.");
+
+  const cancelledDestination = `${destination}.cancelled.py`;
+  const cancelledOutcome = vscode.commands.executeCommand<boolean>("openWrangler.exportCode");
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await input.fill(path.resolve(cancelledDestination));
+  await input.press("Escape");
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(await cancelledOutcome, false, "Cancelling the real Save dialog must not export code.");
+  assert.equal(existsSync(cancelledDestination), false, "Save-dialog cancellation must not create a script.");
 }
 
 function csvSource(uri: vscode.Uri): SessionSource {

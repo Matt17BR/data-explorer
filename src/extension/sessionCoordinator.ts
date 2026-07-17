@@ -14,6 +14,7 @@ import type {
   PageResponse,
   SessionMetadata,
   SessionOpenedResponse,
+  SessionSource,
   SessionBoundRequest,
   StepInspectionResponse
 } from "../shared/protocol";
@@ -432,7 +433,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
     this.sessions.set(publicId, session);
     this.setActive(publicId);
-    return publicOpenedResponse(opened, publicId, session.publicRevision);
+    return publicOpenedResponse(opened, publicId, session.publicRevision, session.openRequest.source);
   }
 
   private enqueueSessionRequest(
@@ -797,7 +798,7 @@ export class SessionCoordinator implements vscode.Disposable {
       return {
         ...response,
         revision: session.publicRevision,
-        metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision)
+        metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source)
       };
     }
     if (response.kind === "summary" || response.kind === "columnValues") {
@@ -1637,15 +1638,25 @@ function normalizeFilterModel(model: FilterModel): unknown {
   };
 }
 
-function publicMetadata(metadata: SessionMetadata, publicId: string, publicRevision: number): SessionMetadata {
-  return { ...metadata, sessionId: publicId, revision: publicRevision };
+function publicMetadata(
+  metadata: SessionMetadata,
+  publicId: string,
+  publicRevision: number,
+  immutableSource: SessionSource
+): SessionMetadata {
+  return {
+    ...metadata,
+    source: immutableSource,
+    sessionId: publicId,
+    revision: publicRevision
+  };
 }
 
 function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
   const stepInspection = session.stepInspection;
   return {
     sessionId: session.publicId,
-    metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
+    metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source),
     code: stepInspection?.code ?? session.code,
     viewState: session.viewState,
     ...(stepInspection ? { stepInspection } : {})
@@ -1659,9 +1670,13 @@ function stepInspectionKey(request: Extract<SessionBoundRequest, { kind: "inspec
 function publicOpenedResponse(
   response: SessionOpenedResponse,
   publicId: string,
-  publicRevision: number
+  publicRevision: number,
+  immutableSource: SessionSource
 ): SessionOpenedResponse {
-  return { ...response, metadata: publicMetadata(response.metadata, publicId, publicRevision) };
+  return {
+    ...response,
+    metadata: publicMetadata(response.metadata, publicId, publicRevision, immutableSource)
+  };
 }
 
 function isUnknownRuntimeSession(response: OpenWranglerResponse): response is ErrorResponse {

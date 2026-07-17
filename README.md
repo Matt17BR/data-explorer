@@ -46,7 +46,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 - Keyboard cleaning workflow: `Ctrl/Cmd+Enter` applies a draft, `Escape` discards it, `Ctrl/Cmd+Shift+E` edits the latest step, and `Ctrl/Cmd+Alt+Z` undoes it.
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - By-example numeric examples reject integer JSON tokens outside JavaScript's exact safe range before parsing can round them. Use smaller examples to infer the same transform; the retained program still runs against exact engine-native integers throughout the supported 38-digit arithmetic envelope.
-- Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
+- Clipboard and source-safe Python-script export plus atomic cleaned-data export to CSV or Parquet. After trust and active-code checks, script export uses VS Code's Save dialog, rejects normalized/symlink/hard-link aliases of the immutable active source, pins the current local or matching remote host, and commits a flushed, identity-revalidated sibling temp with one atomic rename. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
 - MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters.
 - Notebook-origin sessions can insert the edited generated cleaning function back into the exact originating notebook.
@@ -60,7 +60,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 3. Choose **Open in Open Wrangler** when using a context menu.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
 5. Choose **Add step**, run **Open Wrangler: Add Cleaning Step** without arguments from the Command Palette to open the unselected catalog, or choose a preselected operation in the Activity Bar. Configure it, inspect the draft grid/diff/code, then explicitly apply or discard it before starting another operation. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, optional draft, viewing query, column widths/selection, and visible position are restored for the same source and backend in the workspace.
-6. Run **Open Wrangler: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
+6. Run **Open Wrangler: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps. Python scripts must be saved to a separate new or regular-file destination on the current local host or matching VS Code remote authority and can never replace the active source.
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, row block size, and column block size are configurable under `openWrangler.*` settings.
 

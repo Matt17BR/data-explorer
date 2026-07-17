@@ -32,6 +32,51 @@ const inspectionStep: TransformStep = {
 };
 
 describe("SessionCoordinator", () => {
+  it("pins public source metadata to the immutable open request across runtime responses", async () => {
+    const runtimeOpened = openedResponse();
+    const substitutedSource = {
+      kind: "file" as const,
+      label: "different.csv",
+      path: "/workspace/different.csv"
+    };
+    runtimeOpened.metadata = { ...runtimeOpened.metadata, source: substitutedSource };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "getPage") {
+        return {
+          ...pageResponse(request),
+          metadata: {
+            ...pageResponse(request).metadata,
+            source: substitutedSource,
+            sessionId: runtimeOpened.metadata.sessionId
+          }
+        };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const opened = await bridge.request(openRequest);
+    expect(opened).toMatchObject({ kind: "sessionOpened", metadata: { source: openRequest.source } });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    expect(coordinator.activeSession()?.metadata.source).toEqual(openRequest.source);
+
+    const page = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "immutable-source-page",
+      offset: 0,
+      limit: 10,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+
+    expect(page).toMatchObject({ kind: "page", metadata: { source: openRequest.source } });
+    expect(coordinator.activeSession()?.metadata.source).toEqual(openRequest.source);
+  });
+
   it("publishes one bounded applied-step inspection and restores full-plan code when cleared", async () => {
     const runtimeOpened = openedResponse();
     runtimeOpened.metadata = { ...runtimeOpened.metadata, steps: [inspectionStep] };

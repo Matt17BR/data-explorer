@@ -19,6 +19,7 @@ export interface OpenWranglerTestApi {
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
   setCodeForExport(code: string): void;
+  exportCodeTo(destination: vscode.Uri): Promise<void>;
 }
 
 export interface OpenWranglerExtensionApi {
@@ -54,7 +55,8 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
         declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
-        setCodeForExport: (code) => nativeViews.setCodeForExport(code)
+        setCodeForExport: (code) => nativeViews.setCodeForExport(code),
+        exportCodeTo: (destination) => nativeViews.exportCodeTo(destination)
       }
     };
   }

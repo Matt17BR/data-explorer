@@ -67,7 +67,7 @@ try {
   const resultPath = resolve(profile, "reload-result.json");
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
   writeEditorAcceptanceHarness(harness);
-  writeEditorSettings(userData, { "window.dialogStyle": "custom" });
+  writeEditorSettings(userData, { "window.dialogStyle": "custom", "files.simpleDialog.enable": true });
   const editor = { name: "VS Code", key: "vscode", executable: vscodeExecutablePath, sharedDataDir: true };
   for (const phase of ["seed", "verify"]) {
     await runEditorAcceptancePhase({
