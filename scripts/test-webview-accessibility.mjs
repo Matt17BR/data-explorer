@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
-import { readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 
@@ -8,7 +8,7 @@ const root = resolve(import.meta.dirname, "..");
 const harnessDir = resolve(root, "tmp", "screenshots");
 const require = createRequire(import.meta.url);
 const axePath = require.resolve("axe-core/axe.min.js");
-const executablePath = process.env.CHROME_BIN ?? chromium.executablePath();
+const executablePath = process.env.CHROME_BIN;
 const harnesses = readdirSync(harnessDir)
   .filter((file) => file.endsWith(".html"))
   .sort();
@@ -17,30 +17,58 @@ if (harnesses.length === 0) {
   throw new Error("No generated webview harnesses found. Run capture:screenshots first.");
 }
 
-const browser = await chromium.launch({
-  executablePath,
-  headless: true,
-  args: ["--no-sandbox", "--disable-gpu", "--allow-file-access-from-files"]
-});
+const workspaceTmp = resolve(root, "tmp");
+mkdirSync(workspaceTmp, { recursive: true });
+const browserRoot = mkdtempSync(join(workspaceTmp, "accessibility-browser-"));
+chmodSync(browserRoot, 0o700);
+const browserEnvironment = {
+  ...process.env,
+  HOME: join(browserRoot, "home"),
+  XDG_CACHE_HOME: join(browserRoot, "cache"),
+  XDG_CONFIG_HOME: join(browserRoot, "config"),
+  XDG_DATA_HOME: join(browserRoot, "data"),
+  XDG_RUNTIME_DIR: join(browserRoot, "runtime"),
+  TMPDIR: join(browserRoot, "temp")
+};
+for (const directory of Object.values(browserEnvironment).filter(
+  (value) => typeof value === "string" && value.startsWith(browserRoot)
+)) {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+}
+let browser;
 const failures = [];
 
 try {
+  browser = await chromium.launchPersistentContext(join(browserRoot, "profile"), {
+    ...(executablePath ? { executablePath } : {}),
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--allow-file-access-from-files"],
+    env: browserEnvironment,
+    timeout: 30_000
+  });
   for (const harness of harnesses) {
+    console.log(`Accessibility checking: ${harness}`);
     const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
-    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+    page.setDefaultTimeout(15_000);
+    page.setDefaultNavigationTimeout(15_000);
+    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load", timeout: 15_000 });
     await page.waitForTimeout(500);
     if (harness === "filter-panel.html") {
       await page.getByRole("checkbox").first().waitFor();
     }
     await page.addScriptTag({ path: axePath });
-    const result = await page.evaluate(async () => {
-      return globalThis.axe.run(document, {
-        runOnly: {
-          type: "tag",
-          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]
-        }
-      });
-    });
+    const result = await withTimeout(
+      page.evaluate(async () => {
+        return globalThis.axe.run(document, {
+          runOnly: {
+            type: "tag",
+            values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]
+          }
+        });
+      }),
+      30_000,
+      `${harness} axe scan`
+    );
     const violations = result.violations.filter((violation) => violation.impact !== "minor");
     if (violations.length === 0) {
       console.log(`Accessibility verified: ${harness}`);
@@ -57,7 +85,11 @@ try {
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
-  await browser.close();
+  try {
+    await browser?.close();
+  } finally {
+    rmSync(browserRoot, { recursive: true, force: true });
+  }
 }
 
 async function verifyNotebookExpansion(browser) {
@@ -76,8 +108,20 @@ async function verifyNotebookExpansion(browser) {
   if (!payload || payload.metadata?.protocolVersion !== 2) {
     throw new Error(`${harness} did not send a protocol v2 full-view payload.`);
   }
+  const capturedRows = payload.page?.rows?.length;
+  const totalRows = payload.page?.totalRows;
+  if (!Number.isInteger(capturedRows) || !Number.isInteger(totalRows) || capturedRows >= totalRows) {
+    throw new Error(`${harness} did not exercise a truncated saved output.`);
+  }
+  const notice = await page.getByTestId("capture-limit").textContent();
+  if (
+    !notice?.includes(`first ${capturedRows} of ${totalRows} rows`) ||
+    !notice.includes("expanded Open Wrangler view can query only these captured rows")
+  ) {
+    throw new Error(`${harness} did not label the captured-row limit honestly.`);
+  }
   await page.close();
-  console.log("Notebook MIME v2 full-view expansion verified.");
+  console.log("Notebook MIME v2 full-view expansion and truncation disclosure verified.");
 }
 
 async function verifyCodePreviewOrigin(browser) {
@@ -88,17 +132,40 @@ async function verifyCodePreviewOrigin(browser) {
   await page.evaluate(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "codePreview", code: "# untrusted replacement" },
+        data: { kind: "codePreview", code: "# untrusted replacement", editable: true },
         origin: "https://untrusted.invalid"
       })
     );
   });
   const after = await page.locator(".cm-content").textContent();
-  await page.close();
   if (after !== before) {
     throw new Error("Code preview accepted a message from another origin.");
   }
-  console.log("Code-preview host origin validation verified.");
+
+  const readOnlyCode = "# Read-only saved notebook snapshot.";
+  await page.evaluate((code) => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { kind: "codePreview", code, editable: false },
+        origin: window.location.origin
+      })
+    );
+  }, readOnlyCode);
+  const content = page.locator(".cm-content");
+  await page.waitForFunction((code) => document.querySelector(".cm-content")?.textContent === code, readOnlyCode);
+  if ((await content.getAttribute("aria-label")) !== "Read-only Open Wrangler code preview") {
+    throw new Error("Code preview did not publish its read-only accessible label.");
+  }
+  if ((await content.getAttribute("contenteditable")) !== "false") {
+    throw new Error("Code preview remained editable after a read-only host update.");
+  }
+  await content.click({ force: true });
+  await page.keyboard.type("\nraise RuntimeError('must not be inserted')");
+  if ((await content.textContent()) !== readOnlyCode) {
+    throw new Error("Read-only Code Preview accepted keyboard input.");
+  }
+  await page.close();
+  console.log("Code-preview host origin and read-only behavior verified.");
 }
 
 if (failures.length > 0) {
@@ -118,6 +185,20 @@ if (failures.length > 0) {
 }
 
 console.log(`Accessibility verified for ${harnesses.length} production webview harnesses.`);
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded ${timeoutMs}ms.`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function verifyWideGridPerformance(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });

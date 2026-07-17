@@ -1,0 +1,40 @@
+{
+  "accepted": [
+    { "type": "integer", "value": "+1000" },
+    { "type": "float", "value": "-1.25e3" },
+    { "type": "float", "value": "Infinity" },
+    { "type": "decimal", "value": ".1250e+2" },
+    { "type": "boolean", "value": " TRUE " },
+    { "type": "date", "value": "0001-01-01" },
+    { "type": "date", "value": "2024-01-31" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.123456+02:30" },
+    { "type": "duration", "value": "-1.25" },
+    { "type": "duration", "value": "86399999999999.999999" },
+    { "type": "duration", "value": "-86399999913600" },
+    { "type": "duration", "value": "1 day, 02:03:04.5" }
+  ],
+  "rejected": [
+    { "type": "integer", "value": "1_000" },
+    { "type": "integer", "value": " 1000" },
+    { "type": "float", "value": "1_000" },
+    { "type": "float", "value": "NaN" },
+    { "type": "float", "value": "1e999999" },
+    { "type": "decimal", "value": "Infinity" },
+    { "type": "boolean", "value": "yes" },
+    { "type": "date", "value": "20240131" },
+    { "type": "date", "value": "0000-01-01" },
+    { "type": "date", "value": "2024-02-30" },
+    { "type": "datetime", "value": "20240131T235958" },
+    { "type": "datetime", "value": "23:59:58" },
+    { "type": "datetime", "value": "0000-01-01T00:00:00" },
+    { "type": "datetime", "value": "2024-01-31T24:00:00" },
+    { "type": "datetime", "value": "2024-01-31T00:00:00+24:00" },
+    { "type": "duration", "value": "25:00:00" },
+    { "type": "duration", "value": "00:60:00" },
+    { "type": "duration", "value": "86400000000000" },
+    { "type": "duration", "value": "-86399999913600.000001" },
+    { "type": "duration", "value": "1000000000 days, 00:00:00" },
+    { "type": "duration", "value": "0.0000001" },
+    { "type": "duration", "value": "1e3" }
+  ]
+}

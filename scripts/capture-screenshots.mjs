@@ -324,7 +324,13 @@ writeWebviewHarness(
   {},
   { openColumnFilter: "city" }
 );
-writeNotebookHarness("notebook-preview.html", payloads.notebook, "notebook-preview.png");
+const truncatedNotebook = structuredClone(payloads.notebook);
+const capturedNotebookRows = truncatedNotebook.page.rows.length;
+const claimedNotebookRows = capturedNotebookRows + 7;
+truncatedNotebook.metadata.shape.rows = claimedNotebookRows;
+truncatedNotebook.metadata.filteredShape.rows = claimedNotebookRows;
+truncatedNotebook.page.totalRows = claimedNotebookRows;
+writeNotebookHarness("notebook-preview.html", truncatedNotebook, "notebook-preview.png");
 writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages, {
   strictProjectedPages: true,
   fetchColumnBlockSize: 16
@@ -631,7 +637,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
       postMessage(message) {
         if (message.kind === "ready") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "codePreview", code: ${JSON.stringify(code)} },
+            data: { kind: "codePreview", code: ${JSON.stringify(code)}, editable: true },
             origin: window.location.origin
           })), 20);
         }

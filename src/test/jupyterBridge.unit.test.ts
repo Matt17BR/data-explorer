@@ -130,6 +130,22 @@ describe("notebook command provenance", () => {
     );
   });
 
+  it("rejects an active notebook when another open document shares its URI", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    const overlappingReplacement = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original, overlappingReplacement);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.kernelOrigins).toEqual([]);
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+  });
+
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {
     const original = notebook("file:///workspace/shared.ipynb");
     const replacement = notebook("file:///workspace/shared.ipynb");
@@ -203,6 +219,32 @@ describe("notebook command provenance", () => {
       "The originating notebook is no longer open. Reopen it and check the Jupyter integration again."
     );
     expect(notebookMocks.activeEditorReads).toBe(1);
+  });
+
+  it("discards a kernel lookup when a same-URI document overlaps before it resolves", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    const overlappingReplacement = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    let resolveKernel!: (kernel: object) => void;
+    notebookMocks.getKernel.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveKernel = resolve;
+        })
+    );
+    register();
+
+    const checking = command("openWrangler.checkJupyterIntegration")();
+    await vi.waitFor(() => expect(notebookMocks.getKernel).toHaveBeenCalledWith(original.uri));
+    notebookMocks.notebookDocuments.push(overlappingReplacement);
+    resolveKernel({});
+    await checking;
+
+    expect(notebookMocks.showInformationMessage).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The originating notebook is no longer open. Reopen it and check the Jupyter integration again."
+    );
   });
 });
 

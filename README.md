@@ -21,6 +21,7 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 - Provides 27 built-in operations across row, column, text, categorical, numeric, datetime, grouping, custom-code, and by-example workflows.
 - Replays, edits, and undoes cleaning steps while preserving the original dataframe.
 - Opens live Polars and Pandas variables from Jupyter and can insert the generated cleaning function back into the originating notebook.
+- Expands saved notebook output into a read-only, filterable snapshot without starting Jupyter; variable-linked output also offers an explicit action for the linked live dataframe in its originating notebook.
 - Copies code, saves a Python script, or atomically exports cleaned data to a new CSV or Parquet file.
 
 <table>

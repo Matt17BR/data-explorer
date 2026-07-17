@@ -16,12 +16,14 @@ import { getSetting } from "./configuration";
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
+  private static readonly panels = new Set<OpenWranglerPanel>();
   private sessionId: string | undefined;
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
   private snapshotViewContextId: string | undefined;
   private latestPageViewRequestId: string | undefined;
   private opening: Promise<void> | undefined;
+  private closing: Promise<OpenWranglerResponse> | undefined;
   private disposed = false;
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -31,7 +33,7 @@ export class OpenWranglerPanel {
     private readonly bridge: OpenWranglerBridge,
     private readonly source: SessionSource,
     private readonly backend?: DataBackend,
-    private readonly initialResponse?: SessionOpenedResponse
+    openImmediately = true
   ) {
     this.panel.webview.options = {
       enableScripts: true,
@@ -42,16 +44,11 @@ export class OpenWranglerPanel {
       undefined,
       this.disposables
     );
-    if (this.initialResponse) {
-      this.snapshot = this.initialResponse;
-      this.sessionId = this.initialResponse.metadata.sessionId;
-      this.sessionRevision = this.initialResponse.metadata.revision;
-    } else {
-      void this.open();
-    }
     this.panel.webview.html = this.renderHtml();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
+    OpenWranglerPanel.panels.add(this);
     this.activate();
+    if (openImmediately) void this.open();
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
@@ -71,6 +68,14 @@ export class OpenWranglerPanel {
     return true;
   }
 
+  static async disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined> {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
+    if (!target) return undefined;
+    target.dispose();
+    target.panel.dispose();
+    return target.closing;
+  }
+
   static create(
     context: vscode.ExtensionContext,
     bridge: OpenWranglerBridge,
@@ -78,7 +83,7 @@ export class OpenWranglerPanel {
     backend?: DataBackend
   ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
-      "openWrangler.viewer",
+      "openWrangler.session",
       `Open Wrangler: ${source.label}`,
       vscode.ViewColumn.Active,
       {
@@ -88,30 +93,12 @@ export class OpenWranglerPanel {
       }
     );
 
-    return new OpenWranglerPanel(panel, context, bridge, source, backend);
-  }
-
-  static createFromPayload(
-    context: vscode.ExtensionContext,
-    bridge: OpenWranglerBridge,
-    response: SessionOpenedResponse
-  ): OpenWranglerPanel {
-    const panel = vscode.window.createWebviewPanel(
-      "openWrangler.viewer",
-      `Open Wrangler: ${response.metadata.source.label}`,
-      vscode.ViewColumn.Active,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, "media"))]
-      }
-    );
-
-    return new OpenWranglerPanel(panel, context, bridge, response.metadata.source, response.metadata.backend, response);
+    return new OpenWranglerPanel(panel, context, bridge, source, backend, source.kind === "file");
   }
 
   async open(): Promise<void> {
     if (this.opening) return this.opening;
+    if (this.disposed) return;
     const pageSize = getSetting<number>("fetchBlockSize", 200);
     const columnLimit = fetchColumnBlockSize();
     const isFile = this.source.kind === "file";
@@ -133,19 +120,20 @@ export class OpenWranglerPanel {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    OpenWranglerPanel.panels.delete(this);
     if (OpenWranglerPanel.activePanel === this) {
       OpenWranglerPanel.activePanel = undefined;
       this.bridge.setActiveSession?.(undefined);
     }
-    if (this.sessionId && !this.initialResponse) {
-      void this.bridge
-        .request({
-          kind: "closeSession",
-          sessionId: this.sessionId,
-          revision: this.sessionRevision
-        })
-        .catch(() => undefined);
+    if (this.sessionId) {
+      this.closing = this.bridge.request({
+        kind: "closeSession",
+        sessionId: this.sessionId,
+        revision: this.sessionRevision
+      });
+      void this.closing.catch(() => undefined);
       this.sessionId = undefined;
     }
     while (this.disposables.length) {
@@ -226,7 +214,7 @@ export class OpenWranglerPanel {
         await this.bridge.request(request, viewContextId ? { viewContextId } : undefined)
       );
       if (this.disposed) {
-        if (response.kind === "sessionOpened" && !this.initialResponse) {
+        if (response.kind === "sessionOpened") {
           await this.bridge.request({
             kind: "closeSession",
             sessionId: response.metadata.sessionId,

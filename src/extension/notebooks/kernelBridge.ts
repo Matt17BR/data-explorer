@@ -14,6 +14,7 @@ import type { BridgeRequestOptions, OpenWranglerBridge } from "../dataBridge";
 import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting } from "../configuration";
+import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 export class KernelBridge implements OpenWranglerBridge {
   private readonly lifecycle: RestartableKernel<Kernel>;
@@ -248,7 +249,7 @@ __ow_notebook.register_formatters()
 
   private assertNotebookProvenance(): void {
     const notebook = this.notebookDocument;
-    if (notebook.isClosed || !vscode.workspace.notebookDocuments.includes(notebook)) {
+    if (!isSoleOpenNotebookDocument(notebook)) {
       throw new Error("The notebook that originated this Open Wrangler session is no longer open.");
     }
   }

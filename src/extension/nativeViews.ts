@@ -114,7 +114,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     view.webview.onDidReceiveMessage((message: unknown) => {
       if (!isCodePreviewMessage(message)) return;
       if (message.kind === "ready") this.render();
-      if (message.kind === "codeChanged") this.displayedCode = message.code;
+      if (message.kind === "codeChanged" && this.generatedCode) this.displayedCode = message.code;
     });
   }
 
@@ -134,7 +134,11 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private render(): void {
     if (!this.view) return;
-    void this.view.webview.postMessage({ kind: "codePreview", code: this.displayedCode });
+    void this.view.webview.postMessage({
+      kind: "codePreview",
+      code: this.displayedCode,
+      editable: Boolean(this.snapshot && this.generatedCode)
+    });
   }
 
   private html(webview: vscode.Webview): string {
@@ -557,6 +561,9 @@ function filterNodes(model: FilterModel): ViewNode[] {
 }
 
 function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
+  if (snapshot?.metadata.source.kind === "notebookOutput") {
+    return `# ${snapshot.metadata.source.label}\n# Read-only saved notebook snapshot. Executable cleaning lineage is not embedded in notebook output.`;
+  }
   return snapshot
     ? `# ${snapshot.metadata.source.label}\n# Add or select a cleaning step to preview generated code.`
     : "# Open a dataframe to preview generated code.";

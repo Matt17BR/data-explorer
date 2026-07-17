@@ -3,7 +3,6 @@ import type {
   ColumnSummary,
   ColumnSchema,
   DataDiff,
-  DataRow,
   OpenWranglerResponse,
   GridPage,
   OperationKind,
@@ -19,7 +18,6 @@ import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
 import { OperationBuilder } from "./operations/OperationBuilder";
-import { applySnapshotFilters, snapshotColumnValues, snapshotSummaries } from "./snapshotModel";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
@@ -34,7 +32,6 @@ export function App() {
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
-  const [snapshotRows, setSnapshotRows] = useState<DataRow[] | undefined>();
   const [foregroundError, setForegroundError] = useState<string | undefined>();
   const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<ReadonlyMap<string, BackgroundDiagnostic>>(
     () => new Map()
@@ -69,7 +66,6 @@ export function App() {
   const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
   const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
-  const snapshotRowsRef = useRef<DataRow[] | undefined>(undefined);
   const sidePanelOpenRef = useRef(false);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -359,7 +355,6 @@ export function App() {
       const confirmed = confirmedView.current;
       if (
         !currentMetadata ||
-        snapshotRowsRef.current ||
         !confirmed ||
         !canProfileConfirmedView(confirmed.viewContextId) ||
         !currentMetadata.schema.some((candidate) => candidate.name === column) ||
@@ -415,7 +410,6 @@ export function App() {
     if (
       !sidePanelOpenRef.current ||
       !currentMetadata ||
-      snapshotRowsRef.current ||
       !confirmed ||
       !canProfileConfirmedView(confirmed.viewContextId)
     ) {
@@ -499,7 +493,6 @@ export function App() {
         !sidePanelOpenRef.current ||
         !currentMetadata ||
         currentMetadata.stats ||
-        snapshotRowsRef.current ||
         !confirmed ||
         pendingStatsRequest.current ||
         !canProfileConfirmedView(confirmed.viewContextId)
@@ -938,12 +931,6 @@ export function App() {
         desiredColumnWindow.current = openedWindow;
         inspectionColumnWindow.current = openedWindow;
         storeSummaries(response.summaries);
-        const rows =
-          response.metadata.source.kind === "notebookOutput" && isFullWidthPage(response.metadata, response.page)
-            ? response.page.rows
-            : undefined;
-        snapshotRowsRef.current = rows;
-        setSnapshotRows(rows);
         return;
       }
 
@@ -980,8 +967,6 @@ export function App() {
         storeFilterModel(nextMetadata.filterModel);
         storePage(response.page);
         confirmedColumnWindow.current = columnWindowFromPage(nextMetadata, response.page, pendingPage.columnWindow);
-        snapshotRowsRef.current = undefined;
-        setSnapshotRows(undefined);
         restartProfilingForConfirmedView();
         if (restoreGridFocusForPage.current === response.viewRequestId) {
           restoreGridFocusForPage.current = undefined;
@@ -1013,8 +998,6 @@ export function App() {
         confirmedColumnWindow.current = mutationWindow;
         desiredColumnWindow.current = mutationWindow;
         inspectionColumnWindow.current = mutationWindow;
-        snapshotRowsRef.current = undefined;
-        setSnapshotRows(undefined);
         setGeneratedCode(response.code);
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
         setDraftBefore(
@@ -1167,7 +1150,7 @@ export function App() {
       }
     };
   }, [gridViewState.columnWidths, gridViewState.viewport.scrollLeft, stepInspection, stepInspectionTarget]);
-  const snapshotMode = metadata?.source.kind === "notebookOutput" && snapshotRows !== undefined;
+  const snapshotMode = metadata?.source.kind === "notebookOutput";
 
   const requestPage = (
     offset: number,
@@ -1178,12 +1161,6 @@ export function App() {
       return undefined;
     }
     const currentMetadata = metadataRef.current;
-    const currentSnapshotRows = snapshotRowsRef.current;
-    if (currentMetadata && currentSnapshotRows) {
-      applySnapshotModel(currentMetadata, currentSnapshotRows, model, offset);
-      return undefined;
-    }
-
     const viewRequestId = nextViewRequestId();
     const previousContextId = confirmedView.current?.viewContextId;
     const changesView = options.changesView ?? !previousContextId;
@@ -1243,23 +1220,10 @@ export function App() {
   const requestValues = (column: string, search?: string) => {
     if (stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
-    const currentSnapshotRows = snapshotRowsRef.current;
     const confirmed = confirmedView.current;
     if (!currentMetadata?.schema.some((candidate) => candidate.name === column)) return;
     const viewRequestId = nextViewRequestId();
     const valuesFilterModel = filterModelForColumnValues(currentMetadata.filterModel, column);
-    if (currentMetadata && currentSnapshotRows) {
-      const values = snapshotColumnValues(
-        currentMetadata,
-        currentSnapshotRows,
-        filterModelForColumnValues(filterModelRef.current, column),
-        column,
-        search,
-        viewRequestId
-      );
-      storeColumnValues(new Map(columnValuesRef.current).set(column, values));
-      return;
-    }
     if (!currentMetadata || !confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
 
     const previousRequestId = latestValuesByColumn.current.get(column);
@@ -1289,7 +1253,6 @@ export function App() {
   };
 
   const handleVisibleColumnRange = (range: VisibleColumnRange): void => {
-    if (snapshotMode) return;
     if (stepInspectionTargetRef.current) {
       const currentInspection = stepInspectionRef.current;
       const currentMetadata = metadataRef.current;
@@ -1338,12 +1301,6 @@ export function App() {
     }
     storeFilterModel(model);
     const currentMetadata = metadataRef.current;
-    const currentSnapshotRows = snapshotRowsRef.current;
-    if (currentMetadata && currentSnapshotRows) {
-      applySnapshotModel(currentMetadata, currentSnapshotRows, model, 0);
-      return;
-    }
-
     const failed = failedPageRequestRef.current;
     if (sameDesiredModel && failed && sameFilterModel(model, failed.model)) {
       requestPage(failed.offset, failed.model, {
@@ -1540,7 +1497,7 @@ export function App() {
           </div>
           {metadata && (
             <div className="toolbarActions">
-              {metadata.mode === "editing" && !snapshotMode && (
+              {metadata.mode === "editing" && (
                 <button
                   type="button"
                   data-operation-focus-fallback
@@ -1887,45 +1844,6 @@ export function App() {
       )}
     </main>
   );
-
-  function applySnapshotModel(metadata: SessionMetadata, rows: DataRow[], model: FilterModel, offset: number): void {
-    resetViewProfiling(true);
-    const filteredRows = applySnapshotFilters(metadata, rows, model);
-    const nextMetadata: SessionMetadata = {
-      ...metadata,
-      filteredShape: {
-        rows: filteredRows.length,
-        columns: metadata.shape.columns
-      },
-      filterModel: model
-    };
-
-    setMetadata(nextMetadata);
-    metadataRef.current = nextMetadata;
-    filterModelRef.current = model;
-    setFilterModel(model);
-    storePage({
-      offset,
-      limit: pageSize,
-      totalRows: filteredRows.length,
-      columnIds: nextMetadata.schema.map((column) => column.id),
-      rows: filteredRows.slice(offset, offset + pageSize)
-    });
-    const snapshotWindow = {
-      offset: 0,
-      limit: Math.max(1, Math.min(256, nextMetadata.schema.length || webviewConfig.fetchColumnBlockSize))
-    };
-    confirmedColumnWindow.current = snapshotWindow;
-    desiredColumnWindow.current = snapshotWindow;
-    const nextSummaries = snapshotSummaries(nextMetadata, filteredRows);
-    summariesRef.current = nextSummaries;
-    setSummaries(nextSummaries);
-    confirmView(nextMetadata, nextViewRequestId());
-    setLoading(false);
-    setProjectionLoading(false);
-    setForegroundError(undefined);
-    storeFailedPageRequest(undefined);
-  }
 }
 
 interface EditorActionMessage {
@@ -2120,13 +2038,6 @@ function pageCoversColumnWindow(metadata: SessionMetadata, page: GridPage, windo
     first >= 0 &&
     first + expectedIds.length <= page.columnIds.length &&
     expectedIds.every((columnId, index) => page.columnIds[first + index] === columnId)
-  );
-}
-
-function isFullWidthPage(metadata: SessionMetadata, page: GridPage): boolean {
-  return (
-    page.columnIds.length === metadata.schema.length &&
-    page.columnIds.every((columnId, index) => columnId === metadata.schema[index]?.id)
   );
 }
 

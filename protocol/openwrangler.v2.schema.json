@@ -144,13 +144,26 @@
         "rows": { "type": "array", "items": { "$ref": "#/definitions/DataRow" } }
       }
     },
+    "TypedSelectionToken": {
+      "description": "Typed representative for a distinct-value group whose display text alone is ambiguous.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "columnType", "cell"],
+      "properties": {
+        "kind": { "const": "typedSelection" },
+        "version": { "const": 1 },
+        "columnType": { "$ref": "#/definitions/ColumnType" },
+        "cell": { "$ref": "#/definitions/CellValue" }
+      }
+    },
     "ValueCount": {
       "type": "object",
       "additionalProperties": false,
       "required": ["value", "count"],
       "properties": {
         "value": { "type": "string" },
-        "count": { "type": "integer", "minimum": 0 }
+        "count": { "type": "integer", "minimum": 0 },
+        "selectionValue": { "$ref": "#/definitions/TypedSelectionToken" }
       }
     },
     "NumericSummary": {

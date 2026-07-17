@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 import {
+  configureEditorAcceptanceTempRoot,
   downloadEditorWithRetry,
   editorDisplayLaunchArgs,
   runEditorAcceptancePhase,
@@ -84,11 +84,16 @@ process.env.OPEN_WRANGLER_TEST_PYTHON ??=
         ? "python"
         : "python3";
 process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-const editorDisplay = await startIsolatedEditorDisplay();
+const temporaryParent = resolve(root, "tmp", "ow");
+mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
+const temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
+configureEditorAcceptanceTempRoot(temporaryRoot);
+let editorDisplay;
 
 try {
+  editorDisplay = await startIsolatedEditorDisplay();
   for (const editor of candidates) {
-    const profile = mkdtempSync(join(tmpdir(), `openwrangler-packaged-${editor.key}-`));
+    const profile = mkdtempSync(join(temporaryRoot, `pkg-${editor.key}-`));
     const userData = resolve(profile, "user-data");
     const extensions = resolve(profile, "extensions");
     const workspace = resolve(profile, "Open Wrangler Demo");
@@ -152,5 +157,9 @@ try {
     }
   }
 } finally {
-  await editorDisplay.stop();
+  try {
+    await editorDisplay?.stop();
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 }

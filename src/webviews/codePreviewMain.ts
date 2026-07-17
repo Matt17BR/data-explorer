@@ -1,7 +1,7 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
@@ -16,6 +16,7 @@ const host = document.querySelector<HTMLElement>("#root");
 if (!host) throw new Error("Code Preview root was not found.");
 
 let applyingHostUpdate = false;
+const editability = new Compartment();
 const pythonHighlightStyle = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: "var(--vscode-symbolIcon-keywordForeground, #c586c0)" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--vscode-symbolIcon-stringForeground, #ce9178)" },
@@ -40,10 +41,7 @@ const editor = new EditorView({
       keymap.of([...defaultKeymap, ...historyKeymap]),
       EditorState.tabSize.of(4),
       EditorView.lineWrapping,
-      EditorView.contentAttributes.of({
-        "aria-label": "Editable generated Python code preview",
-        spellcheck: "false"
-      }),
+      editability.of(codePreviewEditability(false)),
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !applyingHostUpdate) {
           vscode.postMessage({ kind: "codeChanged", code: update.state.doc.toString() });
@@ -52,8 +50,8 @@ const editor = new EditorView({
       EditorView.theme({
         "&": {
           height: "100vh",
-          color: "var(--vscode-editor-foreground)",
-          backgroundColor: "var(--vscode-editor-background)"
+          color: "var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4))",
+          backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
         },
         ".cm-content": {
           caretColor: "var(--vscode-editorCursor-foreground)",
@@ -61,9 +59,13 @@ const editor = new EditorView({
           fontSize: "var(--vscode-editor-font-size, 12px)"
         },
         ".cm-gutters": {
-          color: "var(--vscode-editorLineNumber-foreground)",
+          color: "var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground, #858585))",
           backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background))",
           borderRight: "1px solid var(--vscode-panel-border)"
+        },
+        ".cm-activeLineGutter": {
+          color:
+            "var(--vscode-editorLineNumber-activeForeground, var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4)))"
         },
         ".cm-activeLine, .cm-activeLineGutter": {
           backgroundColor: "var(--vscode-editor-lineHighlightBackground)"
@@ -89,14 +91,33 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
     !("kind" in message) ||
     message.kind !== "codePreview" ||
     !("code" in message) ||
-    typeof message.code !== "string"
+    typeof message.code !== "string" ||
+    !("editable" in message) ||
+    typeof message.editable !== "boolean"
   ) {
     return;
   }
-  if (editor.state.doc.toString() === message.code) return;
+  const changes =
+    editor.state.doc.toString() === message.code
+      ? undefined
+      : { from: 0, to: editor.state.doc.length, insert: message.code };
   applyingHostUpdate = true;
-  editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: message.code } });
+  editor.dispatch({
+    ...(changes ? { changes } : {}),
+    effects: editability.reconfigure(codePreviewEditability(message.editable))
+  });
   applyingHostUpdate = false;
 });
 
 vscode.postMessage({ kind: "ready" });
+
+function codePreviewEditability(editable: boolean): Extension {
+  return [
+    EditorState.readOnly.of(!editable),
+    EditorView.editable.of(editable),
+    EditorView.contentAttributes.of({
+      "aria-label": editable ? "Editable generated Python code preview" : "Read-only Open Wrangler code preview",
+      spellcheck: "false"
+    })
+  ];
+}

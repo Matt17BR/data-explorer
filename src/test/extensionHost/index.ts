@@ -53,6 +53,7 @@ interface TestApi {
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
+  disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
 }
@@ -158,7 +159,7 @@ export async function run(): Promise<void> {
     viewsContainers?: { activitybar?: Array<{ id?: string; icon?: string }> };
     views?: Record<string, Array<{ id?: string }>>;
     configuration?: { properties?: Record<string, unknown> };
-    notebookRenderer?: Array<{ mimeTypes?: string[] }>;
+    notebookRenderer?: Array<{ mimeTypes?: string[]; requiresMessaging?: string }>;
     keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
     menus?: Record<string, Array<{ command?: string; when?: string; group?: string }>>;
   };
@@ -271,6 +272,11 @@ export async function run(): Promise<void> {
     "Edit Latest Step must be unavailable from the Cleaning Steps menu while a draft blocks plan changes."
   );
   assert.deepEqual(contributions.notebookRenderer?.[0]?.mimeTypes, ["application/vnd.openwrangler.viewer.v2+json"]);
+  assert.equal(contributions.notebookRenderer?.[0]?.requiresMessaging, "optional");
+  assert.ok(
+    (extension.packageJSON.activationEvents as string[] | undefined)?.includes("onRenderer:openWrangler.renderer"),
+    "The extension host must activate before optional renderer messages are delivered."
+  );
   assert.ok(
     extension.packageJSON.contributes.walkthroughs?.some(
       (walkthrough: { id?: string }) => walkthrough.id === "gettingStarted"
@@ -1195,13 +1201,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       insertionId: pandasInsertionMetadata.insertionId
     });
     assert.equal(typeof pandasInsertionMetadata.insertionId, "string");
-    const pandasClosed = await testing.request({
-      kind: "closeSession",
-      sessionId: active.sessionId,
-      revision: applied.revision
-    });
-    assert.equal(pandasClosed.kind, "sessionClosed");
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the Pandas notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
 
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
@@ -1386,7 +1386,9 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     const expectedThirdColumnAfterStep = [["B", "C", "A", "D"], ["C", "A", "D"], ["C", "A"], ["C"]];
     const expectedCodeMarkerAfterStep: readonly (readonly RegExp[])[] = [
       [/_sort_order_4_0 = df\.iloc\[:, 2\]/u, /_sort_order_4_1 = df\.iloc\[:, 1\]/u],
-      [/_filter_mask_5 = \(\(df\.iloc\[:, 0\] == 2\)\)/u],
+      [
+        /_filter_mask_5 = .*df\.iloc\[:, 0\] == _open_wrangler_view_value\(2, 'integer'\).*_open_wrangler_is_null.*_open_wrangler_is_nan/u
+      ],
       [
         /_missing_positions_6 = \[1\] or list\(range\(df\.shape\[1\]\)\)/u,
         /\[df\.iloc\[:, position\]\.notna\(\) for position in _missing_positions_6\]/u
@@ -1515,13 +1517,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /"position"\s*:/u,
       "Kernel replay must retain position-free public references."
     );
-    const duplicateClosed = await testing.request({
-      kind: "closeSession",
-      sessionId: active.sessionId,
-      revision: duplicateReplayed.revision
-    });
-    assert.equal(duplicateClosed.kind, "sessionClosed");
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the duplicate-column Pandas notebook session");
     await waitFor(
       () => testing.diagnostics().sessionCount === 0,
       10_000,
@@ -1896,13 +1892,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /\bTrue\b/u,
       "Structural replay must leave the recreated notebook dataframe immutable."
     );
-    const structuralClosed = await testing.request({
-      kind: "closeSession",
-      sessionId: structuralSessionId,
-      revision: structuralReplayed.revision
-    });
-    assert.equal(structuralClosed.kind, "sessionClosed");
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await disposePackagedSessionPanel(
+      testing,
+      structuralSessionId,
+      "the structural duplicate-column Pandas notebook session"
+    );
     await waitFor(
       () => testing.diagnostics().sessionCount === 0,
       10_000,
@@ -2119,13 +2113,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /"position"\s*:/u,
       "Kernel replay must retain position-free public group-by/by-example references."
     );
-    const identityClosed = await testing.request({
-      kind: "closeSession",
-      sessionId: identitySessionId,
-      revision: identityReplayed.revision
-    });
-    assert.equal(identityClosed.kind, "sessionClosed");
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await disposePackagedSessionPanel(
+      testing,
+      identitySessionId,
+      "the stable-reference group-by/by-example notebook session"
+    );
     await waitFor(
       () => testing.diagnostics().sessionCount === 0,
       10_000,
@@ -2174,18 +2166,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(recovered.kind, "page", "The Polars notebook session must replay after kernel replacement.");
     if (recovered.kind !== "page") throw new Error("Polars notebook recovery did not return a page.");
     assert.equal(recovered.page.rows[0]?.values[0]?.display, "3");
-    const polarsClosed = await testing.request({
-      kind: "closeSession",
-      sessionId: active.sessionId,
-      revision: recovered.revision
-    });
-    assert.equal(polarsClosed.kind, "sessionClosed");
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the Polars notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Polars notebook session to close");
 
     if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
       recordAcceptanceProgress("verify:notebook-renderer-provenance");
       await exercisePackagedRendererProvenance(testing, jupyter, notebook, currentPayload, directory);
+      recordAcceptanceProgress("verify:notebook-renderer-same-group-switch");
+      await exercisePackagedSameGroupRendererSwitch(jupyter, notebook, currentPayload, directory);
     }
 
     const denialCalls = jupyter.testing.denialCalls();
@@ -2197,13 +2185,438 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await waitFor(() => jupyter.testing.denialCalls() > denialCalls, 10_000, "the packaged Jupyter permission denial");
     assert.equal(testing.diagnostics().sessionCount, 0);
     jupyter.testing.setDenied(false);
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    const deniedPanelTabs = vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter((tab) => tab.label === "Open Wrangler: pandas_frame");
+    if (deniedPanelTabs.length > 0) assert.equal(await vscode.window.tabGroups.close(deniedPanelTabs, true), true);
     assert.equal(await notebook.save(), true);
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    const originTab = notebookTab(notebook.uri);
+    assert.ok(originTab, "The originating notebook tab must still be open after the permission-denial scenario.");
+    assert.equal(await vscode.window.tabGroups.close(originTab, true), true);
+    await waitFor(
+      () =>
+        !notebookTab(notebook.uri) &&
+        !vscode.window.visibleNotebookEditors.some(
+          (editor) => editor.notebook.uri.toString() === notebook.uri.toString()
+        ),
+      10_000,
+      "the originating notebook renderer to dispose before the isolated saved-output scenario"
+    );
+
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      recordAcceptanceProgress("verify:notebook-renderer-snapshot");
+      await exercisePackagedSavedSnapshot(testing, jupyter, directory);
+    }
   } finally {
     await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+async function exercisePackagedSavedSnapshot(
+  testing: TestApi,
+  jupyter: FakeJupyterApi,
+  directory: string
+): Promise<void> {
+  const label = "saved snapshot acceptance";
+  const snapshotPath = path.join(directory, "renderer-saved-snapshot.ipynb");
+  const schema: SessionMetadata["schema"] = [
+    { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
+    { id: "c:score", name: "score", position: 1, rawType: "Int64", type: "integer", nullable: true },
+    { id: "c:group", name: "group", position: 2, rawType: "String", type: "string", nullable: false }
+  ];
+  const payload: NotebookOutputPayload = {
+    mimeVersion: 2,
+    metadata: {
+      protocolVersion: 2,
+      sessionId: "claimed-snapshot-session",
+      revision: 0,
+      backend: "polars",
+      mode: "viewing",
+      source: { kind: "notebookOutput", label, variableName: "stale_saved_frame" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: 99, columns: schema.length },
+      filteredShape: { rows: 99, columns: schema.length },
+      schema,
+      filterModel: { logic: "and", filters: [], sort: [] },
+      steps: []
+    },
+    page: {
+      offset: 0,
+      limit: 99,
+      totalRows: 99,
+      columnIds: schema.map((column) => column.id),
+      rows: [
+        snapshotRow("r:capture:0", 0, "Berlin", 2, "b"),
+        snapshotRow("r:capture:1", 1, "Amsterdam", 5, "a"),
+        snapshotRow("r:capture:2", 2, "Berlin", 7, "a"),
+        snapshotRow("r:capture:3", 3, "Cairo", null, "c")
+      ]
+    },
+    summaries: []
+  };
+  writeFileSync(
+    snapshotPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: 1,
+          metadata: {},
+          outputs: [
+            {
+              output_type: "display_data",
+              metadata: {},
+              data: {
+                "text/plain": ["Open Wrangler saved snapshot"],
+                [OPEN_WRANGLER_MIME_V2]: payload
+              }
+            }
+          ],
+          source: ["# saved output only"]
+        }
+      ],
+      metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+
+  let snapshotNotebook: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:open");
+    snapshotNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(snapshotPath));
+    const snapshotEditor = await vscode.window.showNotebookDocument(snapshotNotebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    snapshotEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    assert.equal(
+      jupyter.testing.stats(snapshotNotebook.uri),
+      undefined,
+      "A saved snapshot notebook must not acquire a Jupyter kernel before its renderer action."
+    );
+
+    const workbench = await connectToEditorWorkbench();
+    const button = await waitForNotebookRendererButton(workbench, label);
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
+    await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
+    await waitFor(
+      () => {
+        const source = testing.activeSession()?.metadata.source;
+        return source?.kind === "notebookOutput" && source.label === label;
+      },
+      30_000,
+      "the saved MIME-v2 renderer output to become a coordinator-owned session"
+    );
+
+    const active = testing.activeSession();
+    assert.ok(active, "The saved renderer output must become an active coordinator session.");
+    assert.notEqual(active.sessionId, payload.metadata.sessionId, "The host must replace a saved runtime identity.");
+    assert.equal(active.metadata.sessionId, active.sessionId);
+    assert.deepEqual(active.metadata.source, { kind: "notebookOutput", label });
+    assert.equal(active.metadata.mode, "viewing");
+    assert.equal(active.metadata.revision, 0);
+    assert.deepEqual(active.metadata.shape, { rows: 4, columns: 3 });
+    assert.deepEqual(active.metadata.filteredShape, { rows: 4, columns: 3 });
+    assert.deepEqual(active.metadata.capabilities, {
+      editable: false,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false
+    });
+    assert.deepEqual(active.metadata.filterModel, { logic: "and", filters: [], sort: [] });
+    assert.deepEqual(active.metadata.steps, []);
+    assert.equal(active.metadata.latestStepInputSchema, undefined);
+    assert.equal(active.metadata.draftStep, undefined);
+    assert.equal(active.metadata.stats, undefined);
+    const diagnostic = testing.diagnostics().sessions.find((session) => session.publicId === active.sessionId);
+    assert.ok(diagnostic, "The saved snapshot must be coordinator-owned.");
+    assert.notEqual(diagnostic.runtimeId, payload.metadata.sessionId);
+    assert.notEqual(diagnostic.runtimeId, diagnostic.publicId);
+    assert.equal(
+      jupyter.testing.stats(snapshotNotebook.uri),
+      undefined,
+      "Opening a saved snapshot must not acquire its notebook's Jupyter kernel."
+    );
+
+    const filteredModel: FilterModel = {
+      logic: "and",
+      filters: [
+        {
+          column: "group",
+          type: "string",
+          logic: "and",
+          predicates: [{ kind: "predicate", operator: "equals", value: "a" }]
+        }
+      ],
+      sort: [{ column: "score", direction: "desc", nulls: "last" }]
+    };
+    const projected = await testing.request({
+      kind: "getPage",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      viewRequestId: "saved-snapshot-page",
+      offset: 0,
+      limit: 2,
+      columnOffset: 1,
+      columnLimit: 1,
+      filterModel: filteredModel
+    });
+    assert.equal(projected.kind, "page");
+    if (projected.kind !== "page") throw new Error("The saved snapshot projected page did not resolve.");
+    assert.deepEqual(projected.page.columnIds, ["c:score"]);
+    assert.deepEqual(
+      projected.page.rows.map((row) => row.id),
+      ["r:capture:2", "r:capture:1"]
+    );
+    assert.deepEqual(
+      projected.page.rows.map((row) => row.values[0]?.display),
+      ["7", "5"]
+    );
+    assert.equal(projected.page.totalRows, 2);
+    assert.deepEqual(projected.metadata.filteredShape, { rows: 2, columns: 3 });
+
+    const summary = await testing.request({
+      kind: "getSummary",
+      sessionId: active.sessionId,
+      revision: projected.revision,
+      viewRequestId: "saved-snapshot-summary",
+      filterModel: filteredModel,
+      columns: ["score"]
+    });
+    assert.equal(summary.kind, "summary");
+    if (summary.kind !== "summary") throw new Error("The saved snapshot summary did not resolve.");
+    assert.deepEqual(summary.summaries, [
+      {
+        column: "score",
+        type: "integer",
+        rawType: "Int64",
+        totalCount: 2,
+        nullCount: 0,
+        nanCount: 0,
+        distinctCount: 2,
+        topValues: [
+          { value: "5", count: 1 },
+          { value: "7", count: 1 }
+        ],
+        numeric: { min: 5, max: 7, mean: 6, median: 6, std: Math.SQRT2 },
+        visualization: {
+          kind: "numeric",
+          bins: [
+            { min: 5, max: 6, count: 1 },
+            { min: 6, max: 7, count: 1 }
+          ]
+        }
+      }
+    ]);
+
+    const statistics = await testing.request({
+      kind: "getDatasetStats",
+      sessionId: active.sessionId,
+      revision: projected.revision,
+      viewRequestId: "saved-snapshot-statistics",
+      filterModel: { logic: "and", filters: [], sort: [] }
+    });
+    assert.equal(statistics.kind, "datasetStats");
+    if (statistics.kind !== "datasetStats") throw new Error("The saved snapshot statistics did not resolve.");
+    assert.deepEqual(statistics.stats, {
+      missingCells: 1,
+      missingRows: 1,
+      duplicateRows: 0,
+      missingValuesByColumn: [
+        { column: "city", count: 0 },
+        { column: "score", count: 1 },
+        { column: "group", count: 0 }
+      ]
+    });
+
+    const values = await testing.request({
+      kind: "getColumnValues",
+      sessionId: active.sessionId,
+      revision: projected.revision,
+      viewRequestId: "saved-snapshot-values",
+      column: "city",
+      search: "ber",
+      limit: 100,
+      filterModel: filteredModel
+    });
+    assert.equal(values.kind, "columnValues");
+    if (values.kind !== "columnValues") throw new Error("The saved snapshot values query did not resolve.");
+    assert.deepEqual(values.values, [{ value: "Berlin", count: 1 }]);
+    assert.equal(values.hasMore, false);
+
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:close");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the exact saved snapshot session");
+    assert.deepEqual(
+      testing.diagnostics().sessions,
+      [],
+      `An earlier packaged notebook session leaked into saved-snapshot cleanup: ${JSON.stringify(testing.diagnostics().sessions)}`
+    );
+    const snapshotTab = notebookTab(snapshotNotebook.uri);
+    if (snapshotTab) assert.equal(await vscode.window.tabGroups.close(snapshotTab, true), true);
+    assert.equal(jupyter.testing.stats(snapshotNotebook.uri), undefined);
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:complete");
+  } catch (error) {
+    await bestEffortSavedSnapshotCleanup(testing, snapshotNotebook, label);
+    throw error;
+  }
+}
+
+async function disposePackagedSessionPanel(testing: TestApi, sessionId: string, description: string): Promise<void> {
+  const response = await testing.disposePanelForSession(sessionId);
+  assert.equal(response?.kind, "sessionClosed", `${description} panel must close authoritatively.`);
+  if (response?.kind === "sessionClosed") assert.equal(response.sessionId, sessionId);
+  await waitFor(
+    () => !testing.diagnostics().sessions.some((session) => session.publicId === sessionId),
+    10_000,
+    `${description} to leave the coordinator`
+  );
+}
+
+async function exercisePackagedSameGroupRendererSwitch(
+  jupyter: FakeJupyterApi,
+  originNotebook: vscode.NotebookDocument,
+  payloadTemplate: NotebookOutputPayload,
+  directory: string
+): Promise<void> {
+  const label = "same-group renderer switch";
+  const notebookPath = path.join(directory, "renderer-same-group.ipynb");
+  const payload: NotebookOutputPayload = {
+    ...payloadTemplate,
+    metadata: {
+      ...payloadTemplate.metadata,
+      sessionId: "snapshot-renderer-same-group",
+      source: { kind: "notebookOutput", label }
+    }
+  };
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: 1,
+          metadata: {},
+          outputs: [
+            {
+              output_type: "display_data",
+              metadata: {},
+              data: {
+                "text/plain": [`Open Wrangler ${label}`],
+                [OPEN_WRANGLER_MIME_V2]: payload
+              }
+            }
+          ],
+          source: ["# saved renderer switch"]
+        }
+      ],
+      metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+
+  let switchedNotebook: vscode.NotebookDocument | undefined;
+  try {
+    const workbench = await connectToEditorWorkbench();
+    switchedNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
+    const switchedEditor = await vscode.window.showNotebookDocument(switchedNotebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    switchedEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    await waitForNotebookRendererButton(workbench, label);
+    assert.equal(
+      jupyter.testing.stats(switchedNotebook.uri),
+      undefined,
+      "Switching to a saved-output notebook must not acquire a Jupyter kernel."
+    );
+
+    const switchedTab = notebookTab(switchedNotebook.uri);
+    assert.ok(switchedTab, "The same-group renderer fixture tab must be open.");
+    assert.equal(await vscode.window.tabGroups.close(switchedTab, true), true);
+    await vscode.window.showNotebookDocument(originNotebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+  } finally {
+    const switchedTab = switchedNotebook ? notebookTab(switchedNotebook.uri) : undefined;
+    if (switchedTab) await vscode.window.tabGroups.close(switchedTab, true).then(undefined, () => undefined);
+  }
+}
+
+function snapshotRow(
+  id: string,
+  rowNumber: number,
+  city: string,
+  score: number | null,
+  group: string
+): GridPage["rows"][number] {
+  return {
+    id,
+    rowNumber,
+    values: [
+      { kind: "string", raw: city, display: city, isNull: false, isNaN: false },
+      score === null
+        ? { kind: "null", raw: null, display: "", isNull: true, isNaN: false }
+        : { kind: "integer", raw: score, display: String(score), isNull: false, isNaN: false },
+      { kind: "string", raw: group, display: group, isNull: false, isNaN: false }
+    ]
+  };
+}
+
+async function bestEffortSavedSnapshotCleanup(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument | undefined,
+  label: string
+): Promise<void> {
+  const active = testing.activeSession();
+  if (active?.metadata.source.kind === "notebookOutput" && active.metadata.source.label === label) {
+    try {
+      await testing.request({
+        kind: "closeSession",
+        sessionId: active.sessionId,
+        revision: active.metadata.revision
+      });
+    } catch {
+      // Editor-process-group teardown remains the final bounded fallback.
+    }
+  }
+  const tabs = savedSnapshotTabs(notebook, label);
+  if (tabs.length > 0) {
+    try {
+      await vscode.window.tabGroups.close(tabs, true);
+    } catch {
+      // Preserve the original acceptance failure.
+    }
+  }
+}
+
+function savedSnapshotTabs(notebook: vscode.NotebookDocument | undefined, label: string): vscode.Tab[] {
+  return [
+    ...(notebook ? [notebookTab(notebook.uri)] : []),
+    ...vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter(
+        (tab) =>
+          tab.label === `Open Wrangler: ${label}` ||
+          (tab.input instanceof vscode.TabInputWebview && tab.input.viewType === "openWrangler.session")
+      )
+  ].filter((tab): tab is vscode.Tab => Boolean(tab));
 }
 
 async function exercisePackagedRendererProvenance(
@@ -2287,7 +2700,7 @@ async function exercisePackagedRendererProvenance(
 
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
-    const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A");
+    const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
     recordAcceptanceProgress("verify:notebook-renderer:click");
     await originButton.evaluate((button: unknown) => (button as { click(): void }).click());
     recordAcceptanceProgress("verify:notebook-renderer:session");
@@ -2380,12 +2793,7 @@ async function exercisePackagedRendererProvenance(
     // command unit tests instead of manufacturing a false packaged lifecycle.
 
     recordAcceptanceProgress("verify:notebook-renderer:session-close");
-    const closed = await testing.request({
-      kind: "closeSession",
-      sessionId: active.sessionId,
-      revision: provenancePage.revision
-    });
-    assert.equal(closed.kind, "sessionClosed");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the renderer provenance session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
     recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
     const tabsToClose = rendererProvenanceTabs(secondNotebook);
@@ -2432,7 +2840,11 @@ function rendererProvenanceTabs(secondNotebook: vscode.NotebookDocument | undefi
     ...(secondNotebook ? [notebookTab(secondNotebook.uri)] : []),
     ...vscode.window.tabGroups.all
       .flatMap((group) => group.tabs)
-      .filter((tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType === "openWrangler.viewer")
+      .filter(
+        (tab) =>
+          tab.label === "Open Wrangler: renderer provenance A" ||
+          (tab.input instanceof vscode.TabInputWebview && tab.input.viewType === "openWrangler.session")
+      )
   ].filter((tab): tab is vscode.Tab => Boolean(tab));
 }
 
@@ -2442,8 +2854,12 @@ function notebookTab(uri: vscode.Uri): vscode.Tab | undefined {
     .find((tab) => tab.input instanceof vscode.TabInputNotebook && tab.input.uri.toString() === uri.toString());
 }
 
-async function waitForNotebookRendererButton(workbench: Page, label: string): Promise<Locator> {
-  const deadline = Date.now() + 15_000;
+async function waitForNotebookRendererButton(
+  workbench: Page,
+  label: string,
+  buttonName = "Open in Open Wrangler"
+): Promise<Locator> {
+  const deadline = Date.now() + 30_000;
   do {
     const browser = workbench.context().browser();
     const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
@@ -2452,13 +2868,36 @@ async function waitForNotebookRendererButton(workbench: Page, label: string): Pr
         const preview = frame.locator("section.openwrangler-notebook").filter({
           hasText: `Open Wrangler preview: ${label}`
         });
-        const button = preview.getByRole("button", { name: "Open in Open Wrangler" }).first();
-        if ((await button.count()) > 0 && (await button.isVisible())) return button;
+        const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
+        if ((await button.count()) > 0) {
+          await button.scrollIntoViewIfNeeded().catch(() => undefined);
+          if (await button.isVisible()) return button;
+        }
       }
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new Error(`Timed out waiting for the real notebook renderer button for ${JSON.stringify(label)}.`);
+  const browser = workbench.context().browser();
+  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+  const diagnostics = await Promise.all(
+    pages.flatMap((page) =>
+      page.frames().map(async (frame) => ({
+        page: page.url(),
+        frame: frame.url(),
+        previews: await frame
+          .locator("section.openwrangler-notebook")
+          .allInnerTexts()
+          .catch(() => []),
+        buttons: await frame
+          .getByRole("button", { name: buttonName, exact: true })
+          .count()
+          .catch(() => 0)
+      }))
+    )
+  );
+  throw new Error(
+    `Timed out waiting for the real notebook renderer button ${JSON.stringify(buttonName)} for ${JSON.stringify(label)}: ${JSON.stringify(diagnostics)}`
+  );
 }
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -3215,7 +3654,18 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
     });
     assert.equal(values.kind, "columnValues", `${backend} searchable column values must resolve.`);
     if (values.kind === "columnValues") {
-      assert.deepEqual(values.values, [{ value: "Milan", count: 1 }]);
+      assert.deepEqual(values.values, [
+        {
+          value: "Milan",
+          count: 1,
+          selectionValue: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "string",
+            cell: { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }
+          }
+        }
+      ]);
       assert.equal(values.hasMore, false);
     }
 

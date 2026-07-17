@@ -8,6 +8,7 @@ from typing import Any, Literal
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
+    VIEW_COMPARABLE_TYPES,
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
@@ -15,17 +16,23 @@ from .base import (
     boolean_visualization,
     bound_column_name,
     categorical_visualization,
+    coerce_typed_view_value,
     datetime_visualization,
     ensure_output_columns_available,
+    generated_view_value_helper_lines,
     infer_semantic_type,
     normalize_cell,
     normalize_page_projection,
     numeric_visualization,
+    typed_selection_value,
+    validate_view_predicate_operator,
 )
 
 SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
+_ASCII_LOWER_REPLACEMENTS = dict(zip(_ASCII_UPPER, _ASCII_LOWER, strict=True))
 _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _POLARS_INTEGER_LIMB_BASE = 10**9
@@ -175,28 +182,41 @@ class PolarsEngine(DataFrameEngine):
         import polars as pl
 
         df = frame
-        columns = df.collect_schema().names() if isinstance(df, pl.LazyFrame) else df.columns
+        schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+        columns = schema.names() if isinstance(df, pl.LazyFrame) else df.columns
         column_expressions = []
         for column_filter in model.get("filters", []):
             column = column_filter.get("column")
             if column not in columns:
                 continue
 
+            raw_type = str(schema[column])
+            column_type = infer_semantic_type(raw_type)
+            declared_type = column_filter.get("type")
+            if declared_type != column_type:
+                raise EngineError(
+                    f"Polars view filter for {column!r} declares {declared_type!r}, "
+                    f"but the dataframe column is {column_type!r}."
+                )
+
             conditions = []
             value_filter = column_filter.get("valueFilter")
             if value_filter and (
                 value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
             ):
-                selected = [str(value) for value in value_filter.get("selectedValues", [])]
-                current = pl.col(column).cast(pl.Utf8).is_in(selected) if selected else pl.lit(False)
+                selected = [
+                    coerce_typed_view_value(value, column_type) for value in value_filter.get("selectedValues", [])
+                ]
+                selected_series = pl.Series(selected).cast(schema[column], strict=True).implode() if selected else None
+                current = pl.col(column).is_in(selected_series) if selected_series is not None else pl.lit(False)
                 if value_filter.get("includeNulls"):
                     current = current | pl.col(column).is_null()
-                if value_filter.get("includeNaN") and column_filter.get("type") == "float":
+                if value_filter.get("includeNaN") and column_type == "float":
                     current = current | pl.col(column).is_nan()
                 conditions.append(current)
 
             for predicate in column_filter.get("predicates", []):
-                conditions.append(self._predicate_expr(column, predicate, column_filter.get("type")))
+                conditions.append(self._predicate_expr(column, predicate, column_type, schema[column]))
 
             if conditions:
                 column_expression = conditions[0]
@@ -216,6 +236,10 @@ class PolarsEngine(DataFrameEngine):
 
         sort_rules = [rule for rule in model.get("sort", []) if rule.get("column") in columns]
         if sort_rules:
+            for rule in sort_rules:
+                column_type = infer_semantic_type(str(schema[rule["column"]]))
+                if column_type not in VIEW_COMPARABLE_TYPES:
+                    raise EngineError(f"Polars view sorting is unavailable for {column_type} columns.")
             df = df.sort(
                 [rule["column"] for rule in sort_rules],
                 descending=[rule.get("direction", "asc") == "desc" for rule in sort_rules],
@@ -310,13 +334,14 @@ class PolarsEngine(DataFrameEngine):
                 if semantic_type == "float":
                     numeric_series = numeric_series.drop_nans()
                 numeric_values = numeric_series.to_list()
-                summary["numeric"] = {
+                numeric_summary = {
                     "min": _maybe_float(numeric_series.min()),
                     "max": _maybe_float(numeric_series.max()),
                     "mean": _maybe_float(numeric_series.mean()),
                     "median": _maybe_float(numeric_series.median()),
                     "std": _maybe_float(numeric_series.std()),
                 }
+                summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 summary["visualization"] = numeric_visualization(numeric_values)
             elif semantic_type == "boolean":
                 summary["visualization"] = boolean_visualization(series.drop_nulls().to_list())
@@ -440,13 +465,14 @@ class PolarsEngine(DataFrameEngine):
                 "topValues": top_values,
             }
             if semantic_type in {"integer", "float", "decimal"}:
-                summary["numeric"] = {
+                numeric_summary = {
                     "min": _maybe_float(metrics[f"{prefix}min"]),
                     "max": _maybe_float(metrics[f"{prefix}max"]),
                     "mean": _maybe_float(metrics[f"{prefix}mean"]),
                     "median": _maybe_float(metrics[f"{prefix}median"]),
                     "std": _maybe_float(metrics[f"{prefix}std"]),
                 }
+                summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 numeric_sample = numeric_samples.get(column)
                 if numeric_sample is None:  # pragma: no cover - guarded by numeric_sample_queries
                     raise EngineError(f"The numeric profile sample for {column} is missing.")
@@ -622,20 +648,27 @@ class PolarsEngine(DataFrameEngine):
             schema = frame.collect_schema()
             if column not in schema:
                 raise EngineError(f"Unknown Polars column: {column}")
+            column_type = infer_semantic_type(str(schema[column]))
             expression = pl.col(column).drop_nulls()
-            if infer_semantic_type(str(schema[column])) == "float":
+            if column_type == "float":
                 expression = expression.drop_nans()
             series_df = frame.select(expression)
         else:
             df = self.normalize(frame)
             if column not in df.schema:
                 raise EngineError(f"Unknown Polars column: {column}")
+            column_type = infer_semantic_type(str(df.schema[column]))
             expression = pl.col(column).drop_nulls()
-            if infer_semantic_type(str(df.schema[column])) == "float":
+            if column_type == "float":
                 expression = expression.drop_nans()
             series_df = df.select(expression)
         if search:
-            series_df = series_df.filter(pl.col(column).cast(pl.Utf8).str.contains(search, literal=True))
+            series_df = series_df.filter(
+                pl.col(column)
+                .cast(pl.Utf8)
+                .str.replace_many(_ASCII_LOWER_REPLACEMENTS)
+                .str.contains(str(search).translate(_ASCII_TO_LOWER), literal=True)
+            )
         counts = (
             series_df.group_by(column)
             .len(name="count")
@@ -644,37 +677,32 @@ class PolarsEngine(DataFrameEngine):
         )
         if isinstance(counts, pl.LazyFrame):
             counts = counts.collect(engine="streaming")
-        values = [
-            {"value": str(row[column]), "count": int(row["count"])} for row in counts.head(limit).iter_rows(named=True)
-        ]
+        values = []
+        for row in counts.head(limit).iter_rows(named=True):
+            item: dict[str, Any] = {"value": str(row[column]), "count": int(row["count"])}
+            selection = typed_selection_value(row[column], column_type)
+            if selection is not None:
+                item["selectionValue"] = selection
+            values.append(item)
         return values, counts.height > limit
 
-    def _predicate_expr(self, column: str, predicate: Mapping[str, Any], column_type: str | None = None) -> Any:
+    def _predicate_expr(
+        self,
+        column: str,
+        predicate: Mapping[str, Any],
+        column_type: str | None = None,
+        raw_type: Any | None = None,
+    ) -> Any:
         import polars as pl
 
-        operator = predicate.get("operator")
-        value = predicate.get("value")
+        operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
+        value = (
+            coerce_typed_view_value(predicate.get("value"), column_type)
+            if operator not in {"contains", "startsWith", "endsWith", "isNull", "isNotNull", "isNaN", "isNotNaN"}
+            else predicate.get("value")
+        )
         expr = pl.col(column)
-        if operator == "equals":
-            return expr == value
-        if operator == "notEquals":
-            return expr != value
-        if operator == "contains":
-            return expr.cast(pl.Utf8).str.to_lowercase().str.contains(str(value).lower(), literal=True)
-        if operator == "startsWith":
-            return expr.cast(pl.Utf8).str.starts_with(str(value))
-        if operator == "endsWith":
-            return expr.cast(pl.Utf8).str.ends_with(str(value))
-        if operator == "gt":
-            return expr > value
-        if operator == "gte":
-            return expr >= value
-        if operator == "lt":
-            return expr < value
-        if operator == "lte":
-            return expr <= value
-        if operator == "between":
-            return (expr >= value) & (expr <= predicate.get("secondValue"))
+        typed_value = pl.lit(value).cast(raw_type) if raw_type is not None else pl.lit(value)
         if operator == "isNull":
             return expr.is_null()
         if operator == "isNotNull":
@@ -683,7 +711,36 @@ class PolarsEngine(DataFrameEngine):
             return expr.is_nan().fill_null(False) if column_type == "float" else pl.lit(False)
         if operator == "isNotNaN":
             return expr.is_not_nan().fill_null(True) if column_type == "float" else pl.lit(True)
-        return expr.is_not_null()
+        if operator == "equals":
+            result = expr == typed_value
+        elif operator == "notEquals":
+            result = expr != typed_value
+        elif operator == "contains":
+            result = (
+                expr.cast(pl.Utf8)
+                .str.replace_many(_ASCII_LOWER_REPLACEMENTS)
+                .str.contains(str(value).translate(_ASCII_TO_LOWER), literal=True)
+            )
+        elif operator == "startsWith":
+            result = expr.cast(pl.Utf8).str.starts_with(str(value))
+        elif operator == "endsWith":
+            result = expr.cast(pl.Utf8).str.ends_with(str(value))
+        elif operator == "gt":
+            result = expr > typed_value
+        elif operator == "gte":
+            result = expr >= typed_value
+        elif operator == "lt":
+            result = expr < typed_value
+        elif operator == "lte":
+            result = expr <= typed_value
+        else:
+            second_value = coerce_typed_view_value(predicate.get("secondValue"), column_type)
+            typed_second = pl.lit(second_value).cast(raw_type) if raw_type is not None else pl.lit(second_value)
+            result = (expr >= typed_value) & (expr <= typed_second)
+        valid = expr.is_not_null()
+        if column_type == "float":
+            valid = valid & expr.is_not_nan().fill_null(False)
+        return result.fill_null(False) & valid
 
     def _nan_count(self, series: Any) -> int:
         try:
@@ -787,7 +844,14 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             delimiter = params["delimiter"]
             labels = (
-                eager.select(pl.col(column).cast(pl.String).str.split(delimiter).explode().drop_nulls().unique())
+                eager.select(
+                    pl.col(column)
+                    .cast(pl.String)
+                    .str.split(delimiter)
+                    .explode(empty_as_null=True)
+                    .drop_nulls()
+                    .unique()
+                )
                 .get_column(column)
                 .to_list()
             )
@@ -905,11 +969,13 @@ class PolarsEngine(DataFrameEngine):
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
-        lines = [
-            "from collections import Counter",
-            "",
-            "import polars as pl",
-        ]
+        needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
+        lines = ["from collections import Counter"]
+        if needs_filter_helpers:
+            lines.extend(["from datetime import date, datetime, timedelta", "from decimal import Decimal"])
+        lines.extend(["", "import polars as pl", ""])
+        if needs_filter_helpers:
+            lines.extend(generated_view_value_helper_lines())
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
             lines.extend(
                 [
@@ -1188,7 +1254,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
                 f"{prefix}{labels} = {eager}.select(",
                 f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})",
-                f"{prefix}    .explode().drop_nulls().unique()",
+                f"{prefix}    .explode(empty_as_null=True).drop_nulls().unique()",
                 f"{prefix}).get_column({column!r}).to_list()",
                 f"{prefix}{labels} = sorted(str(label) for label in {labels} if str(label))",
                 f"{prefix}{base} = {eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} else {eager}",
@@ -1715,9 +1781,16 @@ def _bound_polars_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
 
 def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
     column_masks: list[str] = []
-    for column_filter in model.get("filters", []):
+    prelude: list[str] = []
+    for filter_index, column_filter in enumerate(model.get("filters", [])):
         column = column_filter["column"]
         expression = f"pl.col({column!r})"
+        column_type = column_filter.get("type")
+        dtype_variable = f"_filter_dtype_{index}_{filter_index}"
+        prelude.append(
+            f"    {dtype_variable} = (df.collect_schema()[{column!r}] "
+            f"if isinstance(df, pl.LazyFrame) else df.schema[{column!r}])"
+        )
         conditions: list[str] = []
         value_filter = column_filter.get("valueFilter")
         if value_filter and (
@@ -1725,8 +1798,14 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
         ):
             parts = []
             if value_filter.get("selectedValues"):
-                selected = [str(value) for value in value_filter["selectedValues"]]
-                parts.append(f"{expression}.cast(pl.String).is_in({selected!r})")
+                selected = ", ".join(
+                    f"_open_wrangler_view_value({value!r}, {column_type!r})" for value in value_filter["selectedValues"]
+                )
+                selected_variable = f"_filter_values_{index}_{filter_index}"
+                prelude.append(
+                    f"    {selected_variable} = pl.Series([{selected}]).cast({dtype_variable}, strict=True).implode()"
+                )
+                parts.append(f"{expression}.is_in({selected_variable})")
             if value_filter.get("includeNulls"):
                 parts.append(f"{expression}.is_null()")
             if value_filter.get("includeNaN") and column_filter.get("type") == "float":
@@ -1735,12 +1814,12 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
                 parts.append("pl.lit(False)")
             conditions.append("(" + " | ".join(parts) + ")")
         for predicate in column_filter.get("predicates", []):
-            conditions.append(_polars_predicate_expression(expression, predicate, column_filter.get("type")))
+            conditions.append(_polars_predicate_expression(expression, predicate, column_type, dtype_variable))
         if conditions:
             operator = " | " if column_filter.get("logic") == "or" else " & "
             column_masks.append("(" + operator.join(conditions) + ")")
 
-    lines: list[str] = []
+    lines: list[str] = prelude
     if column_masks:
         operator = " | " if model.get("logic") == "or" else " & "
         lines.append(f"    _filter_expression_{index} = " + operator.join(column_masks))
@@ -1758,24 +1837,15 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
     return lines
 
 
-def _polars_predicate_expression(expression: str, predicate: Mapping[str, Any], column_type: str | None) -> str:
-    operator = predicate.get("operator")
+def _polars_predicate_expression(
+    expression: str,
+    predicate: Mapping[str, Any],
+    column_type: str | None,
+    dtype_expression: str,
+) -> str:
+    operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
     value = predicate.get("value")
-    if operator == "equals":
-        return f"({expression} == pl.lit({value!r}))"
-    if operator == "notEquals":
-        return f"({expression} != pl.lit({value!r}))"
-    if operator == "contains":
-        return f"{expression}.cast(pl.String).str.to_lowercase().str.contains({str(value).lower()!r}, literal=True)"
-    if operator == "startsWith":
-        return f"{expression}.cast(pl.String).str.starts_with({str(value)!r})"
-    if operator == "endsWith":
-        return f"{expression}.cast(pl.String).str.ends_with({str(value)!r})"
-    if operator in {"gt", "gte", "lt", "lte"}:
-        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[str(operator)]
-        return f"({expression} {symbol} pl.lit({value!r}))"
-    if operator == "between":
-        return f"(({expression} >= pl.lit({value!r})) & ({expression} <= pl.lit({predicate.get('secondValue')!r})))"
+    typed_value = f"_open_wrangler_view_value({value!r}, {column_type!r})"
     if operator == "isNull":
         return f"{expression}.is_null()"
     if operator == "isNotNull":
@@ -1784,7 +1854,31 @@ def _polars_predicate_expression(expression: str, predicate: Mapping[str, Any], 
         return f"{expression}.is_nan().fill_null(False)" if column_type == "float" else "pl.lit(False)"
     if operator == "isNotNaN":
         return f"{expression}.is_not_nan().fill_null(True)" if column_type == "float" else "pl.lit(True)"
-    return f"{expression}.is_not_null()"
+    typed_literal = f"pl.lit({typed_value}).cast({dtype_expression}, strict=True)"
+    if operator == "equals":
+        result = f"({expression} == {typed_literal})"
+    elif operator == "notEquals":
+        result = f"({expression} != {typed_literal})"
+    elif operator == "contains":
+        result = (
+            f"{expression}.cast(pl.String).str.replace_many(dict(zip({_ASCII_UPPER!r}, {_ASCII_LOWER!r})))"
+            f".str.contains({str(value).translate(_ASCII_TO_LOWER)!r}, literal=True)"
+        )
+    elif operator == "startsWith":
+        result = f"{expression}.cast(pl.String).str.starts_with({str(value)!r})"
+    elif operator == "endsWith":
+        result = f"{expression}.cast(pl.String).str.ends_with({str(value)!r})"
+    elif operator in {"gt", "gte", "lt", "lte"}:
+        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
+        result = f"({expression} {symbol} {typed_literal})"
+    else:
+        second = f"_open_wrangler_view_value({predicate.get('secondValue')!r}, {column_type!r})"
+        second_literal = f"pl.lit({second}).cast({dtype_expression}, strict=True)"
+        result = f"(({expression} >= {typed_literal}) & ({expression} <= {second_literal}))"
+    valid = f"{expression}.is_not_null()"
+    if column_type == "float":
+        valid = f"({valid} & {expression}.is_not_nan().fill_null(False))"
+    return f"(({result}).fill_null(False) & {valid})"
 
 
 def _maybe_float(value: Any) -> float | None:

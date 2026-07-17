@@ -10,7 +10,7 @@ import pytest
 
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime._column_binding import bind_step
-from openwrangler_runtime.engines.base import EngineError
+from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.lineage import source_lineage
@@ -292,7 +292,7 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
     assert stats["missingRows"] == 2
     assert stats["duplicateRows"] == 0
     values, has_more = engine.column_values(frame, "value")
-    assert values == [{"value": "1.0", "count": 2}]
+    assert values == [{"value": "1.0", "count": 2, "selectionValue": typed_selection_value(1.0, "float")}]
     assert has_more is False
 
     def read_page() -> list[str]:
@@ -657,9 +657,9 @@ def test_duckdb_column_values_break_equal_counts_by_display_text() -> None:
     try:
         values, has_more = engine.column_values(frame, "city")
         assert values == [
-            {"value": "Berlin", "count": 2},
-            {"value": "Milan", "count": 2},
-            {"value": "Paris", "count": 1},
+            {"value": "Berlin", "count": 2, "selectionValue": typed_selection_value("Berlin", "string")},
+            {"value": "Milan", "count": 2, "selectionValue": typed_selection_value("Milan", "string")},
+            {"value": "Paris", "count": 1, "selectionValue": typed_selection_value("Paris", "string")},
         ]
         assert has_more is False
     finally:

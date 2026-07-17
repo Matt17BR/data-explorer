@@ -21,6 +21,7 @@ import type {
 import { isSessionBoundRequest } from "../shared/protocol";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
 import {
   decodePersistedSession,
   persistedSessionState,
@@ -260,7 +261,7 @@ export class SessionCoordinator implements vscode.Disposable {
         requestViewId(request)
       );
     }
-    if (request.revision !== session.publicRevision) {
+    if (request.kind !== "closeSession" && request.revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
         `Ignored stale request revision ${request.revision}; current revision is ${session.publicRevision}.`,
@@ -450,6 +451,11 @@ export class SessionCoordinator implements vscode.Disposable {
         "The Open Wrangler session coordinator was disposed before the dataframe finished opening.",
         false
       );
+    }
+    const finalNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
+    if (finalNotebookOrigin) {
+      await this.closeRuntimeState(session, "invalid open runtime");
+      return protocolError("invalid_notebook_origin", finalNotebookOrigin, true);
     }
     this.sessions.set(publicId, session);
     this.setActive(publicId);
@@ -977,6 +983,7 @@ export class SessionCoordinator implements vscode.Disposable {
     request: OpenSessionRequest,
     backend: SessionMetadata["backend"]
   ): DecodedPersistedSessionState | undefined {
+    if (!isPersistentSource(request.source)) return undefined;
     const key = persistenceKey(request.source, backend);
     const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
     const state = decodePersistedSession(stored?.[key]);
@@ -984,7 +991,7 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private async persistSession(session: CoordinatedSession): Promise<void> {
-    if (!this.workspaceState) return;
+    if (!this.workspaceState || !isPersistentSource(session.openRequest.source)) return;
     const key = persistenceKey(session.openRequest.source, session.metadata.backend);
     const state = persistedSessionState(session.metadata, gridState(session.viewState));
     const task = this.persistenceTail
@@ -1004,7 +1011,7 @@ export class SessionCoordinator implements vscode.Disposable {
     isCurrent: () => boolean,
     commit: () => void
   ): Promise<boolean> {
-    if (!this.workspaceState) {
+    if (!this.workspaceState || !isPersistentSource(session.openRequest.source)) {
       if (!isCurrent()) return false;
       commit();
       return true;
@@ -1239,6 +1246,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private async replayExclusive(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
     if (!this.isLiveSession(session) || session.closing) return false;
+    if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) return false;
     const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
     const previous: RuntimeSessionState = {
       publicId: session.publicId,
@@ -1262,6 +1270,9 @@ export class SessionCoordinator implements vscode.Disposable {
         code: "",
         viewState: initialViewingState(response.metadata)
       };
+      if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) {
+        throw new Error("The originating notebook became ambiguous while recovery was opening its runtime session.");
+      }
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response);
       if (openedMismatch) throw new Error(openedMismatch);
       await this.restoreRuntimeState(
@@ -1272,6 +1283,9 @@ export class SessionCoordinator implements vscode.Disposable {
         session.openRequest.columnLimit,
         options
       );
+      if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) {
+        throw new Error("The originating notebook became ambiguous while recovery was restoring its runtime session.");
+      }
     } catch {
       if (candidate) await this.closeRuntimeState(candidate, "recovery candidate");
       return false;
@@ -1356,6 +1370,12 @@ function sessionRequestPriority(
 ): NonNullable<BridgeRequestOptions["priority"]> {
   if (options?.priority) return options.priority;
   return request.kind === "getSummary" || request.kind === "getDatasetStats" ? "background" : "interactive";
+}
+
+function isPersistentSource(source: SessionSource): boolean {
+  // Saved notebook outputs are bounded value snapshots, not reopenable source
+  // data. Their rows and viewing state stay in memory only for the owning panel.
+  return source.kind !== "notebookOutput";
 }
 
 function takeTerminalOperation(session: CoordinatedSession): QueuedSessionOperation | undefined {
@@ -1665,7 +1685,7 @@ function notebookOriginMismatch(request: OpenSessionRequest, notebook: vscode.No
   if (request.source.uri !== notebook.uri.toString()) {
     return "The notebook variable source did not match its originating notebook document.";
   }
-  if (notebook.isClosed || !vscode.workspace.notebookDocuments.includes(notebook)) {
+  if (!isSoleOpenNotebookDocument(notebook)) {
     return "The originating notebook is no longer open. Reopen it and try again.";
   }
   return undefined;

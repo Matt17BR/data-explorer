@@ -5,11 +5,32 @@ import { isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import {
   acceptanceProgressDetail,
+  configureEditorAcceptanceTempRoot,
   EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS,
   editorDisplayLaunchArgs,
   editorProcessGroupRunning,
   startIsolatedEditorDisplay
 } from "./editor-acceptance.mjs";
+
+test("editor runners keep profiles, runtimes, and subprocess temporaries under one private root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-temp-"));
+  const root = join(directory, "ow");
+  const environment = {};
+  try {
+    assert.equal(configureEditorAcceptanceTempRoot(root, environment), root);
+    assert.deepEqual(environment, {
+      OPEN_WRANGLER_EDITOR_TEMP_ROOT: root,
+      TMPDIR: root,
+      TMP: root,
+      TEMP: root
+    });
+    if (process.platform !== "win32") {
+      assert.equal((await stat(root)).mode & 0o777, 0o700);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("editor phases retain a bounded slow-editor allowance and report their last checkpoint", async () => {
   assert.equal(EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS, 300_000);

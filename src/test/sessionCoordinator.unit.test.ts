@@ -33,6 +33,74 @@ const inspectionStep: TransformStep = {
 };
 
 describe("SessionCoordinator", () => {
+  it("keeps bounded notebook-output snapshots ephemeral and ignores stale persisted state", async () => {
+    const source = { kind: "notebookOutput" as const, label: "Saved sales preview" };
+    const runtimeOpened = openedResponse();
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      source,
+      mode: "viewing",
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: 0, columns: 1 },
+      filteredShape: { rows: 0, columns: 1 },
+      schema: [{ id: "c:value", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }],
+      steps: []
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, columnIds: ["c:value"] };
+    const stored = {
+      [persistenceKey(source, "polars")]: persistedSessionState(
+        { ...runtimeOpened.metadata, steps: [inspectionStep] },
+        { columnWidths: { "c:value": 999 }, viewport: { firstVisibleRow: 0, scrollLeft: 123 } }
+      )
+    };
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async () => undefined),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as Memento;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected snapshot delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const opened = await bridge.request({ ...openRequest, source, mode: "viewing" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the notebook snapshot to open.");
+    expect(opened.metadata.steps).toEqual([]);
+    expect(workspaceState.get).not.toHaveBeenCalled();
+
+    await bridge.updateViewState?.(opened.metadata.sessionId, {
+      selectedColumnId: "c:value",
+      columnWidths: { "c:value": 240 },
+      viewport: { firstVisibleRow: 0, scrollLeft: 40 }
+    });
+
+    expect(coordinator.activeSession()?.viewState).toMatchObject({
+      selectedColumnId: "c:value",
+      columnWidths: { "c:value": 240 },
+      viewport: { scrollLeft: 40 }
+    });
+    expect(workspaceState.get).not.toHaveBeenCalled();
+    expect(workspaceState.update).not.toHaveBeenCalled();
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
+
+    await bridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+  });
+
   it("retains notebook provenance only in host session state", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/origin.ipynb"),
@@ -1732,6 +1800,91 @@ describe("SessionCoordinator", () => {
     expect(openedBackends).toEqual([undefined, "duckdb"]);
   });
 
+  it("rejects and closes a recovery candidate when a same-URI notebook begins overlapping", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/recovery.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    const overlappingReplacement = {
+      uri: vscode.Uri.parse("file:///workspace/recovery.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    setOpenNotebookDocuments(notebook);
+    let openCount = 0;
+    const closedRuntimeIds: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        if (openCount === 2) setOpenNotebookDocuments(notebook, overlappingReplacement);
+        return openedResponse(openCount === 1 ? "runtime-old" : "runtime-recovery-candidate");
+      }
+      if (request.kind === "getPage" && request.sessionId === "runtime-old") {
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: "Unknown session: runtime-old",
+          recoverable: true,
+          sessionId: request.sessionId,
+          viewRequestId: request.viewRequestId
+        };
+      }
+      if (request.kind === "closeSession") {
+        closedRuntimeIds.push(request.sessionId);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected recovery provenance request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+
+    try {
+      const opened = await bridge.request({
+        ...openRequest,
+        source: {
+          kind: "notebookVariable",
+          label: "frame",
+          variableName: "frame",
+          uri: notebook.uri.toString()
+        },
+        mode: "viewing"
+      });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the notebook session to open.");
+
+      const response = await bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "same-uri-recovery",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      });
+
+      expect(response).toMatchObject({
+        kind: "error",
+        code: "engine_error",
+        sessionId: opened.metadata.sessionId,
+        viewRequestId: "same-uri-recovery"
+      });
+      expect(openCount).toBe(2);
+      expect(closedRuntimeIds).toEqual(["runtime-recovery-candidate"]);
+      expect(coordinator.diagnostics().sessions).toEqual([
+        expect.objectContaining({ publicId: opened.metadata.sessionId, runtimeId: "runtime-old" })
+      ]);
+
+      await bridge.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      });
+      expect(closedRuntimeIds).toEqual(["runtime-recovery-candidate", "runtime-old"]);
+    } finally {
+      setOpenNotebookDocuments();
+      await coordinator.shutdown();
+    }
+  });
+
   it("serializes concurrent recovery for sessions sharing one runtime delegate", async () => {
     let openCount = 0;
     let firstRecoveryRestoreStarted = false;
@@ -3328,6 +3481,32 @@ describe("SessionCoordinator", () => {
     expect(delegateRequest).toHaveBeenCalledTimes(3);
     expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(2);
     expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  it("treats the caller revision as advisory for terminal close", async () => {
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    expect(opened.kind).toBe("sessionOpened");
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    await expect(
+      bridge.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision + 99
+      })
+    ).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
+    expect(delegateRequest).toHaveBeenLastCalledWith(
+      { kind: "closeSession", sessionId: "runtime-session", revision: opened.metadata.revision },
+      undefined
+    );
+    expect(coordinator.diagnostics().sessions).toEqual([]);
   });
 
   it("awaits runtime close before shutdown resolves", async () => {

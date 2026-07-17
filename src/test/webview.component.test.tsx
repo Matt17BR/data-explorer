@@ -79,6 +79,44 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("bounds very long cell text before it reaches the DOM", () => {
+    const longValue = "x".repeat(10_000);
+    const longPage: GridPage = {
+      ...page,
+      rows: [
+        {
+          ...page.rows[0]!,
+          values: [
+            { kind: "string", raw: longValue, display: longValue, isNull: false, isNaN: false },
+            page.rows[0]!.values[1]!
+          ]
+        }
+      ],
+      totalRows: 1,
+      limit: 1
+    };
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 1, columns: 2 }, filteredShape: { rows: 1, columns: 2 } }}
+        page={longPage}
+        summaries={[]}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const cell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="0"]');
+    expect(cell?.textContent).toHaveLength(4_097);
+    expect(cell?.textContent).toMatch(/…$/u);
+    expect(cell).toHaveAttribute("title", cell?.textContent);
+    expect(cell?.textContent).not.toContain(longValue);
+  });
+
   it("supports roving keyboard focus across typed cells", async () => {
     render(
       <DataGrid

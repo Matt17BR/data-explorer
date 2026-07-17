@@ -11,6 +11,7 @@ import type {
   SessionMetadata
 } from "../../shared/protocol";
 import type { SortDirection } from "../../shared/filterModel";
+import { supportsTypedViewComparison } from "../../shared/filterModel";
 import type { GridViewState } from "../../shared/viewState";
 
 interface DataGridProps {
@@ -54,6 +55,7 @@ const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
+const maximumRenderedCellCharacters = 4_096;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
@@ -467,6 +469,7 @@ export function DataGrid({
                   const cellUnavailable = localColumnPosition === undefined;
                   const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
+                  const renderedCell = boundedGridText(cell?.display);
                   const diffLabel = cellDiff
                     ? changedCellLabel(column.name, row.rowNumber, cellDiff)
                     : addedColumn
@@ -492,7 +495,7 @@ export function DataGrid({
                       ]
                         .filter(Boolean)
                         .join(" ")}
-                      title={accessibleLabel ?? cell?.display}
+                      title={accessibleLabel ?? renderedCell}
                       onFocus={() => {
                         focusRequested.current = false;
                         setFocusedCell({ row: row.rowNumber, column: column.position });
@@ -502,7 +505,7 @@ export function DataGrid({
                         navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, page.totalRows)
                       }
                     >
-                      {cell?.display}
+                      {renderedCell}
                     </td>
                   );
                 })}
@@ -565,6 +568,14 @@ export function DataGrid({
     });
     if (block !== page.offset) goToPage(nextRow, true);
   }
+}
+
+function boundedGridText(value: string | undefined): string | undefined {
+  if (value === undefined || value.length <= maximumRenderedCellCharacters) return value;
+  let end = maximumRenderedCellCharacters;
+  const finalCodeUnit = value.charCodeAt(end - 1);
+  if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) end -= 1;
+  return `${value.slice(0, end)}…`;
 }
 
 function firstVisibleRowFromScrollTop(scrollTop: number, totalRows: number): number {
@@ -758,6 +769,7 @@ function ColumnHeader({
   onResize(width: number): void;
 }) {
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
+  const comparisonUnavailable = !supportsTypedViewComparison(column.type);
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     const start = event.clientX;
@@ -811,18 +823,30 @@ function ColumnHeader({
             </button>
             <button
               type="button"
-              disabled={viewControlsDisabled}
+              disabled={viewControlsDisabled || comparisonUnavailable}
               aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
-              title={viewControlsDisabled ? "Unavailable while inspecting an applied step" : undefined}
+              title={
+                viewControlsDisabled
+                  ? "Unavailable while inspecting an applied step"
+                  : comparisonUnavailable
+                    ? `Sorting is unavailable for ${column.type} columns`
+                    : undefined
+              }
               onClick={() => onSortColumn(column.name, "asc")}
             >
               Sort ascending
             </button>
             <button
               type="button"
-              disabled={viewControlsDisabled}
+              disabled={viewControlsDisabled || comparisonUnavailable}
               aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
-              title={viewControlsDisabled ? "Unavailable while inspecting an applied step" : undefined}
+              title={
+                viewControlsDisabled
+                  ? "Unavailable while inspecting an applied step"
+                  : comparisonUnavailable
+                    ? `Sorting is unavailable for ${column.type} columns`
+                    : undefined
+              }
               onClick={() => onSortColumn(column.name, "desc")}
             >
               Sort descending

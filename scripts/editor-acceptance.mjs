@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
+const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const XVFB_STOP_TIMEOUT_MS = 5_000;
 export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
@@ -34,6 +35,19 @@ const DETACHED_SESSION_ENVIRONMENT_KEYS = [
   "XAUTHORITY",
   "XDG_CURRENT_DESKTOP"
 ];
+
+export function configureEditorAcceptanceTempRoot(path, environment = process.env) {
+  const root = resolve(path);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  environment[TEMP_ROOT_ENV] = root;
+  // Electron and editor subprocesses create additional temporary files outside
+  // the profile itself. Keep those on the same disposable, quota-independent
+  // filesystem on every desktop platform.
+  environment.TMPDIR = root;
+  environment.TMP = root;
+  environment.TEMP = root;
+  return root;
+}
 
 export async function startIsolatedEditorDisplay({
   platform = process.platform,
@@ -126,7 +140,12 @@ function editorDisplayMode(environment) {
 }
 
 function isolateLinuxEditorEnvironment(environment, mode, display) {
-  const runtimeDirectory = mkdtempSync(join(tmpdir(), "openwrangler-editor-runtime-"));
+  const temporaryRoot = environment[TEMP_ROOT_ENV] ? resolve(environment[TEMP_ROOT_ENV]) : tmpdir();
+  mkdirSync(temporaryRoot, { recursive: true, mode: 0o700 });
+  // VS Code places a Unix-domain socket below XDG_RUNTIME_DIR. Keep the
+  // generated component deliberately short so ordinary workspace paths stay
+  // below Linux's 107-byte sockaddr_un limit.
+  const runtimeDirectory = mkdtempSync(join(temporaryRoot, "r-"));
   chmodSync(runtimeDirectory, 0o700);
   const homeDirectory = join(runtimeDirectory, "home");
   const configDirectory = join(runtimeDirectory, "config");

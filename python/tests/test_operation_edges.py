@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.operations import OperationError, validate_step
 
 
@@ -91,9 +92,9 @@ def test_column_values_break_equal_counts_by_display_text(engine) -> None:
     values, has_more = engine.column_values(frame, "city")
 
     assert values == [
-        {"value": "Berlin", "count": 2},
-        {"value": "Milan", "count": 2},
-        {"value": "Paris", "count": 1},
+        {"value": "Berlin", "count": 2, "selectionValue": typed_selection_value("Berlin", "string")},
+        {"value": "Milan", "count": 2, "selectionValue": typed_selection_value("Milan", "string")},
+        {"value": "Paris", "count": 1, "selectionValue": typed_selection_value("Paris", "string")},
     ]
     assert has_more is False
 

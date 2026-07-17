@@ -1060,6 +1060,16 @@ export interface NumericBin {
 export interface ValueCount {
   value: string;
   count: number;
+  selectionValue?: TypedSelectionToken;
+}
+/**
+ * Typed representative for a distinct-value group whose display text alone is ambiguous.
+ */
+export interface TypedSelectionToken {
+  kind: "typedSelection";
+  version: 1;
+  columnType: ColumnType;
+  cell: CellValue;
 }
 export interface PageResponse {
   kind: "page";

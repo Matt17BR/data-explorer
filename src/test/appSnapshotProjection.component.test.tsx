@@ -74,7 +74,7 @@ describe("App saved notebook snapshots", () => {
     dataGridProps.mockClear();
   });
 
-  it("keeps local snapshot pages full-width and canonical after a view query", async () => {
+  it("routes saved-snapshot view queries through the correlated bridge path", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(dataGridProps).toHaveBeenCalled());
@@ -82,13 +82,32 @@ describe("App saved notebook snapshots", () => {
     postMessage.mockClear();
     act(() => latestGridProps().onSortColumn("city", "asc"));
 
-    await waitFor(() => {
-      const nextPage = latestGridProps().page;
-      expect(nextPage.columnIds).toEqual(["c:city", "c:sales"]);
-      expect(nextPage.rows[0].values).toHaveLength(2);
-      expect(nextPage.rows[0].values[0]?.display).toBe("Berlin");
+    await waitFor(() => expect(runtimeMessages("getPage")).toHaveLength(1));
+    const pageMessage = runtimeMessages("getPage")[0];
+    expect(pageMessage.request).toMatchObject({
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2,
+      filterModel: { sort: [{ column: "city", direction: "asc", nulls: "last" }] }
     });
-    expect(runtimeRequests("getPage")).toHaveLength(0);
+    expect(latestGridProps().page.rows[0].values[0]?.display).toBe("Zurich");
+
+    const sortedRows = [page.rows[1], page.rows[0]];
+    dispatch({
+      kind: "page",
+      revision: 0,
+      viewRequestId: pageMessage.request.viewRequestId,
+      metadata: {
+        ...metadata,
+        filterModel: { filters: [], sort: [{ column: "city", direction: "asc", nulls: "last" }] }
+      },
+      page: { ...page, rows: sortedRows }
+    });
+
+    await waitFor(() => expect(latestGridProps().page.rows[0].values[0]?.display).toBe("Berlin"));
+    expect(latestGridProps().page.columnIds).toEqual(["c:city", "c:sales"]);
+    expect(latestGridProps().page.rows[0].values).toHaveLength(2);
   });
 });
 
@@ -102,9 +121,26 @@ function latestGridProps(): { page: GridPage; onSortColumn(column: string, direc
   return call[0] as { page: GridPage; onSortColumn(column: string, direction: SortDirection): void };
 }
 
-function runtimeRequests(kind: string): Record<string, unknown>[] {
+function runtimeMessages(kind: string): Array<{
+  viewContextId: string;
+  request: Record<string, unknown> & { viewRequestId: string };
+}> {
   return postMessage.mock.calls.flatMap(([message]) => {
-    const candidate = message as { kind?: unknown; request?: Record<string, unknown> };
-    return candidate.kind === "runtimeRequest" && candidate.request?.kind === kind ? [candidate.request] : [];
+    const candidate = message as {
+      kind?: unknown;
+      viewContextId?: unknown;
+      request?: Record<string, unknown> & { viewRequestId?: unknown };
+    };
+    return candidate.kind === "runtimeRequest" &&
+      candidate.request?.kind === kind &&
+      typeof candidate.viewContextId === "string" &&
+      typeof candidate.request.viewRequestId === "string"
+      ? [
+          {
+            viewContextId: candidate.viewContextId,
+            request: candidate.request as Record<string, unknown> & { viewRequestId: string }
+          }
+        ]
+      : [];
   });
 }

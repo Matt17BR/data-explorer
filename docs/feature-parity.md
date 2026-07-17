@@ -6,38 +6,38 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
 
-| Surface                                             | Pandas | Polars | Status  | Required evidence                                     |
-| --------------------------------------------------- | -----: | -----: | ------- | ----------------------------------------------------- |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Add packaged `.xls` and malformed-input UI evidence   |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Test against the released Jupyter extension           |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | Route full-view snapshots through active sessions     |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing         |
-| Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green      |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green            |
-| Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green           |
-| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green |
-| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green       |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green    |
-| Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green        |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates   |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green      |
-| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates  |
-| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity        |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply         |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply             |
-| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply            |
-| Custom engine-native code                           |    Yes |    Yes | Partial | Add installed Restricted Mode acceptance              |
-| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation           |
-| Copy/script/notebook code export                    |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green   |
-| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green        |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Done    | Resolver plus packaged missing/decline flow green     |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Record packaged UI on every release platform          |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green               |
-| Column-projected grid-block transport               |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green  |
-| Duplicate/non-string Pandas column operations       |    Yes |    N/A | Done    | All ID-backed families packaged and replayed          |
-| Restricted Mode and trust-gated execution           |    N/A |    N/A | Partial | Separate trusted/untrusted installed-editor runs      |
-| Installed-editor first-usable-grid performance      |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings         |
-| Cross-platform VS Code/Cursor package acceptance    |    N/A |    N/A | Partial | Run installed editor/UI gates beyond Linux            |
+| Surface                                             | Pandas | Polars | Status  | Required evidence                                      |
+| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
+| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Add packaged `.xls` and malformed-input UI evidence    |
+| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Test against the released Jupyter extension            |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
+| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
+| Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
+| Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green             |
+| Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green            |
+| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green  |
+| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green        |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green     |
+| Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green         |
+| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates    |
+| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green       |
+| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates   |
+| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity         |
+| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply          |
+| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply              |
+| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply             |
+| Custom engine-native code                           |    Yes |    Yes | Partial | Add installed Restricted Mode acceptance               |
+| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation            |
+| Copy/script/notebook code export                    |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green    |
+| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green         |
+| Runtime selection, setup, change, clear             |    Yes |    Yes | Done    | Resolver plus packaged missing/decline flow green      |
+| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Record packaged UI on every release platform           |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green                |
+| Column-projected grid-block transport               |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green   |
+| Duplicate/non-string Pandas column operations       |    Yes |    N/A | Done    | All ID-backed families packaged and replayed           |
+| Restricted Mode and trust-gated execution           |    N/A |    N/A | Partial | Separate trusted/untrusted installed-editor runs       |
+| Installed-editor first-usable-grid performance      |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings          |
+| Cross-platform VS Code/Cursor package acceptance    |    N/A |    N/A | Partial | Run installed editor/UI gates beyond Linux             |
 
 ## DuckDB file-backed preview matrix
 
@@ -276,7 +276,7 @@ Packaged notebook and remote-kernel slice, 2026-07-15:
 - The acceptance kernel object is then replaced while a Polars variable session is active. The first request rejects on the stale object, the stable API is reacquired, the transferred runtime is bootstrapped again, the unknown session is replayed from the still-live variable, and the original public session returns the expected page. A separate denied-access attempt creates no coordinator session.
 - The production renderer/axe harness renders MIME v2 and clicks **Open in Open Wrangler**, asserting the full-view message contains the validated payload. Malformed versions remain accessible errors. This entire matrix runs from the allowlisted VSIX in isolated editor profiles.
 
-This completes the packaged stable-API acceptance-double and saved-snapshot flows plus clipboard/script/originating-notebook code export. The notebook variable row remains **Partial** until the released Jupyter extension is exercised, and inline full-view expansion remains **Partial** until expanded saved snapshots become coordinator-owned active sessions rather than a snapshot-only panel.
+At this checkpoint, the packaged stable-API acceptance-double and saved-snapshot flows plus clipboard/script/originating-notebook code export were complete. The notebook-variable row remained **Partial** pending the released Jupyter extension, while the coordinator-owned saved-output slice recorded below subsequently closed the separate inline full-view gap.
 
 Open Wrangler rename and packaged-editor visual acceptance refresh, 2026-07-16:
 
@@ -465,7 +465,18 @@ Notebook-origin provenance hardening, 2026-07-17:
 - All 35 TypeScript suites pass with 542 tests and one platform skip; all 765 Python tests and six editor-isolation script tests pass. The strict native-Polars benchmark passes with 65.148 ms CSV and 52.519 ms Parquet cold-source protocol opens, 0.165/0.195 ms cached-page p95, and zero retained sessions. The exact 64-entry allowlisted `Matt17BR.openwrangler@0.3.0` candidate has SHA-256 `d8b8a322401c8682e4b8bdbf6262e07dd6dbcf62ec51a07784fe1a7f2760a71a`.
 - Those exact bytes passed the complete zero-window packaged matrix in disposable VS Code 1.128.1 and Cursor 3.11.19 profiles. With notebooks A and B visible and B active, clicking A's real renderer action opened A's Polars variable and returned `101`, never acquired a kernel for B, inserted edited code only into A, preserved every existing cell in both notebooks, and closed with zero retained sessions.
 
-This hardens notebook provenance and originating-notebook insertion without changing parity status. The notebook-variable row remains **Partial** until the released Jupyter extension is exercised in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52); inline full-view expansion remains **Partial** until saved snapshots become coordinator-owned active sessions in [issue #53](https://github.com/Matt17BR/openwrangler/issues/53).
+This hardens notebook provenance and originating-notebook insertion without changing parity status. The notebook-variable row remains **Partial** until the released Jupyter extension is exercised in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The coordinator-owned saved-output slice below closes the separate inline full-view gate from [issue #53](https://github.com/Matt17BR/openwrangler/issues/53).
+
+Coordinator-owned saved-output slice, 2026-07-17:
+
+- The primary renderer action now creates one ephemeral `SnapshotBridge` through the ordinary `SessionCoordinator` and native panel lifecycle. It replaces saved runtime identity and capabilities, strips live-variable provenance from published snapshot state, recomputes pages, summaries, exact statistics, and searched values from captured truth, and never starts Jupyter, persists state, mutates, or exports. A valid variable link remains a separate explicit live action bound to the exact originating notebook.
+- Producer and consumer validation share hard limits for rows, columns, cells, UTF-8 payload size, field lengths, graph depth, and graph nodes. Python capture rejects oversize output incrementally instead of allocating a complete encoding, performs no eager profiling, and collects only one bounded terminal page from lazy Polars. Snapshot, live, and generated-code views share one strict literal fixture for null/NaN, wide integer/decimal, date/time-zone, exact duration, sort, and portable ASCII-folded search semantics. Bounded versioned typed-selection tokens keep display-equal integer `1` and string `"1"` separately selectable while preserving Pandas' native equality group for `1`, `1.0`, `True`, and `Decimal("1")`; malformed tokens and invalid literals fail before row evaluation, including empty and all-null captures. DuckDB preserves aware instants through `TIMESTAMPTZ` and serializes intervals from exact integer microseconds.
+- The notebook renderer uses optional host messaging with an explicit `onRenderer:openWrangler.renderer` activation event, so its static saved preview remains portable when messaging is unavailable. Cursor acceptance explicitly reveals virtualized output cells, switches two saved-output notebooks in the same editor group, retains the split-notebook provenance race, and verifies the primary snapshot action without acquiring a kernel.
+- Transient session panels use the distinct internal `openWrangler.session` view type and a session-keyed registry instead of colliding with the `openWrangler.viewer` custom editor. File panels still open immediately; notebook panels open once on webview readiness, so permission denial cannot silently retry after access is restored. Terminal close accepts the panel's last confirmed revision as advisory and removes the exact coordinator/runtime session.
+- `npm run check`, 37 TypeScript files with 684 passing tests and one platform skip, 907 Python tests, seven editor-isolation script tests, extension-host/reload, 24 production visual/axe harnesses, coverage, license, and strict runtime benchmark gates are green. The 1M × 20 Parquet benchmark records a 50.477 ms cold-source protocol open, 0.104 ms cached-page p95, 34.506 ms uncached transport p95, and zero retained sessions; these are runtime boundaries, not editor-paint claims.
+- The final allowlisted 67-entry `Matt17BR.openwrangler@0.3.0` VSIX is 518,365 bytes with SHA-256 `55decdfdf3f339b8e433fa9f50356b41c80a7198eda9b00be18f64e4c8a1c8f8`. Those exact bytes passed the complete seed/verify matrix in disposable zero-window VS Code 1.128.1 and Cursor 3.11.19 profiles, including file-title/tab launch surfaces, viewing/editing/export, notebook provenance, saved-output expansion, reload/recovery, and terminal session cleanup. Each invocation used one private workspace-local `tmp/ow/x-*` tree, and both extension-host and combined packaged-editor runs left that root empty afterward.
+
+This advances **Inline notebook renderer and full-view expansion** to **Done**. It does not advance the separate released-Jupyter, Restricted Mode, first-paint, remote-host, or cross-platform rows and does not make a 1.0 parity claim.
 
 ## Explicitly deferred from 1.0
 

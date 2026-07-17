@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { SessionMetadata, ValuesResponse } from "../../shared/protocol";
-import type { ColumnFilter, FilterModel, PredicateOperator, SortDirection } from "../../shared/filterModel";
+import type { SessionMetadata, TypedSelectionToken, ValuesResponse } from "../../shared/protocol";
+import type {
+  ColumnFilter,
+  ColumnType,
+  FilterModel,
+  PredicateFilter,
+  PredicateOperator,
+  SortDirection
+} from "../../shared/filterModel";
+import { supportsTypedViewComparison, viewPredicateOperators } from "../../shared/filterModel";
 
 interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
@@ -12,23 +20,6 @@ interface FilterPanelProps {
   onApply(model: FilterModel): void;
   onRequestValues(column: string, search?: string): void;
 }
-
-const operators: PredicateOperator[] = [
-  "contains",
-  "startsWith",
-  "endsWith",
-  "equals",
-  "notEquals",
-  "gt",
-  "gte",
-  "lt",
-  "lte",
-  "between",
-  "isNull",
-  "isNotNull",
-  "isNaN",
-  "isNotNaN"
-];
 
 export function FilterPanel({
   metadata,
@@ -67,10 +58,17 @@ export function FilterPanel({
   const columnSchema = metadata?.schema.find((item) => item.id === columnId);
   const activeColumn = columnSchema?.name ?? "";
   const hasActiveColumn = Boolean(columnSchema && activeColumn);
+  const supportsTypedComparison = columnSchema ? supportsTypedViewComparison(columnSchema.type) : false;
+  const availableOperators = columnSchema ? viewPredicateOperators(columnSchema.type) : [];
+  const activePredicateOperator = availableOperators.includes(predicateOperator)
+    ? predicateOperator
+    : (availableOperators[0] ?? "isNull");
   const columnValueResponse = activeColumn ? values.get(activeColumn) : undefined;
 
   const activeFilter = model.filters.find((item) => item.column === activeColumn);
-  const selectedValues = new Set(activeFilter?.valueFilter?.selectedValues.map(String) ?? []);
+  const selectedValues = new Map(
+    (activeFilter?.valueFilter?.selectedValues ?? []).map((value) => [selectionValueKey(value), value])
+  );
 
   if (!metadata) {
     return <section className="panel">Preparing filters...</section>;
@@ -82,15 +80,16 @@ export function FilterPanel({
     onApply({ ...model, filters: [...filters, nextFilter] });
   };
 
-  const toggleValue = (value: string) => {
-    if (disabled || !columnSchema || !activeColumn) {
+  const toggleValue = (value: unknown) => {
+    if (disabled || !columnSchema || !activeColumn || !supportsTypedComparison) {
       return;
     }
-    const nextSelected = new Set(selectedValues);
-    if (nextSelected.has(value)) {
-      nextSelected.delete(value);
+    const nextSelected = new Map(selectedValues);
+    const key = selectionValueKey(value);
+    if (nextSelected.has(key)) {
+      nextSelected.delete(key);
     } else {
-      nextSelected.add(value);
+      nextSelected.set(key, value);
     }
     updateFilter({
       column: activeColumn,
@@ -98,7 +97,7 @@ export function FilterPanel({
       logic: model.filters.find((item) => item.column === activeColumn)?.logic ?? "and",
       valueFilter: {
         kind: "values",
-        selectedValues: [...nextSelected],
+        selectedValues: [...nextSelected.values()],
         includeNulls: false,
         includeNaN: false,
         search
@@ -108,31 +107,30 @@ export function FilterPanel({
   };
 
   const addPredicate = () => {
-    if (disabled || !columnSchema || !activeColumn || (operatorRequiresValue(predicateOperator) && !predicateValue)) {
+    if (
+      disabled ||
+      !columnSchema ||
+      !activeColumn ||
+      !availableOperators.includes(activePredicateOperator) ||
+      !hasCompletePredicateValues(activePredicateOperator, predicateValue, secondPredicateValue)
+    ) {
       return;
     }
     const existing = model.filters.find((item) => item.column === activeColumn);
+    const predicate = createPredicate(activePredicateOperator, predicateValue, secondPredicateValue, columnSchema.type);
     updateFilter({
       column: activeColumn,
       type: columnSchema.type,
       logic: existing?.logic ?? "and",
       valueFilter: existing?.valueFilter,
-      predicates: [
-        ...(existing?.predicates ?? []),
-        {
-          kind: "predicate",
-          operator: predicateOperator,
-          value: coercePredicateValue(predicateValue),
-          secondValue: predicateOperator === "between" ? coercePredicateValue(secondPredicateValue) : undefined
-        }
-      ]
+      predicates: [...(existing?.predicates ?? []), predicate]
     });
     setPredicateValue("");
     setSecondPredicateValue("");
   };
 
   const applySort = () => {
-    if (disabled || !columnSchema || !activeColumn) return;
+    if (disabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
     onApply({
       ...model,
       sort: [
@@ -205,17 +203,17 @@ export function FilterPanel({
             aria-label={`Search values for ${activeColumn || "selected column"}`}
             value={search}
             placeholder="Search values"
-            disabled={disabled || !hasActiveColumn}
+            disabled={disabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
-              if (!disabled && event.key === "Enter" && activeColumn) {
+              if (!disabled && supportsTypedComparison && event.key === "Enter" && activeColumn) {
                 onRequestValues(activeColumn, search);
               }
             }}
           />
           <button
             type="button"
-            disabled={disabled || !hasActiveColumn}
+            disabled={disabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={() => {
               if (activeColumn) onRequestValues(activeColumn, search);
             }}
@@ -225,18 +223,22 @@ export function FilterPanel({
         </div>
 
         <div className="valueList">
-          {(columnValueResponse?.values ?? []).map((item) => (
-            <label key={item.value} className="checkboxRow">
-              <input
-                type="checkbox"
-                checked={selectedValues.has(item.value)}
-                disabled={disabled}
-                onChange={() => toggleValue(item.value)}
-              />
-              <span>{item.value}</span>
-              <small>{item.count}</small>
-            </label>
-          ))}
+          {(columnValueResponse?.values ?? []).map((item) => {
+            const selectionValue = item.selectionValue ?? item.value;
+            const selectionKey = selectionValueKey(selectionValue);
+            return (
+              <label key={selectionKey} className="checkboxRow">
+                <input
+                  type="checkbox"
+                  checked={selectedValues.has(selectionKey)}
+                  disabled={disabled || !supportsTypedComparison}
+                  onChange={() => toggleValue(selectionValue)}
+                />
+                <span>{item.value}</span>
+                <small>{item.count}</small>
+              </label>
+            );
+          })}
           {columnValueResponse?.hasMore && <small>More values available. Refine the search to narrow results.</small>}
         </div>
 
@@ -264,26 +266,26 @@ export function FilterPanel({
           )}
           <select
             aria-label="Predicate operator"
-            value={predicateOperator}
+            value={activePredicateOperator}
             disabled={disabled || !hasActiveColumn}
             onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
           >
-            {operators.map((operator) => (
+            {availableOperators.map((operator) => (
               <option key={operator} value={operator}>
                 {operator}
               </option>
             ))}
           </select>
-          {operatorRequiresValue(predicateOperator) && (
+          {operatorRequiresValue(activePredicateOperator) && (
             <input
-              aria-label={`${predicateOperator} predicate value`}
+              aria-label={`${activePredicateOperator} predicate value`}
               value={predicateValue}
               placeholder="Value"
               disabled={disabled || !hasActiveColumn}
               onChange={(event) => setPredicateValue(event.target.value)}
             />
           )}
-          {predicateOperator === "between" && (
+          {activePredicateOperator === "between" && (
             <input
               aria-label="Between predicate upper bound"
               value={secondPredicateValue}
@@ -292,10 +294,25 @@ export function FilterPanel({
               onChange={(event) => setSecondPredicateValue(event.target.value)}
             />
           )}
-          <button type="button" disabled={disabled || !hasActiveColumn} onClick={addPredicate}>
+          <button
+            type="button"
+            disabled={
+              disabled ||
+              !hasActiveColumn ||
+              !availableOperators.includes(activePredicateOperator) ||
+              !hasCompletePredicateValues(activePredicateOperator, predicateValue, secondPredicateValue)
+            }
+            onClick={addPredicate}
+          >
             Add predicate
           </button>
         </div>
+
+        {!supportsTypedComparison && hasActiveColumn && (
+          <p className="mutedText" role="status">
+            This complex column supports missing-value checks, but not value selection, comparison, or sorting.
+          </p>
+        )}
 
         <div className="activeRules">
           {(model.filters.find((item) => item.column === activeColumn)?.predicates ?? []).map((predicate, index) => (
@@ -332,13 +349,13 @@ export function FilterPanel({
           <select
             aria-label="Sort direction"
             value={sortDirection}
-            disabled={disabled || !hasActiveColumn}
+            disabled={disabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) => setSortDirection(event.target.value as SortDirection)}
           >
             <option value="asc">Sort ascending</option>
             <option value="desc">Sort descending</option>
           </select>
-          <button type="button" disabled={disabled || !hasActiveColumn} onClick={applySort}>
+          <button type="button" disabled={disabled || !hasActiveColumn || !supportsTypedComparison} onClick={applySort}>
             Add sort
           </button>
         </div>
@@ -355,10 +372,68 @@ export function FilterPanel({
   );
 }
 
-const coercePredicateValue = (value: string): string | number => {
+const selectionValueKey = (value: unknown): string => {
+  if (isTypedSelectionToken(value)) {
+    const cell = value.cell;
+    return JSON.stringify([
+      value.kind,
+      value.version,
+      value.columnType,
+      cell.kind,
+      cell.sign ?? null,
+      Object.prototype.hasOwnProperty.call(cell, "raw") ? cell.raw : ["display", cell.display]
+    ]);
+  }
+  // Existing runtimes return display strings. Keep their historical string
+  // identity so an already-active legacy filter remains checked.
+  return `legacy:${String(value)}`;
+};
+
+const isTypedSelectionToken = (value: unknown): value is TypedSelectionToken => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const candidate = value as Partial<TypedSelectionToken>;
+  return (
+    candidate.kind === "typedSelection" &&
+    candidate.version === 1 &&
+    typeof candidate.columnType === "string" &&
+    typeof candidate.cell === "object" &&
+    candidate.cell !== null
+  );
+};
+
+const coercePredicateValue = (value: string, columnType: ColumnType): string | number | boolean => {
+  if (columnType === "boolean") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+    return value;
+  }
+  // Preserve integer and decimal text exactly; the runtime binds it against
+  // the native dtype without routing through JavaScript's 53-bit number.
+  if (columnType !== "float") return value;
   const numeric = Number(value);
   return Number.isFinite(numeric) && value.trim() !== "" ? numeric : value;
 };
 
 const operatorRequiresValue = (operator: PredicateOperator): boolean =>
   !["isNull", "isNotNull", "isNaN", "isNotNaN"].includes(operator);
+
+const hasCompletePredicateValues = (operator: PredicateOperator, value: string, secondValue: string): boolean =>
+  !operatorRequiresValue(operator) || (value !== "" && (operator !== "between" || secondValue !== ""));
+
+const createPredicate = (
+  operator: PredicateOperator,
+  value: string,
+  secondValue: string,
+  columnType: ColumnType
+): PredicateFilter => {
+  if (!operatorRequiresValue(operator)) {
+    return { kind: "predicate", operator };
+  }
+  return {
+    kind: "predicate",
+    operator,
+    value: coercePredicateValue(value, columnType),
+    ...(operator === "between" ? { secondValue: coercePredicateValue(secondValue, columnType) } : {})
+  };
+};

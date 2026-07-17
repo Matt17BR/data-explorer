@@ -146,9 +146,9 @@ class BlockingCloseFailingPandasEngine(BlockingClosePandasEngine):
         raise RuntimeError("joined cleanup failure")
 
 
-class SummaryAndCloseFailingPandasEngine(CloseFailingPandasEngine):
+class PageAndCloseFailingPandasEngine(CloseFailingPandasEngine):
     def __init__(self) -> None:
-        super().__init__(fail_at="summaries")
+        super().__init__(fail_at="page")
 
 
 def tracking_registry(
@@ -442,10 +442,10 @@ def test_notebook_payload_closes_transient_engine(monkeypatch) -> None:
 
 def test_failed_notebook_payload_closes_transient_engine(monkeypatch) -> None:
     created: list[TrackingPandasEngine] = []
-    registry = tracking_registry(created, factory=lambda: TrackingPandasEngine(fail_at="summaries"))
+    registry = tracking_registry(created, factory=lambda: TrackingPandasEngine(fail_at="page"))
     monkeypatch.setattr(notebook, "default_engine_registry", lambda: registry)
 
-    with pytest.raises(RuntimeError, match="summaries failure"):
+    with pytest.raises(RuntimeError, match="page failure"):
         notebook.build_payload(pd.DataFrame({"value": [1]}))
 
     assert len(created) == 1
@@ -476,10 +476,10 @@ def test_successful_notebook_payload_surfaces_cleanup_failure(monkeypatch) -> No
 
 def test_failed_notebook_payload_preserves_failure_when_cleanup_also_fails(monkeypatch) -> None:
     created: list[TrackingPandasEngine] = []
-    registry = tracking_registry(created, factory=SummaryAndCloseFailingPandasEngine)
+    registry = tracking_registry(created, factory=PageAndCloseFailingPandasEngine)
     monkeypatch.setattr(notebook, "default_engine_registry", lambda: registry)
 
-    with pytest.raises(RuntimeError, match="summaries failure"):
+    with pytest.raises(RuntimeError, match="page failure"):
         notebook.build_payload(pd.DataFrame({"value": [1]}))
 
     assert created[0].close_calls == 1

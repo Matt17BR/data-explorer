@@ -20,6 +20,7 @@ interface WalkthroughStep {
 }
 
 interface PackageManifest {
+  activationEvents?: string[];
   contributes?: {
     configuration?: {
       properties?: Record<string, { type?: string; default?: unknown; minimum?: number; maximum?: number }>;
@@ -27,6 +28,10 @@ interface PackageManifest {
     configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
     menus?: Record<string, MenuContribution[]>;
+    notebookRenderer?: Array<{
+      id?: string;
+      requiresMessaging?: string;
+    }>;
     walkthroughs?: Array<{ steps?: WalkthroughStep[] }>;
   };
 }
@@ -112,5 +117,15 @@ describe("grid block configuration", () => {
         maximum: 256
       })
     );
+  });
+});
+
+describe("notebook renderer contribution", () => {
+  it("keeps static output portable while always activating desktop messaging", () => {
+    expect(manifest.activationEvents).toContain("onRenderer:openWrangler.renderer");
+    expect(manifest.contributes?.notebookRenderer).toContainEqual(
+      expect.objectContaining({ id: "openWrangler.renderer", requiresMessaging: "optional" })
+    );
+    expect(manifest.contributes?.configuration?.properties).not.toHaveProperty("openWrangler.renderer.enabled");
   });
 });

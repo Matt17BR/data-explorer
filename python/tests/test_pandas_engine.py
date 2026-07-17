@@ -184,6 +184,13 @@ def test_pandas_summaries_separate_nan_from_other_missing_values():
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
 
 
+def test_pandas_summary_omits_non_finite_statistics_but_keeps_finite_histogram_values():
+    summary = PandasEngine().summaries(pd.DataFrame({"value": [1.0, float("inf")]}))[0]
+
+    assert summary["numeric"] == {"min": 1.0}
+    assert summary["visualization"] == {"kind": "numeric", "bins": [{"min": 1.0, "max": 1.0, "count": 1}]}
+
+
 def test_pandas_custom_code_cannot_mutate_nested_source_objects():
     source = pd.DataFrame({"nested": [[1], [2]], "value": [1, 2]})
     engine = PandasEngine()

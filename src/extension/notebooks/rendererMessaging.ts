@@ -1,24 +1,20 @@
 import * as vscode from "vscode";
-import { normalizeNotebookOutputPayload, notebookPayloadAsOpened } from "../../shared/notebookOutput";
-import type { OpenWranglerBridge } from "../dataBridge";
+import { isPythonIdentifier, normalizeNotebookOutputPayload } from "../../shared/notebookOutput";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge } from "./kernelBridge";
-import { getSetting } from "../configuration";
+import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { SnapshotBridge } from "./snapshotBridge";
 
 interface OpenInOpenWranglerMessage {
-  kind: "openInOpenWrangler";
+  kind: "openInOpenWrangler" | "openLiveInOpenWrangler";
   payload: unknown;
 }
 
 export function registerNotebookRendererMessaging(
   context: vscode.ExtensionContext,
-  bridge: OpenWranglerBridge,
   coordinator: SessionCoordinator
 ): void {
-  if (!getSetting<boolean>("renderer.enabled", true)) {
-    return;
-  }
   const messaging = vscode.notebooks.createRendererMessaging("openWrangler.renderer");
   context.subscriptions.push(
     messaging.onDidReceiveMessage(({ editor, message }) => {
@@ -39,20 +35,25 @@ export function registerNotebookRendererMessaging(
         return;
       }
 
-      const variableName = payload.metadata.source.variableName;
-      if (variableName && isPythonIdentifier(variableName)) {
-        try {
-          OpenWranglerPanel.create(
-            context,
-            coordinator.createBridge(new KernelBridge(context, notebook), notebook),
-            {
-              kind: "notebookVariable",
-              label: variableName,
-              variableName,
-              uri: notebook.uri.toString()
-            },
-            payload.metadata.backend
+      if (message.kind === "openLiveInOpenWrangler") {
+        if (!isSoleOpenNotebookDocument(notebook)) {
+          void vscode.window.showErrorMessage(
+            "The notebook that sent this Open Wrangler action is no longer uniquely open. Close duplicate or replacement views and try again."
           );
+          return;
+        }
+        const variableName = payload.metadata.source.variableName;
+        if (!variableName || !isPythonIdentifier(variableName)) {
+          void vscode.window.showErrorMessage("This Open Wrangler output does not contain a valid live variable link.");
+          return;
+        }
+        try {
+          OpenWranglerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook), notebook), {
+            kind: "notebookVariable",
+            label: variableName,
+            variableName,
+            uri: notebook.uri.toString()
+          });
         } catch (error) {
           const detail = error instanceof Error ? ` ${error.message}` : "";
           void vscode.window.showErrorMessage(`Open Wrangler could not open the originating notebook.${detail}`);
@@ -60,7 +61,17 @@ export function registerNotebookRendererMessaging(
         return;
       }
 
-      OpenWranglerPanel.createFromPayload(context, bridge, notebookPayloadAsOpened(payload));
+      try {
+        OpenWranglerPanel.create(
+          context,
+          coordinator.createBridge(SnapshotBridge.fromNormalized(payload)),
+          { kind: "notebookOutput", label: payload.metadata.source.label },
+          payload.metadata.backend
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? ` ${error.message}` : "";
+        void vscode.window.showErrorMessage(`Open Wrangler could not open this saved notebook output.${detail}`);
+      }
     })
   );
 }
@@ -83,9 +94,9 @@ function isOpenInOpenWranglerMessage(message: unknown): message is OpenInOpenWra
     return false;
   }
   const candidate = message as { kind?: unknown; payload?: unknown };
-  return candidate.kind === "openInOpenWrangler" && typeof candidate.payload === "object" && candidate.payload !== null;
-}
-
-function isPythonIdentifier(value: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+  return (
+    (candidate.kind === "openInOpenWrangler" || candidate.kind === "openLiveInOpenWrangler") &&
+    typeof candidate.payload === "object" &&
+    candidate.payload !== null
+  );
 }

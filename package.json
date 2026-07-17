@@ -122,6 +122,7 @@
     "onView:openWrangler.filters",
     "onView:openWrangler.cleaningSteps",
     "onView:openWrangler.codePreview",
+    "onRenderer:openWrangler.renderer",
     "onNotebook:jupyter-notebook"
   ],
   "contributes": {
@@ -356,7 +357,7 @@
         "id": "openWrangler.renderer",
         "displayName": "Open Wrangler Renderer",
         "entrypoint": "./media/notebookRenderer.js",
-        "requiresMessaging": "always",
+        "requiresMessaging": "optional",
         "mimeTypes": [
           "application/vnd.openwrangler.viewer.v2+json"
         ]
@@ -571,11 +572,6 @@
           ],
           "default": "onDraft",
           "description": "When to reveal the bottom-panel Code Preview."
-        },
-        "openWrangler.renderer.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable Open Wrangler notebook MIME v2 renderer messaging."
         },
         "openWrangler.pythonPath": {
           "type": "string",

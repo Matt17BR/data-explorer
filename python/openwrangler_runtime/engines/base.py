@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from base64 import b64encode
 from collections import Counter
@@ -39,6 +40,381 @@ DEFAULT_STRIP_CHARACTERS = (
     "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
     "\u2028\u2029\u202f\u205f\u3000"
 )
+VIEW_COMPARABLE_TYPES = frozenset({"string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration"})
+_TYPED_SELECTION_CELL_KINDS = frozenset(
+    {"string", "integer", "number", "decimal", "boolean", "datetime", "date", "duration", "infinity"}
+)
+_MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536
+_TYPED_SELECTION_KINDS_BY_COLUMN: Mapping[str, frozenset[str]] = {
+    # A heterogeneous Pandas object column is intentionally exposed as a
+    # semantic string column. Its native scalar representatives still need to
+    # round-trip without collapsing integer 1 into the literal string "1".
+    "string": _TYPED_SELECTION_CELL_KINDS,
+    "integer": frozenset({"integer"}),
+    "float": frozenset({"number", "infinity"}),
+    "decimal": frozenset({"decimal"}),
+    "boolean": frozenset({"boolean"}),
+    "datetime": frozenset({"datetime"}),
+    "date": frozenset({"date"}),
+    "duration": frozenset({"duration"}),
+}
+_NULL_PREDICATE_OPERATORS = frozenset({"isNull", "isNotNull"})
+_ORDERED_PREDICATE_OPERATORS = frozenset(
+    {"equals", "notEquals", "gt", "gte", "lt", "lte", "between", *_NULL_PREDICATE_OPERATORS}
+)
+VIEW_PREDICATE_OPERATORS: Mapping[str, frozenset[str]] = {
+    "string": frozenset({"contains", "startsWith", "endsWith", *_ORDERED_PREDICATE_OPERATORS}),
+    "integer": _ORDERED_PREDICATE_OPERATORS,
+    "float": frozenset({*_ORDERED_PREDICATE_OPERATORS, "isNaN", "isNotNaN"}),
+    "decimal": _ORDERED_PREDICATE_OPERATORS,
+    "boolean": frozenset({"equals", "notEquals", *_NULL_PREDICATE_OPERATORS}),
+    "datetime": _ORDERED_PREDICATE_OPERATORS,
+    "date": _ORDERED_PREDICATE_OPERATORS,
+    "duration": _ORDERED_PREDICATE_OPERATORS,
+    "binary": _NULL_PREDICATE_OPERATORS,
+    "list": _NULL_PREDICATE_OPERATORS,
+    "struct": _NULL_PREDICATE_OPERATORS,
+    "unknown": _NULL_PREDICATE_OPERATORS,
+}
+_INTEGER_VIEW_TEXT = re.compile(r"^[+-]?\d+$")
+_NUMBER_VIEW_TEXT = re.compile(r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$")
+_INFINITY_VIEW_TEXT = re.compile(r"^[+-]?Infinity$")
+_DATE_VIEW_TEXT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATETIME_VIEW_TEXT = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?$")
+_DURATION_SECONDS_TEXT = re.compile(r"^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$")
+_DURATION_TEXT = re.compile(r"^(?:(-?\d+) days?, )?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$")
+
+
+def validate_view_predicate_operator(column_type: str | None, operator: Any) -> str:
+    normalized = str(operator)
+    if normalized not in VIEW_PREDICATE_OPERATORS.get(str(column_type), frozenset()):
+        raise EngineError(f"View predicate {normalized!r} is unavailable for {column_type or 'unknown'} columns.")
+    return normalized
+
+
+def coerce_typed_view_value(value: Any, column_type: str | None) -> Any:
+    """Bind public filter text to a portable native scalar without losing precision."""
+
+    try:
+        if isinstance(value, Mapping):
+            return _decode_typed_selection(value, column_type)
+        if column_type == "string":
+            return str(value)
+        if column_type == "integer":
+            if isinstance(value, bool):
+                raise ValueError("boolean is not an integer filter value")
+            text = str(value)
+            if not _INTEGER_VIEW_TEXT.fullmatch(text):
+                raise ValueError("expected an optional sign followed by decimal digits")
+            return int(text)
+        if column_type == "float":
+            if isinstance(value, bool):
+                raise ValueError("boolean is not a float filter value")
+            text = str(value)
+            if text == "NaN":
+                raise ValueError("NaN must use the explicit includeNaN option")
+            if not (_NUMBER_VIEW_TEXT.fullmatch(text) or _INFINITY_VIEW_TEXT.fullmatch(text)):
+                raise ValueError("expected a decimal number or explicit Infinity")
+            result = float(text)
+            if isnan(result):
+                raise ValueError("NaN must use the explicit includeNaN option")
+            if not isfinite(result) and not _INFINITY_VIEW_TEXT.fullmatch(text):
+                raise ValueError("numeric overflow must use explicit Infinity")
+            return result
+        if column_type == "decimal":
+            text = str(value)
+            if not _NUMBER_VIEW_TEXT.fullmatch(text):
+                raise ValueError("expected a decimal number")
+            return Decimal(text)
+        if column_type == "boolean":
+            if isinstance(value, bool):
+                return value
+            normalized = str(value).strip().lower()
+            if normalized not in {"true", "false"}:
+                raise ValueError("expected true or false")
+            return normalized == "true"
+        if column_type == "date":
+            if isinstance(value, date) and not isinstance(value, datetime):
+                return value
+            text = str(value)
+            if not _DATE_VIEW_TEXT.fullmatch(text):
+                raise ValueError("expected YYYY-MM-DD")
+            return date.fromisoformat(text)
+        if column_type == "datetime":
+            if isinstance(value, datetime):
+                return value
+            text = str(value)
+            if not _DATETIME_VIEW_TEXT.fullmatch(text):
+                raise ValueError("expected an ISO datetime with a four-digit year")
+            if (
+                int(text[11:13]) > 23
+                or int(text[14:16]) > 59
+                or (len(text) >= 19 and text[16] == ":" and int(text[17:19]) > 59)
+            ):
+                raise ValueError("datetime hours, minutes, or seconds are outside their portable range")
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if column_type == "duration":
+            if isinstance(value, timedelta):
+                return value
+            text = str(value)
+            if _DURATION_SECONDS_TEXT.fullmatch(text):
+                return timedelta(microseconds=int(Decimal(text) * 1_000_000))
+            match = _DURATION_TEXT.fullmatch(text)
+            if not match:
+                raise ValueError("expected seconds or '[days, ]HH:MM:SS[.ffffff]'")
+            days, hours, minutes, seconds, fraction = match.groups()
+            hour = int(hours)
+            minute = int(minutes)
+            second = int(seconds)
+            if hour > 23 or minute > 59 or second > 59:
+                raise ValueError("duration hours, minutes, or seconds are outside their portable range")
+            return timedelta(
+                days=int(days or 0),
+                hours=hour,
+                minutes=minute,
+                seconds=second,
+                microseconds=int((fraction or "").ljust(6, "0") or "0"),
+            )
+    except (TypeError, ValueError, ArithmeticError) as error:
+        raise EngineError(f"Invalid {column_type or 'unknown'} view-filter value {value!r}: {error}") from error
+    raise EngineError(f"View comparisons are unavailable for {column_type or 'unknown'} columns.")
+
+
+def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None:
+    """Return the portable selection token for one non-missing scalar value."""
+
+    cell = normalize_cell(value)
+    if column_type == "float" and cell["kind"] == "integer":
+        try:
+            cell = normalize_cell(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if cell["isNull"] or cell["isNaN"] or cell["kind"] not in _TYPED_SELECTION_CELL_KINDS:
+        return None
+    token = {
+        "kind": "typedSelection",
+        "version": 1,
+        "columnType": column_type,
+        "cell": cell,
+    }
+    try:
+        _decode_typed_selection(token, column_type)
+    except (EngineError, TypeError, ValueError, ArithmeticError):
+        return None
+    return token
+
+
+def _decode_typed_selection(value: Mapping[str, Any], column_type: str | None) -> Any:
+    if set(value) != {"kind", "version", "columnType", "cell"}:
+        raise ValueError("typed selection tokens must contain only kind, version, columnType, and cell")
+    if value.get("kind") != "typedSelection" or type(value.get("version")) is not int or value["version"] != 1:
+        raise ValueError("typed selection tokens require kind 'typedSelection' and version 1")
+    token_column_type = value.get("columnType")
+    if token_column_type != column_type or token_column_type not in VIEW_COMPARABLE_TYPES:
+        raise ValueError("typed selection token columnType does not match the filtered column")
+    cell = value.get("cell")
+    if not isinstance(cell, Mapping):
+        raise ValueError("typed selection token cell must be an object")
+    expected_cell_fields = {"kind", "raw", "display", "isNull", "isNaN"}
+    if set(cell) not in {frozenset(expected_cell_fields), frozenset({*expected_cell_fields, "sign"})}:
+        raise ValueError("typed selection token cell has an invalid shape")
+    cell_kind = cell.get("kind")
+    if cell_kind not in _TYPED_SELECTION_KINDS_BY_COLUMN[str(token_column_type)]:
+        raise ValueError("typed selection token cell kind is incompatible with the filtered column")
+    if (
+        not isinstance(cell.get("display"), str)
+        or len(cell["display"]) > _MAX_TYPED_SELECTION_TEXT_CHARACTERS
+        or cell.get("isNull") is not False
+        or cell.get("isNaN") is not False
+    ):
+        raise ValueError("typed selection token cell must be a normalized present scalar")
+    raw = cell.get("raw")
+    if isinstance(raw, str) and len(raw) > _MAX_TYPED_SELECTION_TEXT_CHARACTERS:
+        raise ValueError("typed selection token raw text is too long")
+    if cell_kind == "infinity":
+        sign = cell.get("sign")
+        if set(cell) != {*expected_cell_fields, "sign"} or raw is not None or sign not in {-1, 1}:
+            raise ValueError("typed infinity selections require a null raw value and sign")
+        expected_display = "-Infinity" if sign < 0 else "Infinity"
+        if cell["display"] != expected_display:
+            raise ValueError("typed infinity selection display does not match its sign")
+        return float("-inf") if sign < 0 else float("inf")
+    if "sign" in cell:
+        raise ValueError("only typed infinity selections may contain sign")
+    if cell_kind == "string":
+        if not isinstance(raw, str) or cell["display"] != raw:
+            raise ValueError("typed string selections require matching string raw and display values")
+        return raw
+    if cell_kind == "boolean":
+        if type(raw) is not bool or cell["display"] != str(raw):
+            raise ValueError("typed boolean selections require a boolean raw value")
+        return raw
+    semantic_type = {
+        "integer": "integer",
+        "number": "float",
+        "decimal": "decimal",
+        "datetime": "datetime",
+        "date": "date",
+        "duration": "duration",
+    }[str(cell_kind)]
+    return coerce_typed_view_value(raw, semantic_type)
+
+
+def generated_view_value_helper_lines() -> list[str]:
+    """Return the standalone equivalent used by generated Pandas/Polars code."""
+
+    return [
+        "def _open_wrangler_typed_selection(value, column_type):",
+        "    if set(value) != {'kind', 'version', 'columnType', 'cell'}:",
+        "        raise ValueError('Typed selection tokens have an invalid shape.')",
+        (
+            "    if value.get('kind') != 'typedSelection' or "
+            "type(value.get('version')) is not int or value['version'] != 1:"
+        ),
+        "        raise ValueError(\"Typed selection tokens require kind 'typedSelection' and version 1.\")",
+        "    token_column_type = value.get('columnType')",
+        "    comparable = {'string', 'integer', 'float', 'decimal', 'boolean', 'datetime', 'date', 'duration'}",
+        "    if token_column_type != column_type or token_column_type not in comparable:",
+        "        raise ValueError('Typed selection token columnType does not match the filtered column.')",
+        "    cell = value.get('cell')",
+        "    required = {'kind', 'raw', 'display', 'isNull', 'isNaN'}",
+        "    if not isinstance(cell, dict) or set(cell) not in {frozenset(required), frozenset(required | {'sign'})}:",
+        "        raise ValueError('Typed selection token cell has an invalid shape.')",
+        "    allowed = {",
+        (
+            "        'string': {'string', 'integer', 'number', 'decimal', 'boolean', "
+            "'datetime', 'date', 'duration', 'infinity'},"
+        ),
+        "        'integer': {'integer'},",
+        "        'float': {'number', 'infinity'},",
+        "        'decimal': {'decimal'},",
+        "        'boolean': {'boolean'},",
+        "        'datetime': {'datetime'},",
+        "        'date': {'date'},",
+        "        'duration': {'duration'},",
+        "    }",
+        "    cell_kind = cell.get('kind')",
+        "    if cell_kind not in allowed[token_column_type]:",
+        "        raise ValueError('Typed selection token cell kind is incompatible with the filtered column.')",
+        "    display = cell.get('display')",
+        (
+            "    if not isinstance(display, str) or len(display) > 65536 or "
+            "cell.get('isNull') is not False or cell.get('isNaN') is not False:"
+        ),
+        "        raise ValueError('Typed selection token cell must be a normalized present scalar.')",
+        "    raw = cell.get('raw')",
+        "    if isinstance(raw, str) and len(raw) > 65536:",
+        "        raise ValueError('Typed selection token raw text is too long.')",
+        "    if cell_kind == 'infinity':",
+        "        sign = cell.get('sign')",
+        "        if set(cell) != required | {'sign'} or raw is not None or sign not in {-1, 1}:",
+        "            raise ValueError('Typed infinity selections require a null raw value and sign.')",
+        "        expected_display = '-Infinity' if sign < 0 else 'Infinity'",
+        "        if cell['display'] != expected_display:",
+        "            raise ValueError('Typed infinity selection display does not match its sign.')",
+        "        return float('-inf') if sign < 0 else float('inf')",
+        "    if 'sign' in cell:",
+        "        raise ValueError('Only typed infinity selections may contain sign.')",
+        "    if cell_kind == 'string':",
+        "        if not isinstance(raw, str) or cell['display'] != raw:",
+        "            raise ValueError('Typed string selections require matching string raw and display values.')",
+        "        return raw",
+        "    if cell_kind == 'boolean':",
+        "        if type(raw) is not bool or cell['display'] != str(raw):",
+        "            raise ValueError('Typed boolean selections require a boolean raw value.')",
+        "        return raw",
+        (
+            "    semantic_type = {'integer': 'integer', 'number': 'float', 'decimal': 'decimal', "
+            "'datetime': 'datetime', 'date': 'date', 'duration': 'duration'}[cell_kind]"
+        ),
+        "    return _open_wrangler_view_value(raw, semantic_type)",
+        "",
+        "",
+        "def _open_wrangler_view_value(value, column_type):",
+        "    import re",
+        "    if isinstance(value, dict):",
+        "        return _open_wrangler_typed_selection(value, column_type)",
+        "    if column_type == 'string':",
+        "        return str(value)",
+        "    if column_type == 'integer':",
+        "        if isinstance(value, bool):",
+        "            raise ValueError('Boolean is not an integer view-filter value.')",
+        "        text = str(value)",
+        "        if not re.fullmatch(r'[+-]?\\d+', text):",
+        "            raise ValueError('Integer view-filter values require decimal digits.')",
+        "        return int(text)",
+        "    if column_type == 'float':",
+        "        if isinstance(value, bool):",
+        "            raise ValueError('Boolean is not a float view-filter value.')",
+        "        text = str(value)",
+        "        if text == 'NaN':",
+        "            raise ValueError('NaN must use the explicit includeNaN option.')",
+        ("        number = re.fullmatch(r'[+-]?(?:(?:\\d+(?:\\.\\d*)?)|(?:\\.\\d+))(?:[eE][+-]?\\d+)?', text)"),
+        "        infinity = re.fullmatch(r'[+-]?Infinity', text)",
+        "        if not (number or infinity):",
+        "            raise ValueError('Float view-filter values require a decimal number or explicit Infinity.')",
+        "        result = float(text)",
+        "        if result != result:",
+        "            raise ValueError('NaN must use the explicit includeNaN option.')",
+        "        if result in {float('inf'), float('-inf')} and not infinity:",
+        "            raise ValueError('Numeric overflow must use explicit Infinity.')",
+        "        return result",
+        "    if column_type == 'decimal':",
+        "        text = str(value)",
+        ("        if not re.fullmatch(r'[+-]?(?:(?:\\d+(?:\\.\\d*)?)|(?:\\.\\d+))(?:[eE][+-]?\\d+)?', text):"),
+        "            raise ValueError('Decimal view-filter values require a decimal number.')",
+        "        return Decimal(text)",
+        "    if column_type == 'boolean':",
+        "        if isinstance(value, bool):",
+        "            return value",
+        "        normalized = str(value).strip().lower()",
+        "        if normalized not in {'true', 'false'}:",
+        "            raise ValueError('Boolean view-filter values must be true or false.')",
+        "        return normalized == 'true'",
+        "    if column_type == 'date':",
+        "        if isinstance(value, date) and not isinstance(value, datetime):",
+        "            return value",
+        "        text = str(value)",
+        "        if not re.fullmatch(r'\\d{4}-\\d{2}-\\d{2}', text):",
+        "            raise ValueError('Date view-filter values require YYYY-MM-DD.')",
+        "        return date.fromisoformat(text)",
+        "    if column_type == 'datetime':",
+        "        if isinstance(value, datetime):",
+        "            return value",
+        "        text = str(value)",
+        (
+            "        if not re.fullmatch("
+            "r'\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,6})?)?'"
+            " r'(?:Z|[+-]\\d{2}:?\\d{2})?', text):"
+        ),
+        "            raise ValueError('Datetime view-filter values require a portable ISO datetime.')",
+        (
+            "        if (int(text[11:13]) > 23 or int(text[14:16]) > 59 or "
+            "(len(text) >= 19 and text[16] == ':' and int(text[17:19]) > 59)):"
+        ),
+        "            raise ValueError('Datetime components are outside their portable range.')",
+        "        return datetime.fromisoformat(text.replace('Z', '+00:00'))",
+        "    if column_type == 'duration':",
+        "        if isinstance(value, timedelta):",
+        "            return value",
+        "        text = str(value)",
+        "        if re.fullmatch(r'[+-]?(?:\\d+(?:\\.\\d{0,6})?|\\.\\d{1,6})', text):",
+        "            return timedelta(microseconds=int(Decimal(text) * 1000000))",
+        ("        match = re.fullmatch(r'(?:(-?\\d+) days?, )?(\\d{1,2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,6}))?', text)"),
+        "        if not match:",
+        "            raise ValueError(\"Duration view-filter values require seconds or '[days, ]HH:MM:SS[.ffffff]'.\")",
+        "        days, hours, minutes, seconds, fraction = match.groups()",
+        "        hour, minute, second = int(hours), int(minutes), int(seconds)",
+        "        if hour > 23 or minute > 59 or second > 59:",
+        "            raise ValueError('Duration components are outside their portable range.')",
+        (
+            "        return timedelta(days=int(days or 0), hours=hour, minutes=minute, seconds=second, "
+            "microseconds=int((fraction or '').ljust(6, '0') or '0'))"
+        ),
+        "    raise ValueError('View comparisons are unavailable for ' + str(column_type) + ' columns.')",
+        "",
+        "",
+    ]
 
 
 def is_internal_row_id_label(value: Any) -> bool:

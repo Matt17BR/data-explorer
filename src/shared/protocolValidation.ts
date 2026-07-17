@@ -47,6 +47,7 @@ const CELL_KINDS = new Set([
   "struct",
   "unknown"
 ]);
+const MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536;
 const OPERATION_KINDS = new Set([
   "sortRows",
   "filterRows",
@@ -1324,8 +1325,82 @@ function isNumericBin(value: unknown): boolean {
 }
 
 function isValueCount(value: unknown): boolean {
-  const candidate = exactRecord(value, ["value", "count"]);
-  return candidate !== undefined && isString(candidate.value) && isNonNegativeInteger(candidate.count);
+  const candidate = exactRecord(value, ["value", "count"], ["selectionValue"]);
+  return (
+    candidate !== undefined &&
+    isString(candidate.value) &&
+    isNonNegativeInteger(candidate.count) &&
+    optional(candidate, "selectionValue", isTypedSelectionToken)
+  );
+}
+
+function isTypedSelectionToken(value: unknown): boolean {
+  const candidate = exactRecord(value, ["kind", "version", "columnType", "cell"]);
+  return (
+    candidate !== undefined &&
+    candidate.kind === "typedSelection" &&
+    candidate.version === 1 &&
+    isEnumMember(candidate.columnType, COLUMN_TYPES) &&
+    isCellValue(candidate.cell) &&
+    isCompatibleTypedSelectionCell(candidate.columnType as string, candidate.cell)
+  );
+}
+
+function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boolean {
+  const cell = value as UnknownRecord;
+  if (
+    cell.isNull !== false ||
+    cell.isNaN !== false ||
+    typeof cell.display !== "string" ||
+    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS ||
+    !Object.prototype.hasOwnProperty.call(cell, "raw") ||
+    !isJsonValue(cell.raw)
+  ) {
+    return false;
+  }
+  if (typeof cell.raw === "string" && cell.raw.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS) return false;
+
+  const compatibleKinds: Readonly<Record<string, readonly string[]>> = {
+    string: ["string", "integer", "number", "infinity", "boolean", "decimal", "datetime", "date", "duration"],
+    integer: ["integer"],
+    float: ["number", "infinity"],
+    decimal: ["decimal"],
+    boolean: ["boolean"],
+    date: ["date"],
+    datetime: ["datetime"],
+    duration: ["duration"],
+    binary: [],
+    list: [],
+    struct: [],
+    unknown: []
+  };
+  if (!compatibleKinds[columnType]?.includes(String(cell.kind))) return false;
+
+  switch (cell.kind) {
+    case "string":
+    case "decimal":
+    case "date":
+    case "datetime":
+      return typeof cell.raw === "string";
+    case "integer":
+      return (
+        (typeof cell.raw === "number" && Number.isSafeInteger(cell.raw)) ||
+        (typeof cell.raw === "string" && /^[+-]?\d+$/u.test(cell.raw))
+      );
+    case "number":
+      return typeof cell.raw === "number" && Number.isFinite(cell.raw);
+    case "infinity":
+      return cell.raw === null && (cell.sign === -1 || cell.sign === 1);
+    case "boolean":
+      return typeof cell.raw === "boolean";
+    case "duration":
+      return (
+        (typeof cell.raw === "number" && Number.isFinite(cell.raw)) ||
+        (typeof cell.raw === "string" && cell.raw.length > 0)
+      );
+    default:
+      return false;
+  }
 }
 
 function isDatasetStats(value: unknown): boolean {

@@ -8,10 +8,20 @@ import type { SessionMetadata, TransformStep } from "../shared/protocol";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 type NotebookInsertionStatus = "applied" | "stale" | "indeterminate" | "rejected";
+interface TestTreeNode {
+  label: string;
+  description?: string;
+  command?: unknown;
+}
+interface TestTreeProvider {
+  getChildren(): TestTreeNode[];
+}
 
 const nativeMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   executeCommand: vi.fn(async () => undefined),
+  treeDataProviders: new Map<string, TestTreeProvider>(),
+  webviewViewProviders: new Map<string, { resolveWebviewView(view: unknown): void }>(),
   sendEditorAction: vi.fn(() => true),
   showInformationMessage: vi.fn(async () => undefined),
   showWarningMessage: vi.fn(async () => undefined),
@@ -100,8 +110,14 @@ vi.mock("vscode", () => {
       get activeNotebookEditor() {
         return nativeMocks.activeNotebookEditor;
       },
-      registerTreeDataProvider: () => disposable(),
-      registerWebviewViewProvider: () => disposable(),
+      registerTreeDataProvider: (id: string, provider: TestTreeProvider) => {
+        nativeMocks.treeDataProviders.set(id, provider);
+        return disposable();
+      },
+      registerWebviewViewProvider: (id: string, provider: { resolveWebviewView(view: unknown): void }) => {
+        nativeMocks.webviewViewProviders.set(id, provider);
+        return disposable();
+      },
       showInformationMessage: nativeMocks.showInformationMessage,
       showWarningMessage: nativeMocks.showWarningMessage,
       showErrorMessage: nativeMocks.showErrorMessage,
@@ -149,6 +165,8 @@ const appliedStep: TransformStep = {
 describe("native operation commands", () => {
   beforeEach(() => {
     nativeMocks.commands.clear();
+    nativeMocks.treeDataProviders.clear();
+    nativeMocks.webviewViewProviders.clear();
     nativeMocks.executeCommand.mockClear();
     nativeMocks.sendEditorAction.mockClear();
     nativeMocks.sendEditorAction.mockReturnValue(true);
@@ -183,6 +201,104 @@ describe("native operation commands", () => {
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
       "Apply or discard the current draft before editing the latest step."
     );
+  });
+
+  it("reflects a saved notebook snapshot across every native view and active-session changes", async () => {
+    const savedOutput = snapshot({
+      mode: "viewing",
+      steps: [],
+      source: { kind: "notebookOutput", label: "Saved sales preview" }
+    });
+    savedOutput.code = "";
+    savedOutput.metadata = {
+      protocolVersion: 2,
+      sessionId: "saved-snapshot",
+      revision: 0,
+      backend: "polars",
+      mode: "viewing",
+      source: { kind: "notebookOutput", label: "Saved sales preview" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: 4, columns: 3 },
+      filteredShape: { rows: 4, columns: 3 },
+      schema: [
+        { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
+        { id: "c:score", name: "score", position: 1, rawType: "Int64", type: "integer", nullable: true },
+        { id: "c:group", name: "group", position: 2, rawType: "String", type: "string", nullable: false }
+      ],
+      filterModel: { logic: "and", filters: [], sort: [] },
+      steps: []
+    };
+    savedOutput.viewState.selectedColumnId = "c:score";
+    const registered = register(savedOutput);
+
+    const operations = treeChildren("openWrangler.operations");
+    expect(operations.length).toBeGreaterThan(0);
+    expect(operations.every((node) => node.description === "Viewing mode" && node.command === undefined)).toBe(true);
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
+      ["Saved sales preview", "polars · viewing"],
+      ["Shape", "4 × 3"],
+      ["Columns", "3"],
+      ["Selected column", "score"],
+      ["Missing cells", "Profiling…"],
+      ["Duplicate rows", "Profiling…"]
+    ]);
+    expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
+      ["No filters or sorts", "Viewing state is separate from cleaning steps"]
+    ]);
+    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([
+      ["Original data", "Selected · confirmed dataframe view"]
+    ]);
+
+    const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
+    const posted: unknown[] = [];
+    let receive: ((message: unknown) => void) | undefined;
+    provider.resolveWebviewView({
+      webview: {
+        options: {},
+        cspSource: "test-csp",
+        asWebviewUri: (uri: unknown) => uri,
+        postMessage: vi.fn(async (message: unknown) => {
+          posted.push(message);
+          return true;
+        }),
+        onDidReceiveMessage: (listener: (message: unknown) => void) => {
+          receive = listener;
+          return { dispose: () => undefined };
+        }
+      }
+    });
+
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreview",
+      code: expect.stringMatching(/Read-only saved notebook snapshot/u),
+      editable: false
+    });
+
+    receive?.({ kind: "codeChanged", code: "raise RuntimeError('should be ignored')" });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreview",
+      code: expect.stringMatching(/Read-only saved notebook snapshot/u),
+      editable: false
+    });
+
+    const editable = noDraftSnapshot();
+    registered.setActiveSession(editable);
+    expect(treeChildren("openWrangler.operations").every((node) => node.command !== undefined)).toBe(true);
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreview",
+      code: editable.code,
+      editable: true
+    });
   });
 
   it("ignores caller-provided export destinations and still opens the Save dialog", async () => {
@@ -377,23 +493,44 @@ describe("native operation commands", () => {
 function register(
   snapshot: ActiveSessionSnapshot,
   notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number }
-): void {
+): { setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void } {
+  let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
+  const activeSessionListeners = new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>();
   const coordinator = {
-    activeSession: () => snapshot,
+    activeSession: () => activeSnapshot,
     activeNotebookDocument: () => notebookDocument,
-    onDidChangeActiveSession: () => ({ dispose: () => undefined })
+    onDidChangeActiveSession: (listener: (snapshot: ActiveSessionSnapshot | undefined) => unknown) => {
+      activeSessionListeners.add(listener);
+      return { dispose: () => activeSessionListeners.delete(listener) };
+    }
   } as unknown as SessionCoordinator;
   const context = {
     extensionPath: "/tmp/openwrangler",
     subscriptions: []
   } as unknown as ExtensionContext;
   registerNativeViews(context, coordinator);
+  return {
+    setActiveSession(nextSnapshot) {
+      activeSnapshot = nextSnapshot;
+      for (const listener of activeSessionListeners) listener(nextSnapshot);
+    }
+  };
 }
 
 function command(id: string): CommandHandler {
   const handler = nativeMocks.commands.get(id);
   if (!handler) throw new Error(`Expected ${id} to be registered.`);
   return handler;
+}
+
+function treeChildren(id: string): TestTreeNode[] {
+  const provider = nativeMocks.treeDataProviders.get(id);
+  if (!provider) throw new Error(`Expected ${id} to be registered.`);
+  return provider.getChildren();
+}
+
+function nodePresentation(node: TestTreeNode): [string, string | undefined] {
+  return [node.label, node.description];
 }
 
 function vscodeUri(path: string): unknown {

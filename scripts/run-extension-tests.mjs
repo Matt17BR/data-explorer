@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
 import {
+  configureEditorAcceptanceTempRoot,
   downloadEditorWithRetry,
   editorDisplayLaunchArgs,
   runEditorAcceptancePhase,
@@ -32,7 +32,6 @@ process.env.OPEN_WRANGLER_TEST_PYTHON ??=
         ? "python"
         : "python3";
 process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-const profile = mkdtempSync(join(tmpdir(), "openwrangler-extension-host-"));
 const requestedVersion = process.env.VSCODE_TEST_VERSION;
 const installedExecutable = "/usr/share/code/code";
 const vscodeExecutablePath = requestedVersion
@@ -40,11 +39,17 @@ const vscodeExecutablePath = requestedVersion
   : existsSync(installedExecutable)
     ? installedExecutable
     : await downloadEditorWithRetry(downloadAndUnzipVSCode, "stable");
+const temporaryParent = resolve(root, "tmp", "ow");
+mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
+const temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
+configureEditorAcceptanceTempRoot(temporaryRoot);
+const profile = mkdtempSync(join(temporaryRoot, "host-"));
 const fakeJupyter = resolve(profile, "fake-jupyter");
-writeFakeJupyterExtension(fakeJupyter);
-const editorDisplay = await startIsolatedEditorDisplay();
+let editorDisplay;
 
 try {
+  writeFakeJupyterExtension(fakeJupyter);
+  editorDisplay = await startIsolatedEditorDisplay();
   process.env.OPEN_WRANGLER_TEST_PHASE = "single";
   await runTests({
     vscodeExecutablePath,
@@ -86,6 +91,9 @@ try {
     });
   }
 } finally {
-  rmSync(profile, { recursive: true, force: true });
-  await editorDisplay.stop();
+  try {
+    await editorDisplay?.stop();
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 }

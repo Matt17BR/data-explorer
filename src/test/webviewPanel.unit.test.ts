@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
 import { workspace } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
@@ -59,13 +59,18 @@ const summary: ColumnSummary = {
   topValues: [{ value: "Berlin", count: 1 }]
 };
 
-const initialResponse: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
+const openedResponse: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
+const liveHarnesses: Array<{ dispose(): void }> = [];
 
 describe("OpenWranglerPanel retained view state", () => {
   beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    while (liveHarnesses.length) liveHarnesses.pop()?.dispose();
+  });
 
-  it("loads the production webview as an ES module under a restrictive nonce CSP", () => {
-    const harness = createPanelHarness({ request: vi.fn(async () => initialResponse) });
+  it("loads the production webview as an ES module under a restrictive nonce CSP", async () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    await harness.open();
     const script = harness.html.match(/<script type="module" nonce="([A-Za-z0-9]+)" src="([^"]+)"><\/script>/u);
     expect(script).not.toBeNull();
     const nonce = script?.[1];
@@ -83,11 +88,12 @@ describe("OpenWranglerPanel retained view state", () => {
           get: (key: string, fallback?: unknown): unknown => (key === "fetchColumnBlockSize" ? 999 : fallback)
         }) as vscode.WorkspaceConfiguration
     );
-    const request = vi.fn(async (_request: OpenWranglerRequest): Promise<OpenWranglerResponse> => initialResponse);
-    const harness = createPanelHarness({ request }, { initialResponse: undefined });
+    const request = vi.fn(async (_request: OpenWranglerRequest): Promise<OpenWranglerResponse> => openedResponse);
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
 
     expect(harness.html).toContain('data-fetch-column-block-size="256"');
-    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    expect(request).not.toHaveBeenCalled();
+    await harness.open();
     expect(request.mock.calls[0]?.[0]).toMatchObject({
       kind: "openSession",
       columnOffset: 0,
@@ -124,6 +130,7 @@ describe("OpenWranglerPanel retained view state", () => {
       setViewContext: vi.fn()
     };
     const harness = createPanelHarness(bridge);
+    await harness.open();
 
     await harness.send({ kind: "setViewContext", viewContextId: "view-a" });
     const stale = harness.send({
@@ -204,6 +211,7 @@ describe("OpenWranglerPanel retained view state", () => {
       })
     };
     const harness = createPanelHarness(bridge);
+    await harness.open();
     await harness.send({ kind: "setViewContext", viewContextId: "current-view" });
     await harness.send({
       kind: "runtimeRequest",
@@ -235,10 +243,11 @@ describe("OpenWranglerPanel retained view state", () => {
 
   it("forwards only validated queued-view cancellation messages", async () => {
     const bridge: OpenWranglerBridge = {
-      request: vi.fn(async () => initialResponse),
+      request: vi.fn(async () => openedResponse),
       cancelViewRequests: vi.fn()
     };
     const harness = createPanelHarness(bridge);
+    await harness.open();
 
     await harness.send({ kind: "cancelViewRequests", viewRequestIds: ["summary-a", "stats-a"] });
     await harness.send({ kind: "cancelViewRequests", viewRequestIds: ["", 3] });
@@ -254,11 +263,12 @@ describe("OpenWranglerPanel retained view state", () => {
       viewport: { firstVisibleRow: 1, scrollLeft: 44 }
     };
     const bridge: OpenWranglerBridge = {
-      request: vi.fn(async () => initialResponse),
+      request: vi.fn(async () => openedResponse),
       getViewState: vi.fn(() => state),
       updateViewState: vi.fn(async () => undefined)
     };
     const harness = createPanelHarness(bridge);
+    await harness.open();
 
     await harness.send({ kind: "ready" });
     expect(harness.posted.at(-1)).toEqual({ kind: "viewState", state });
@@ -308,6 +318,7 @@ describe("OpenWranglerPanel retained view state", () => {
       clearStepInspection: vi.fn()
     };
     const harness = createPanelHarness(bridge);
+    await harness.open();
 
     await harness.send({
       kind: "runtimeRequest",
@@ -356,12 +367,12 @@ describe("OpenWranglerPanel retained view state", () => {
 
   it("clears retained and recreated inspection state when the active panel changes", async () => {
     const firstBridge: OpenWranglerBridge = {
-      request: vi.fn(async () => initialResponse),
+      request: vi.fn(async () => openedResponse),
       clearStepInspection: vi.fn(),
       setActiveSession: vi.fn()
     };
     const secondResponse: SessionOpenedResponse = {
-      ...initialResponse,
+      ...openedResponse,
       metadata: { ...metadata, sessionId: "second-session" }
     };
     const secondBridge: OpenWranglerBridge = {
@@ -370,8 +381,10 @@ describe("OpenWranglerPanel retained view state", () => {
       setActiveSession: vi.fn()
     };
     const first = createPanelHarness(firstBridge);
+    await first.open();
     first.posted.length = 0;
-    const second = createPanelHarness(secondBridge, { initialResponse: secondResponse });
+    const second = createPanelHarness(secondBridge, { openResponse: secondResponse });
+    await second.open();
 
     expect(first.posted).toContainEqual({ kind: "stepInspectionCleared", resumeProfiling: false });
     expect(second.posted).toContainEqual({ kind: "stepInspectionCleared", resumeProfiling: true });
@@ -391,14 +404,15 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(firstBridge.clearStepInspection).toHaveBeenCalledWith("session");
     expect(first.posted[0]).toEqual({ kind: "stepInspectionCleared", resumeProfiling: false });
-    expect(first.posted).toContainEqual(initialResponse);
+    expect(first.posted).toContainEqual(openedResponse);
   });
 
   it("rejects malformed or host-owned runtime messages before forwarding", async () => {
     const bridge: OpenWranglerBridge = {
-      request: vi.fn(async () => initialResponse)
+      request: vi.fn(async () => openedResponse)
     };
     const harness = createPanelHarness(bridge);
+    await harness.open();
     harness.posted.length = 0;
 
     await harness.send({
@@ -430,7 +444,7 @@ describe("OpenWranglerPanel retained view state", () => {
     let resolveClose: ((response: OpenWranglerResponse) => void) | undefined;
     const bridge: OpenWranglerBridge = {
       request: vi.fn((request: OpenWranglerRequest) => {
-        if (request.kind === "openSession") return Promise.resolve(initialResponse);
+        if (request.kind === "openSession") return Promise.resolve(openedResponse);
         if (request.kind === "closeSession") {
           return new Promise<OpenWranglerResponse>((resolve) => {
             resolveClose = resolve;
@@ -440,8 +454,8 @@ describe("OpenWranglerPanel retained view state", () => {
       }),
       setActiveSession: vi.fn()
     };
-    const harness = createPanelHarness(bridge, { initialResponse: undefined });
-    await vi.waitFor(() => expect(harness.posted).toContainEqual(initialResponse));
+    const harness = createPanelHarness(bridge, { delegateOpen: true });
+    await harness.open();
 
     expect(bridge.request).toHaveBeenNthCalledWith(
       1,
@@ -465,7 +479,61 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: "session",
       revision: 0
     });
+    harness.dispose();
+    expect(vi.mocked(bridge.request).mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(1);
     resolveClose?.({ kind: "sessionClosed", sessionId: "session" });
+  });
+
+  it("disposes the active panel through the same lifecycle used by editor acceptance", async () => {
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return openedResponse;
+      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    await harness.open();
+
+    await expect(OpenWranglerPanel.disposePanelForSession("other-session")).resolves.toBeUndefined();
+    await expect(OpenWranglerPanel.disposePanelForSession("session")).resolves.toEqual({
+      kind: "sessionClosed",
+      sessionId: "session"
+    });
+    await expect(OpenWranglerPanel.disposePanelForSession("session")).resolves.toBeUndefined();
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(1);
+  });
+
+  it("closes exactly once when disposal wins the open-session race", async () => {
+    let resolveOpen: ((response: OpenWranglerResponse) => void) | undefined;
+    const request = vi.fn((request: OpenWranglerRequest) => {
+      if (request.kind === "openSession") {
+        return new Promise<OpenWranglerResponse>((resolve) => {
+          resolveOpen = resolve;
+        });
+      }
+      if (request.kind === "closeSession") {
+        return Promise.resolve<OpenWranglerResponse>({ kind: "sessionClosed", sessionId: request.sessionId });
+      }
+      throw new Error(`Unexpected request ${request.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+
+    const opening = harness.open();
+    harness.dispose();
+    resolveOpen?.(openedResponse);
+    await opening;
+    await harness.open();
+
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toEqual([
+      [
+        {
+          kind: "closeSession",
+          sessionId: "session",
+          revision: 0
+        }
+      ]
+    ]);
+    expect(harness.posted).not.toContainEqual(openedResponse);
   });
 });
 
@@ -487,10 +555,11 @@ function pageMessage(viewRequestId: string, viewContextId: string) {
 
 function createPanelHarness(
   bridge: OpenWranglerBridge,
-  options?: { initialResponse?: SessionOpenedResponse }
+  options?: { delegateOpen?: boolean; openResponse?: SessionOpenedResponse }
 ): {
   posted: unknown[];
   readonly html: string;
+  open(): Promise<void>;
   send(message: unknown): Promise<void>;
   activate(): void;
   dispose(): void;
@@ -517,6 +586,7 @@ function createPanelHarness(
     webview,
     viewColumn: 1,
     reveal: () => undefined,
+    dispose: () => disposeListener?.(),
     onDidDispose: (listener: () => void) => {
       disposeListener = listener;
       return { dispose: () => undefined };
@@ -527,24 +597,34 @@ function createPanelHarness(
     }
   };
   const context = { extensionPath: "/extension" };
-  const configuredInitialResponse =
-    options && Object.prototype.hasOwnProperty.call(options, "initialResponse")
-      ? options.initialResponse
-      : initialResponse;
-  new OpenWranglerPanel(
+  const panelBridge: OpenWranglerBridge = options?.delegateOpen
+    ? bridge
+    : {
+        ...bridge,
+        request: (request, requestOptions) => {
+          if (request.kind === "openSession") return Promise.resolve(options?.openResponse ?? openedResponse);
+          if (request.kind === "closeSession") {
+            return Promise.resolve({ kind: "sessionClosed", sessionId: request.sessionId });
+          }
+          return bridge.request(request, requestOptions);
+        }
+      };
+  const instance = new OpenWranglerPanel(
     panel as unknown as vscode.WebviewPanel,
     context as unknown as vscode.ExtensionContext,
-    bridge,
+    panelBridge,
     metadata.source,
     metadata.backend,
-    configuredInitialResponse
+    false
   );
-  return {
+  const harness = {
     posted,
     get html() {
       return webview.html;
     },
+    open: () => instance.open(),
     async send(message: unknown) {
+      await instance.open();
       if (!listener) throw new Error("Panel message listener was not registered.");
       await listener(message);
     },
@@ -555,4 +635,6 @@ function createPanelHarness(
       disposeListener?.();
     }
   };
+  liveHarnesses.push(harness);
+  return harness;
 }

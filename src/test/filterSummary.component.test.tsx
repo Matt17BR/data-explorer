@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
-import type { ColumnSummary, SessionMetadata, ValuesResponse } from "../shared/protocol";
+import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
 import { SummaryPanel } from "../webviews/summary/SummaryPanel";
 
@@ -132,19 +132,20 @@ describe("FilterPanel", () => {
       expect.objectContaining({ filters: [expect.objectContaining({ logic: "or" })] })
     );
 
+    fireEvent.change(screen.getAllByLabelText("Column")[0], { target: { value: "c:1" } });
     fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
     fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "10" } });
     fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
     expect(onApply).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        filters: [
+        filters: expect.arrayContaining([
           expect.objectContaining({
             predicates: expect.arrayContaining([
               expect.objectContaining({ operator: "between", value: 10, secondValue: 20 })
             ])
           })
-        ]
+        ])
       })
     );
 
@@ -166,6 +167,236 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Use advanced filters" })).toBeInTheDocument();
   });
 
+  it("keys ambiguous displays by typed selection identity while showing the display text", () => {
+    const onApply = vi.fn();
+    const numericSelection: TypedSelectionToken = {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "string",
+      cell: { kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false }
+    };
+    const mixedValues = new Map<string, ValuesResponse>([
+      [
+        "city",
+        {
+          kind: "columnValues",
+          revision: 0,
+          viewRequestId: "mixed-values",
+          column: "city",
+          values: [
+            { value: "1", count: 4, selectionValue: numericSelection },
+            { value: "1", count: 1 }
+          ],
+          hasMore: false
+        }
+      ]
+    ]);
+    const model: FilterModel = {
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: [numericSelection],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: []
+    };
+
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={model}
+        values={mixedValues}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    const [numeric, text] = screen.getAllByRole("checkbox");
+    expect(numeric).toBeChecked();
+    expect(text).not.toBeChecked();
+    expect(screen.getAllByText("1", { selector: ".checkboxRow > span" })).toHaveLength(2);
+
+    fireEvent.click(numeric);
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ valueFilter: expect.objectContaining({ selectedValues: [] }) })]
+      })
+    );
+    fireEvent.click(text);
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [
+          expect.objectContaining({
+            valueFilter: expect.objectContaining({ selectedValues: [numericSelection, "1"] })
+          })
+        ]
+      })
+    );
+  });
+
+  it("coerces predicate inputs according to the selected column type", () => {
+    const onApply = vi.fn();
+    const typedMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 3 },
+      filteredShape: { rows: 4, columns: 3 },
+      schema: [
+        ...metadata.schema,
+        { id: "c:2", name: "active", position: 2, rawType: "Boolean", type: "boolean", nullable: false }
+      ]
+    };
+    render(
+      <FilterPanel
+        metadata={typedMetadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    const columnSelect = screen.getAllByLabelText("Column")[0];
+    const operatorSelect = screen.getByLabelText("Predicate operator");
+
+    fireEvent.change(operatorSelect, { target: { value: "equals" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: "12" }] })]
+      })
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "TRUE" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: "TRUE" }] })]
+      })
+    );
+
+    fireEvent.change(columnSelect, { target: { value: "c:1" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "12.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: 12.5 }] })]
+      })
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "Infinity" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [
+          expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: "Infinity" }] })
+        ]
+      })
+    );
+
+    fireEvent.change(columnSelect, { target: { value: "c:2" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: " TrUe " } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: true }] })]
+      })
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "false" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: false }] })]
+      })
+    );
+  });
+
+  it("emits null and NaN predicates without stray values", () => {
+    const onApply = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    for (const operator of ["isNull", "isNotNull"] as const) {
+      fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: operator } });
+      fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+      expect(onApply).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator }] })]
+        })
+      );
+    }
+
+    fireEvent.change(screen.getAllByLabelText("Column")[0]!, { target: { value: "c:1" } });
+    for (const operator of ["isNaN", "isNotNaN"] as const) {
+      fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: operator } });
+      fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+      expect(onApply).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator }] })]
+        })
+      );
+    }
+  });
+
+  it("offers only predicates supported by the selected column type", () => {
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        defaultAdvanced={true}
+        onApply={() => undefined}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    const operatorSelect = screen.getByLabelText("Predicate operator") as HTMLSelectElement;
+    const options = () => Array.from(operatorSelect.options, (option) => option.value);
+    expect(options()).toContain("contains");
+    expect(options()).not.toContain("isNaN");
+
+    fireEvent.change(screen.getAllByLabelText("Column")[0]!, { target: { value: "c:1" } });
+    expect(options()).toContain("isNaN");
+    expect(options()).not.toContain("contains");
+  });
+
+  it("requires both bounds before adding a between predicate", () => {
+    const onApply = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "Berlin" } });
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "Milan" } });
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeEnabled();
+  });
+
   it("handles an empty schema without dispatching invalid filters", () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();
@@ -184,7 +415,7 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
     expect(screen.getByLabelText("Condition combination")).toBeDisabled();
     expect(screen.getByLabelText("Predicate operator")).toBeDisabled();
-    expect(screen.getByPlaceholderText("Value")).toBeDisabled();
+    expect(screen.queryByPlaceholderText("Value")).toBeNull();
     expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
 

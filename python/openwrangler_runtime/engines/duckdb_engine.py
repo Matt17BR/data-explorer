@@ -12,22 +12,29 @@ from typing import Any, Literal, cast
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
+    VIEW_COMPARABLE_TYPES,
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
     bound_column_name,
     categorical_visualization,
+    coerce_typed_view_value,
     datetime_visualization,
     ensure_output_columns_available,
+    generated_view_value_helper_lines,
+    infer_semantic_type,
     normalize_cell,
     normalize_page_projection,
     numeric_visualization,
+    typed_selection_value,
+    validate_view_predicate_operator,
 )
 
 SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 
@@ -175,6 +182,24 @@ class DuckDBEngine(DataFrameEngine):
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         frame = self.normalize(frame)
+        type_by_column = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        for column_filter in model.get("filters", []):
+            column = column_filter.get("column")
+            if column not in type_by_column:
+                continue
+            actual_type = _semantic_type(type_by_column[column])
+            if column_filter.get("type") != actual_type:
+                raise EngineError(
+                    f"DuckDB view filter for {column!r} declares {column_filter.get('type')!r}, "
+                    f"but the relation column is {actual_type!r}."
+                )
+        for rule in model.get("sort", []):
+            column = rule.get("column")
+            if column not in type_by_column:
+                continue
+            column_type = _semantic_type(type_by_column[column])
+            if column_type not in VIEW_COMPARABLE_TYPES:
+                raise EngineError(f"DuckDB view sorting is unavailable for {column_type} columns.")
         query = _filter_query(self._columns(frame), model)
         return self._relation(frame, query)
 
@@ -283,13 +308,14 @@ class DuckDBEngine(DataFrameEngine):
                         f"SELECT min({identifier}), max({identifier}), avg({identifier}), "
                         f"median({identifier}), stddev_samp({identifier}) FROM ow WHERE {valid}",
                     )[0]
-                    summary["numeric"] = {
+                    numeric_summary = {
                         "min": _finite_float(numeric[0]),
                         "max": _finite_float(numeric[1]),
                         "mean": _finite_float(numeric[2]),
                         "median": _finite_float(numeric[3]),
                         "std": _finite_float(numeric[4]),
                     }
+                    summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                     sample_rows = _execute_rows(
                         connection,
                         source_sql,
@@ -379,17 +405,27 @@ class DuckDBEngine(DataFrameEngine):
         if column not in visible:
             raise EngineError(f"Unknown DuckDB column: {column}")
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        column_type = infer_semantic_type(types[column])
         identifier = _quote_ident(column)
         conditions = [_valid_predicate(identifier, types[column])]
         if search:
-            conditions.append(f"contains(lower(CAST({identifier} AS VARCHAR)), lower({_sql_literal(str(search))}))")
+            conditions.append(
+                f"contains(translate(CAST({identifier} AS VARCHAR), {_sql_literal(_ASCII_UPPER)}, "
+                f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(search).translate(_ASCII_TO_LOWER))})"
+            )
         query = (
             f"SELECT {identifier}, count(*) AS value_count FROM ow WHERE {' AND '.join(conditions)} "
             f"GROUP BY {identifier} ORDER BY value_count DESC, CAST({identifier} AS VARCHAR) ASC "
             f"LIMIT {int(limit) + 1}"
         )
         rows = self._terminal_rows(frame, query)
-        values = [{"value": normalize_cell(value)["display"], "count": int(count)} for value, count in rows[:limit]]
+        values = []
+        for value, count in rows[:limit]:
+            item: dict[str, Any] = {"value": normalize_cell(value)["display"], "count": int(count)}
+            selection = typed_selection_value(value, column_type)
+            if selection is not None:
+                item["selectionValue"] = selection
+            values.append(item)
         return values, len(rows) > limit
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
@@ -512,7 +548,12 @@ class DuckDBEngine(DataFrameEngine):
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-        lines = [_GENERATED_HELPERS.rstrip(), "", "", "def clean_data(df):"]
+        lines = [
+            _GENERATED_HELPERS.rstrip(),
+            "",
+            *generated_view_value_helper_lines(),
+            "def clean_data(df):",
+        ]
         for index, step in enumerate(steps):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
@@ -547,6 +588,9 @@ class DuckDBEngine(DataFrameEngine):
             # The runtime helper receives the current columns so unknown saved
             # filters remain ignorable after an earlier drop/rename step.
             model = _bound_duckdb_filter_model(params["filterModel"])
+            for column_filter in model.get("filters", []):
+                for predicate in column_filter.get("predicates", []):
+                    validate_view_predicate_operator(column_filter.get("type"), predicate.get("operator"))
             return [f"{prefix}df = _ow_filter(df, {model!r})"]
         if kind == "dropMissingRows":
             columns = (
@@ -952,17 +996,28 @@ def _sql_literal(value: Any) -> str:
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, datetime):
-        return f"TIMESTAMP {_sql_literal(value.isoformat(sep=' '))}"
+        timestamp_type = "TIMESTAMPTZ" if value.tzinfo is not None and value.utcoffset() is not None else "TIMESTAMP"
+        return f"{timestamp_type} {_sql_literal(value.isoformat(sep=' '))}"
     if isinstance(value, date):
         return f"DATE {_sql_literal(value.isoformat())}"
     if isinstance(value, timedelta):
-        return f"INTERVAL {_sql_literal(str(value.total_seconds()) + ' seconds')}"
+        return f"INTERVAL {_sql_literal(_timedelta_seconds_text(value) + ' seconds')}"
     if isinstance(value, bytes):
         return f"from_hex({_sql_literal(value.hex())})"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_sql_literal(item) for item in value) + "]"
     text = str(value).replace("'", "''")
     return f"'{text}'"
+
+
+def _timedelta_seconds_text(value: timedelta) -> str:
+    total_microseconds = ((value.days * 86_400) + value.seconds) * 1_000_000 + value.microseconds
+    sign = "-" if total_microseconds < 0 else ""
+    whole_seconds, microseconds = divmod(abs(total_microseconds), 1_000_000)
+    if microseconds == 0:
+        return f"{sign}{whole_seconds}"
+    fraction = f"{microseconds:06d}".rstrip("0")
+    return f"{sign}{whole_seconds}.{fraction}"
 
 
 def _semantic_type(raw_type: str) -> str:
@@ -1061,15 +1116,14 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
         identifier = _quote_ident(column)
         conditions: list[str] = []
         value_filter = column_filter.get("valueFilter")
+        column_type = column_filter.get("type")
         if value_filter and (
             value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
         ):
             alternatives: list[str] = []
-            selected = [str(value) for value in value_filter.get("selectedValues", [])]
+            selected = [coerce_typed_view_value(value, column_type) for value in value_filter.get("selectedValues", [])]
             if selected:
-                alternatives.append(
-                    f"CAST({identifier} AS VARCHAR) IN ({', '.join(_sql_literal(value) for value in selected)})"
-                )
+                alternatives.append(f"{identifier} IN ({', '.join(_sql_literal(value) for value in selected)})")
             if value_filter.get("includeNulls"):
                 alternatives.append(f"{identifier} IS NULL")
             if value_filter.get("includeNaN") and column_filter.get("type") == "float":
@@ -1078,7 +1132,7 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
                 alternatives.append("FALSE")
             conditions.append("(" + " OR ".join(alternatives) + ")")
         conditions.extend(
-            _predicate_expression(identifier, predicate, column_filter.get("type"))
+            _predicate_expression(identifier, predicate, column_type)
             for predicate in column_filter.get("predicates", [])
         )
         if conditions:
@@ -1107,24 +1161,12 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
 
 
 def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_type: str | None) -> str:
-    operator = predicate.get("operator")
-    value = predicate.get("value")
-    if operator == "equals":
-        return f"{identifier} = {_sql_literal(value)}"
-    if operator == "notEquals":
-        return f"{identifier} <> {_sql_literal(value)}"
-    if operator == "contains":
-        return f"contains(lower(CAST({identifier} AS VARCHAR)), lower({_sql_literal(str(value))}))"
-    if operator == "startsWith":
-        return f"starts_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
-    if operator == "endsWith":
-        return f"ends_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
-    if operator in {"gt", "gte", "lt", "lte"}:
-        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[str(operator)]
-        return f"{identifier} {symbol} {_sql_literal(value)}"
-    if operator == "between":
-        second = _sql_literal(predicate.get("secondValue"))
-        return f"({identifier} >= {_sql_literal(value)} AND {identifier} <= {second})"
+    operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
+    value = (
+        coerce_typed_view_value(predicate.get("value"), column_type)
+        if operator not in {"contains", "startsWith", "endsWith", "isNull", "isNotNull", "isNaN", "isNotNaN"}
+        else predicate.get("value")
+    )
     if operator == "isNull":
         return f"{identifier} IS NULL"
     if operator == "isNotNull":
@@ -1133,7 +1175,29 @@ def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_
         return f"coalesce(isnan({identifier}), FALSE)" if column_type == "float" else "FALSE"
     if operator == "isNotNaN":
         return f"coalesce(NOT isnan({identifier}), TRUE)" if column_type == "float" else "TRUE"
-    return f"{identifier} IS NOT NULL"
+    if operator == "equals":
+        result = f"{identifier} = {_sql_literal(value)}"
+    elif operator == "notEquals":
+        result = f"{identifier} <> {_sql_literal(value)}"
+    elif operator == "contains":
+        result = (
+            f"contains(translate(CAST({identifier} AS VARCHAR), {_sql_literal(_ASCII_UPPER)}, "
+            f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(value).translate(_ASCII_TO_LOWER))})"
+        )
+    elif operator == "startsWith":
+        result = f"starts_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
+    elif operator == "endsWith":
+        result = f"ends_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
+    elif operator in {"gt", "gte", "lt", "lte"}:
+        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
+        result = f"{identifier} {symbol} {_sql_literal(value)}"
+    else:
+        second = _sql_literal(coerce_typed_view_value(predicate.get("secondValue"), column_type))
+        result = f"({identifier} >= {_sql_literal(value)} AND {identifier} <= {second})"
+    valid = f"{identifier} IS NOT NULL"
+    if column_type == "float":
+        valid += f" AND coalesce(NOT isnan({identifier}), FALSE)"
+    return f"(({result}) AND {valid})"
 
 
 def _formula_expression(left: str, right: str, operator: str) -> str:
@@ -1349,11 +1413,18 @@ def _ow_literal(value):
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, datetime):
-        return "TIMESTAMP " + _ow_literal(value.isoformat(sep=" "))
+        timestamp_type = "TIMESTAMPTZ" if value.tzinfo is not None and value.utcoffset() is not None else "TIMESTAMP"
+        return timestamp_type + " " + _ow_literal(value.isoformat(sep=" "))
     if isinstance(value, date):
         return "DATE " + _ow_literal(value.isoformat())
     if isinstance(value, timedelta):
-        return "INTERVAL " + _ow_literal(str(value.total_seconds()) + " seconds")
+        total_microseconds = ((value.days * 86400) + value.seconds) * 1000000 + value.microseconds
+        sign = "-" if total_microseconds < 0 else ""
+        whole_seconds, microseconds = divmod(abs(total_microseconds), 1000000)
+        seconds = sign + str(whole_seconds)
+        if microseconds:
+            seconds += "." + str(microseconds).rjust(6, "0").rstrip("0")
+        return "INTERVAL " + _ow_literal(seconds + " seconds")
     if isinstance(value, bytes):
         return "from_hex(" + _ow_literal(value.hex()) + ")"
     if isinstance(value, (list, tuple)):
@@ -1451,13 +1522,12 @@ def _ow_filter(df, model):
         identifier = _ow_ident(column)
         conditions = []
         values = column_filter.get("valueFilter")
+        column_type = column_filter.get("type")
         if values and (values.get("selectedValues") or values.get("includeNulls") or values.get("includeNaN")):
             alternatives = []
-            selected = [str(value) for value in values.get("selectedValues", [])]
+            selected = [_open_wrangler_view_value(value, column_type) for value in values.get("selectedValues", [])]
             if selected:
-                alternatives.append(
-                    "CAST(" + identifier + " AS VARCHAR) IN (" + ", ".join(_ow_literal(v) for v in selected) + ")"
-                )
+                alternatives.append(identifier + " IN (" + ", ".join(_ow_literal(v) for v in selected) + ")")
             if values.get("includeNulls"):
                 alternatives.append(identifier + " IS NULL")
             if values.get("includeNaN") and column_filter.get("type") == "float":
@@ -1466,7 +1536,7 @@ def _ow_filter(df, model):
                 alternatives.append("FALSE")
             conditions.append("(" + " OR ".join(alternatives) + ")")
         for predicate in column_filter.get("predicates", []):
-            conditions.append(_ow_predicate(identifier, predicate, column_filter.get("type")))
+            conditions.append(_ow_predicate(identifier, predicate, column_type))
         if conditions:
             operator = " OR " if column_filter.get("logic") == "or" else " AND "
             column_conditions.append("(" + operator.join(conditions) + ")")
@@ -1491,25 +1561,11 @@ def _ow_filter(df, model):
 
 def _ow_predicate(identifier, predicate, column_type):
     operator = predicate.get("operator")
-    value = predicate.get("value")
-    if operator == "equals":
-        return identifier + " = " + _ow_literal(value)
-    if operator == "notEquals":
-        return identifier + " <> " + _ow_literal(value)
-    if operator == "contains":
-        return "contains(lower(CAST(" + identifier + " AS VARCHAR)), lower(" + _ow_literal(str(value)) + "))"
-    if operator == "startsWith":
-        return "starts_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
-    if operator == "endsWith":
-        return "ends_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
-    if operator in {"gt", "gte", "lt", "lte"}:
-        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
-        return identifier + " " + symbol + " " + _ow_literal(value)
-    if operator == "between":
-        return (
-            "(" + identifier + " >= " + _ow_literal(value) + " AND " + identifier
-            + " <= " + _ow_literal(predicate.get("secondValue")) + ")"
-        )
+    value = (
+        _open_wrangler_view_value(predicate.get("value"), column_type)
+        if operator not in {"contains", "startsWith", "endsWith", "isNull", "isNotNull", "isNaN", "isNotNaN"}
+        else predicate.get("value")
+    )
     if operator == "isNull":
         return identifier + " IS NULL"
     if operator == "isNotNull":
@@ -1518,7 +1574,32 @@ def _ow_predicate(identifier, predicate, column_type):
         return "coalesce(isnan(" + identifier + "), FALSE)" if column_type == "float" else "FALSE"
     if operator == "isNotNaN":
         return "coalesce(NOT isnan(" + identifier + "), TRUE)" if column_type == "float" else "TRUE"
-    return identifier + " IS NOT NULL"
+    if operator == "equals":
+        result = identifier + " = " + _ow_literal(value)
+    elif operator == "notEquals":
+        result = identifier + " <> " + _ow_literal(value)
+    elif operator == "contains":
+        folded = str(value).translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+        result = (
+            "contains(translate(CAST(" + identifier + " AS VARCHAR), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz'), " + _ow_literal(folded) + ")"
+        )
+    elif operator == "startsWith":
+        result = "starts_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
+    elif operator == "endsWith":
+        result = "ends_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
+    elif operator in {"gt", "gte", "lt", "lte"}:
+        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
+        result = identifier + " " + symbol + " " + _ow_literal(value)
+    else:
+        result = (
+            "(" + identifier + " >= " + _ow_literal(value) + " AND " + identifier
+            + " <= " + _ow_literal(_open_wrangler_view_value(predicate.get("secondValue"), column_type)) + ")"
+        )
+    valid = identifier + " IS NOT NULL"
+    if column_type == "float":
+        valid += " AND coalesce(NOT isnan(" + identifier + "), FALSE)"
+    return "((" + result + ") AND " + valid + ")"
 
 
 def _ow_drop_missing(df, columns, how):

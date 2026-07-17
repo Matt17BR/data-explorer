@@ -514,6 +514,96 @@ describe("protocol-v2 response validation", () => {
     expect(isOpenWranglerResponse({ kind: "error", code: "bad", message: "bad", recoverable: "yes" })).toBe(false);
   });
 
+  it("accepts only versioned, bounded, type-compatible value-selection tokens", () => {
+    const token = {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "string",
+      cell: { kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false }
+    };
+    const response = {
+      kind: "columnValues",
+      revision: 1,
+      viewRequestId: "view-1",
+      column: "value",
+      values: [{ value: "1", count: 4, selectionValue: token }],
+      hasMore: false
+    };
+    expect(isOpenWranglerResponse(response)).toBe(true);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "2024-01-01",
+            count: 1,
+            selectionValue: {
+              ...token,
+              cell: {
+                kind: "date",
+                raw: "2024-01-01",
+                display: "2024-01-01",
+                isNull: false,
+                isNaN: false
+              }
+            }
+          }
+        ]
+      })
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [{ value: "1", count: 4, selectionValue: { ...token, version: 2 } }]
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "nested",
+            count: 1,
+            selectionValue: {
+              ...token,
+              cell: { kind: "struct", raw: { value: 1 }, display: '{"value":1}', isNull: false, isNaN: false }
+            }
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [{ value: "1", count: 4, selectionValue: { ...token, columnType: "float" } }]
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "1",
+            count: 4,
+            selectionValue: { ...token, cell: { ...token.cell, display: "x".repeat(65_537) } }
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "1",
+            count: 4,
+            selectionValue: { ...token, cell: { ...token.cell, isNull: true } }
+          }
+        ]
+      })
+    ).toBe(false);
+  });
+
   it("does not accept a response as an envelope", () => {
     const responseEnvelope: RuntimeResponseEnvelope = {
       protocolVersion: 2,

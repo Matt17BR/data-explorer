@@ -452,6 +452,19 @@ describe("kernel retry classification", () => {
 });
 
 describe("renderer notebook provenance", () => {
+  it("rejects simultaneous open documents with the captured URI before activating Jupyter", async () => {
+    const original = notebookDocument("/workspace/notebook.ipynb");
+    const overlappingReplacement = notebookDocument("/workspace/notebook.ipynb");
+    const getExtension = vi.spyOn(vscode.extensions, "getExtension");
+
+    setOpenNotebookDocuments(original, overlappingReplacement);
+    await expect(createKernelBridge(original).request(initializeRequest())).rejects.toThrow(
+      "originated this Open Wrangler session is no longer open"
+    );
+
+    expect(getExtension).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale document object before activating Jupyter", async () => {
     const original = notebookDocument("/workspace/notebook.ipynb");
     const replacement = notebookDocument("/workspace/notebook.ipynb");
@@ -502,6 +515,28 @@ describe("renderer notebook provenance", () => {
     (document as unknown as { isClosed: boolean }).isClosed = true;
     const reopenedDocument = notebookDocument();
     setOpenNotebookDocuments(reopenedDocument);
+    kernelResult.resolve(kernel);
+
+    await expect(request).rejects.toThrow("originated this Open Wrangler session is no longer open");
+    expect(executeCode).not.toHaveBeenCalled();
+  });
+
+  it("rejects an overlapping same-URI document introduced while getKernel is pending", async () => {
+    const document = notebookDocument();
+    const overlappingReplacement = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const kernelResult = deferred<Kernel | undefined>();
+    const getKernel = vi.fn(() => kernelResult.promise);
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel } })
+    } as never);
+    const executeCode = vi.fn();
+    const kernel = { language: "python", executeCode } as unknown as Kernel;
+    const bridge = createKernelBridge(document);
+
+    const request = bridge.request(initializeRequest());
+    await vi.waitFor(() => expect(getKernel).toHaveBeenCalledOnce());
+    setOpenNotebookDocuments(document, overlappingReplacement);
     kernelResult.resolve(kernel);
 
     await expect(request).rejects.toThrow("originated this Open Wrangler session is no longer open");

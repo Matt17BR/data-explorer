@@ -6,6 +6,7 @@ from typing import Any, cast
 import polars as pl
 import pytest
 
+from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.engines.polars_engine import SUMMARY_VISUALIZATION_SAMPLE_LIMIT, PolarsEngine
 from openwrangler_runtime.session import SessionManager
 
@@ -157,7 +158,10 @@ def test_polars_column_values_and_parquet(tmp_path):
     opened = manager.open_session({"kind": "file", "label": "sample.parquet", "path": str(path)}, backend="polars")
     values = manager.get_column_values(opened["metadata"]["sessionId"], 0, "group", {"filters": [], "sort": []})
 
-    assert values["values"] == [{"value": "a", "count": 2}, {"value": "b", "count": 1}]
+    assert values["values"] == [
+        {"value": "a", "count": 2, "selectionValue": typed_selection_value("a", "string")},
+        {"value": "b", "count": 1, "selectionValue": typed_selection_value("b", "string")},
+    ]
 
 
 def test_polars_excel_reader_pins_the_probed_calamine_engine(monkeypatch):
@@ -235,6 +239,15 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
     assert summary["sampled"] is True
     assert summary["visualization"]["sampled"] is True
     assert sum(bin_["count"] for bin_ in summary["visualization"]["bins"]) <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_summary_omits_non_finite_statistics_but_keeps_finite_histogram_values(lazy: bool):
+    frame = pl.DataFrame({"value": [1.0, float("inf")]})
+    summary = PolarsEngine().summaries(frame.lazy() if lazy else frame)[0]
+
+    assert summary["numeric"] == {"min": 1.0}
+    assert summary["visualization"] == {"kind": "numeric", "bins": [{"min": 1.0, "max": 1.0, "count": 1}]}
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -340,5 +353,5 @@ def test_polars_column_values_excludes_null_and_nan_special_values(lazy: bool):
 
     values, has_more = PolarsEngine().column_values(source, "value")
 
-    assert values == [{"value": "1.0", "count": 1}]
+    assert values == [{"value": "1.0", "count": 1, "selectionValue": typed_selection_value(1.0, "float")}]
     assert has_more is False

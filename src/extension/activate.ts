@@ -6,7 +6,9 @@ import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
 import { registerNativeViews } from "./nativeViews";
+import { OpenWranglerPanel } from "./webviewPanel";
 import type { GridViewState } from "../shared/viewState";
+import type { OpenWranglerResponse } from "../shared/protocol";
 
 export interface OpenWranglerTestApi {
   request: ReturnType<SessionCoordinator["createBridge"]>["request"];
@@ -18,6 +20,7 @@ export interface OpenWranglerTestApi {
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
+  disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
 }
@@ -41,7 +44,7 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
   const nativeViews = registerNativeViews(context, coordinator);
   registerRuntimeCommands(context, bridge);
   registerNotebookCommands(context, coordinator);
-  registerNotebookRendererMessaging(context, coordinatedBridge, coordinator);
+  registerNotebookRendererMessaging(context, coordinator);
 
   if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") {
     return {
@@ -55,6 +58,7 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
         declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
+        disposePanelForSession: (sessionId) => OpenWranglerPanel.disposePanelForSession(sessionId),
         setCodeForExport: (code) => nativeViews.setCodeForExport(code),
         exportCodeTo: (destination) => nativeViews.exportCodeTo(destination)
       }

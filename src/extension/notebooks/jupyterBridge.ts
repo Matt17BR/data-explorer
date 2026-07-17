@@ -3,6 +3,7 @@ import type { SessionSource } from "../../shared/protocol";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
+import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 interface NotebookVariableArgument {
   name?: unknown;
@@ -197,7 +198,7 @@ function resolveNotebookAtCommandReceipt(args: unknown[]): NotebookResolution {
 }
 
 function isExactOpenNotebook(notebook: vscode.NotebookDocument): boolean {
-  return !notebook.isClosed && vscode.workspace.notebookDocuments.includes(notebook);
+  return isSoleOpenNotebookDocument(notebook);
 }
 
 function stringValue(value: unknown): string | undefined {
