@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
-import { workspace } from "vscode";
+import { window, workspace } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import { OpenWranglerPanel } from "../extension/webviewPanel";
 import type {
@@ -9,7 +9,8 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   SessionMetadata,
-  SessionOpenedResponse
+  SessionOpenedResponse,
+  SessionSource
 } from "../shared/protocol";
 
 const metadata: SessionMetadata = {
@@ -535,6 +536,81 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
     expect(harness.posted).not.toContainEqual(openedResponse);
   });
+
+  it("opens live notebook variables without waiting for renderer readiness", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "duplicate_frame",
+      variableName: "duplicate_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return { ...openedResponse, metadata: { ...metadata, source, backend: "pandas" } };
+      }
+      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { createViaFactory: true, delegateOpen: true, source });
+
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1)
+    );
+    await harness.receive({ kind: "ready" });
+
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+  });
+
+  it("does not retry a failed live notebook open when renderer readiness arrives later", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "denied_frame",
+      variableName: "denied_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          kind: "error",
+          code: "kernel_access_denied",
+          message: "Kernel access was denied.",
+          recoverable: true
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { createViaFactory: true, delegateOpen: true, source });
+
+    await vi.waitFor(() =>
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1)
+    );
+    await harness.receive({ kind: "ready" });
+
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+    expect(harness.posted.at(-1)).toEqual({
+      kind: "error",
+      code: "kernel_access_denied",
+      message: "Kernel access was denied.",
+      recoverable: true
+    });
+  });
+
+  it("keeps saved notebook snapshots lazy until their renderer is ready", async () => {
+    const source: SessionSource = { kind: "notebookOutput", label: "saved output" };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return { ...openedResponse, metadata: { ...metadata, source } };
+      }
+      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { createViaFactory: true, delegateOpen: true, source });
+
+    expect(request).not.toHaveBeenCalled();
+    await harness.receive({ kind: "ready" });
+
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+  });
 });
 
 function pageMessage(viewRequestId: string, viewContextId: string) {
@@ -555,11 +631,17 @@ function pageMessage(viewRequestId: string, viewContextId: string) {
 
 function createPanelHarness(
   bridge: OpenWranglerBridge,
-  options?: { delegateOpen?: boolean; openResponse?: SessionOpenedResponse }
+  options?: {
+    createViaFactory?: boolean;
+    delegateOpen?: boolean;
+    openResponse?: SessionOpenedResponse;
+    source?: SessionSource;
+  }
 ): {
   posted: unknown[];
   readonly html: string;
   open(): Promise<void>;
+  receive(message: unknown): Promise<void>;
   send(message: unknown): Promise<void>;
   activate(): void;
   dispose(): void;
@@ -609,24 +691,48 @@ function createPanelHarness(
           return bridge.request(request, requestOptions);
         }
       };
-  const instance = new OpenWranglerPanel(
-    panel as unknown as vscode.WebviewPanel,
-    context as unknown as vscode.ExtensionContext,
-    panelBridge,
-    metadata.source,
-    metadata.backend,
-    false
-  );
+  const source = options?.source ?? metadata.source;
+  let instance: OpenWranglerPanel;
+  if (options?.createViaFactory) {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "createWebviewPanel");
+    Object.defineProperty(window, "createWebviewPanel", {
+      configurable: true,
+      value: vi.fn(() => panel)
+    });
+    try {
+      instance = OpenWranglerPanel.create(
+        context as unknown as vscode.ExtensionContext,
+        panelBridge,
+        source,
+        metadata.backend
+      );
+    } finally {
+      if (descriptor) Object.defineProperty(window, "createWebviewPanel", descriptor);
+      else delete (window as unknown as { createWebviewPanel?: unknown }).createWebviewPanel;
+    }
+  } else {
+    instance = new OpenWranglerPanel(
+      panel as unknown as vscode.WebviewPanel,
+      context as unknown as vscode.ExtensionContext,
+      panelBridge,
+      source,
+      metadata.backend,
+      false
+    );
+  }
   const harness = {
     posted,
     get html() {
       return webview.html;
     },
     open: () => instance.open(),
-    async send(message: unknown) {
-      await instance.open();
+    async receive(message: unknown) {
       if (!listener) throw new Error("Panel message listener was not registered.");
       await listener(message);
+    },
+    async send(message: unknown) {
+      await instance.open();
+      await harness.receive(message);
     },
     activate() {
       viewStateListener?.({ webviewPanel: { active: true } });

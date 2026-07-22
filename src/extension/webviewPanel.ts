@@ -23,6 +23,7 @@ export class OpenWranglerPanel {
   private snapshotViewContextId: string | undefined;
   private latestPageViewRequestId: string | undefined;
   private opening: Promise<void> | undefined;
+  private openResponse: OpenWranglerResponse | undefined;
   private closing: Promise<OpenWranglerResponse> | undefined;
   private disposed = false;
   private readonly disposables: vscode.Disposable[] = [];
@@ -93,7 +94,12 @@ export class OpenWranglerPanel {
       }
     );
 
-    return new OpenWranglerPanel(panel, context, bridge, source, backend, source.kind === "file");
+    // Live sources must not depend on a renderer-ready event before the host
+    // starts their session. Some editor builds can delay that event while a
+    // previous webview tab is closing; the retained snapshot is posted again
+    // when the renderer eventually becomes ready. Saved output stays lazy so
+    // an unopened snapshot panel does not retain an unnecessary host session.
+    return new OpenWranglerPanel(panel, context, bridge, source, backend, source.kind !== "notebookOutput");
   }
 
   async open(): Promise<void> {
@@ -116,7 +122,6 @@ export class OpenWranglerPanel {
       mode
     });
     await this.opening;
-    if (!this.sessionId) this.opening = undefined;
   }
 
   dispose(): void {
@@ -153,6 +158,10 @@ export class OpenWranglerPanel {
       if (this.snapshot) {
         await this.post(this.snapshot);
         await this.postViewState();
+        return;
+      }
+      if (this.openResponse) {
+        await this.post(this.openResponse);
         return;
       }
       await this.open();
@@ -223,6 +232,7 @@ export class OpenWranglerPanel {
         }
         return;
       }
+      if (request.kind === "openSession") this.openResponse = response;
       if (response.kind === "sessionOpened") {
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.metadata.revision;
@@ -284,13 +294,15 @@ export class OpenWranglerPanel {
         await this.postViewState();
       }
     } catch (error) {
-      await this.postRuntimeResponse(request, {
+      const response: OpenWranglerResponse = {
         kind: "error",
         code: "bridge_error",
         message: error instanceof Error ? error.message : String(error),
         recoverable: true,
         ...viewRequestIdProperty(request)
-      });
+      };
+      if (request.kind === "openSession") this.openResponse = response;
+      await this.postRuntimeResponse(request, response);
     }
   }
 

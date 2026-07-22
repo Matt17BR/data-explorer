@@ -29,7 +29,7 @@ jobs:
       - run: npm test
       - run: npm run test:webview-acceptance
       - if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: webview-visual-evidence
           path: |
@@ -41,11 +41,24 @@ jobs:
       - run: python -m pip_audit
       - run: npm run package -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
-      - run: xvfb-run -a npm run test:packaged-editors -- openwrangler.vsix
+      - run: npm run build:test-extension
+      - id: packaged_editor
+        name: Test packaged editor
+        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           VSCODE_TEST_VERSION: stable
-      - uses: actions/upload-artifact@v6
+      - name: Upload packaged-editor failure diagnostics
+        if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: openwrangler-vsix
           path: openwrangler.vsix
@@ -65,7 +78,7 @@ jobs:
       - run: npm ci
       - run: python -m pip install -e "python[dev]"
       - run: npm run test:coverage
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: coverage-reports
           path: |
@@ -106,6 +119,51 @@ jobs:
           cache: pip
       - run: npm ci
       - run: python -m pip install -e "python[dev]"
-      - run: xvfb-run -a npm run test:extension-host
+      - run: npm run test:extension-host
         env:
           VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+
+  native-editor-matrix:
+    name: Native editor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: npm run test:scripts
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: stable
+      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: npm run build:test-extension
+      - id: packaged_editor
+        name: Test packaged editor
+        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          VSCODE_TEST_VERSION: stable
+      - name: Upload packaged-editor failure diagnostics
+        if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false

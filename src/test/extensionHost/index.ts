@@ -7,7 +7,6 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -30,6 +29,7 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
+import { writeAcceptanceProgressCheckpoint } from "./progress";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -103,6 +103,7 @@ function gridColumnDisplays(page: GridPage, columnId: string): string[] {
 }
 
 export async function run(): Promise<void> {
+  recordAcceptanceProgress("preflight:start");
   recordAcceptanceProgress("activation:start");
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The Open Wrangler extension must be discoverable.");
@@ -111,6 +112,7 @@ export async function run(): Promise<void> {
   assert.ok(testing, "The isolated acceptance harness must enable the test-only extension API.");
   assert.equal(extension.isActive, true, "The extension must activate successfully.");
   recordAcceptanceProgress("activation:complete");
+  recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
   assert.match(extension.packageJSON.description, /open-source dataframe wrangler/i);
@@ -125,6 +127,7 @@ export async function run(): Promise<void> {
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   }
 
+  recordAcceptanceProgress("preflight:commands");
   const commands = await vscode.commands.getCommands(true);
   for (const command of [
     "openWrangler.openPath",
@@ -163,6 +166,7 @@ export async function run(): Promise<void> {
     keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
     menus?: Record<string, Array<{ command?: string; when?: string; group?: string }>>;
   };
+  recordAcceptanceProgress("preflight:contributions");
   assert.ok(
     contributions.viewsContainers?.activitybar?.some(
       (container) => container.id === "openWrangler" && container.icon === "media/activity-icon.svg"
@@ -287,6 +291,7 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
+  recordAcceptanceProgress("preflight:complete");
   if (phase === "seed") {
     recordAcceptanceProgress("seed:start");
     await seedPersistedPlan(testing, fixture);
@@ -366,13 +371,7 @@ export async function run(): Promise<void> {
 function recordAcceptanceProgress(checkpoint: string): void {
   const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
   if (!progressPath) return;
-  const temporaryPath = `${progressPath}.${process.pid}.tmp`;
-  try {
-    writeFileSync(temporaryPath, `${checkpoint}\n`, { encoding: "utf8", flag: "w" });
-    renameSync(temporaryPath, progressPath);
-  } catch {
-    rmSync(temporaryPath, { force: true });
-  }
+  writeAcceptanceProgressCheckpoint(progressPath, checkpoint);
 }
 
 async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -472,6 +471,7 @@ async function exercisePackagedFileLaunchSurfaces(
   fixture: vscode.Uri,
   outputDirectory?: string
 ): Promise<void> {
+  recordAcceptanceProgress("verify:file-launch:setup");
   const sourceBytes = readFileSync(fixture.fsPath);
   const page = await connectToEditorWorkbench();
   const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
@@ -516,6 +516,7 @@ async function exercisePackagedFileLaunchSurfaces(
     await vscode.commands.executeCommand("notifications.hideList");
   }
 
+  recordAcceptanceProgress("verify:file-launch:title-action:source");
   await vscode.commands.executeCommand("vscode.open", fixture, {
     preview: false,
     viewColumn: vscode.ViewColumn.One
@@ -550,6 +551,7 @@ async function exercisePackagedFileLaunchSurfaces(
     );
   }
   if (outputDirectory) {
+    recordAcceptanceProgress("verify:file-launch:title-action:screenshot");
     mkdirSync(outputDirectory, { recursive: true });
     await titleAction.first().hover();
     await page
@@ -561,6 +563,7 @@ async function exercisePackagedFileLaunchSurfaces(
     await page.keyboard.press("Escape");
   }
 
+  recordAcceptanceProgress("verify:file-launch:title-action:open");
   await titleAction.first().click();
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
@@ -575,6 +578,7 @@ async function exercisePackagedFileLaunchSurfaces(
     "the editor-title launch session to dispose"
   );
 
+  recordAcceptanceProgress("verify:file-launch:tab-context:menu");
   const sourceTab = page
     .locator(".part.editor .tabs-container .tab")
     .filter({ hasText: path.basename(fixture.fsPath) })
@@ -617,8 +621,10 @@ async function exercisePackagedFileLaunchSurfaces(
     "The editor-tab context action must use the compact product label."
   );
   if (outputDirectory) {
+    recordAcceptanceProgress("verify:file-launch:tab-context:screenshot");
     await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-tab-context-menu.png`));
   }
+  recordAcceptanceProgress("verify:file-launch:tab-context:open");
   await tabMenuAction.click();
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
@@ -633,6 +639,7 @@ async function exercisePackagedFileLaunchSurfaces(
     "the editor-tab launch session to dispose"
   );
 
+  recordAcceptanceProgress("verify:file-launch:third-party-editor:source");
   const customEditorFixture = vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.csv"));
   const customEditorSourceBytes = readFileSync(customEditorFixture.fsPath);
   await vscode.commands.executeCommand(
@@ -655,7 +662,9 @@ async function exercisePackagedFileLaunchSurfaces(
   );
   await page.bringToFront();
   await titleAction.first().waitFor({ state: "visible", timeout: 10_000 });
+  recordAcceptanceProgress("verify:file-launch:third-party-editor:open");
   await titleAction.first().click();
+  recordAcceptanceProgress("verify:file-launch:third-party-editor:import");
   await acceptDefaultDelimitedImport(page);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === customEditorFixture.fsPath,
@@ -680,6 +689,7 @@ async function exercisePackagedFileLaunchSurfaces(
     "the third-party custom-editor launch session to dispose"
   );
 
+  recordAcceptanceProgress("verify:file-launch:duplicate-action-guards");
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
@@ -708,6 +718,7 @@ async function exercisePackagedFileLaunchSurfaces(
     "the launch-surface custom editor to dispose"
   );
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  recordAcceptanceProgress("verify:file-launch:complete");
 }
 
 async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
@@ -834,6 +845,7 @@ async function capturePackagedEditorScreenshots(
   outputDirectory: string
 ): Promise<void> {
   if (process.platform !== "linux") return;
+  recordAcceptanceProgress("verify:screenshots:open");
   mkdirSync(outputDirectory, { recursive: true });
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
@@ -864,6 +876,7 @@ async function capturePackagedEditorScreenshots(
   const lightTheme = contributedTheme("vs", "Default Light Modern");
   const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
   try {
+    recordAcceptanceProgress("verify:screenshots:prepare");
     await workbench.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update(
       "title",
@@ -878,14 +891,18 @@ async function capturePackagedEditorScreenshots(
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
     await prepareWorkbenchForEvidence();
     await new Promise((resolve) => setTimeout(resolve, 800));
+    recordAcceptanceProgress("verify:screenshots:dark");
     await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, `${editor}-dark.png`);
+    recordAcceptanceProgress("verify:screenshots:light");
     await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, `${editor}-light.png`);
+    recordAcceptanceProgress("verify:screenshots:high-contrast");
     await captureTheme(
       highContrastTheme,
       vscode.ColorThemeKind.HighContrast,
       4,
       `${editor}-high-contrast-zoom-200.png`
     );
+    recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
     await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
     await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
@@ -912,6 +929,7 @@ async function capturePackagedEditorScreenshots(
       "the screenshot session and runtime to close"
     );
   }
+  recordAcceptanceProgress("verify:screenshots:complete");
 
   async function captureTheme(
     theme: string,
@@ -1009,6 +1027,7 @@ async function capturePackagedEditorScreenshots(
 }
 
 async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
+  recordAcceptanceProgress("verify:notebook:fixture");
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-notebook-"));
   const notebookPath = path.join(directory, "notebook-acceptance.ipynb");
   const configuration = vscode.workspace.getConfiguration("openWrangler");
@@ -1087,12 +1106,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   );
 
   try {
+    recordAcceptanceProgress("verify:notebook:document-open");
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     const notebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
     await vscode.window.showNotebookDocument(notebook);
     const outputMimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
 
+    recordAcceptanceProgress("verify:notebook:direct-insertion");
     const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
       source: "df",
       backend: "polars"
@@ -1108,6 +1129,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     assert.equal(typeof notebook.cellAt(1).metadata.openWrangler.insertionId, "string");
 
+    recordAcceptanceProgress("verify:notebook:jupyter-activate");
     const jupyterExtension = vscode.extensions.getExtension<FakeJupyterApi>("ms-toolsai.jupyter");
     assert.ok(jupyterExtension, "The stable Jupyter API acceptance extension must be available.");
     const jupyter = await jupyterExtension.activate();
@@ -1125,8 +1147,10 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})",
       "renderer_frame = pl.DataFrame({'value': [101]})"
     ].join("\n");
+    recordAcceptanceProgress("verify:notebook:kernel-setup");
     await jupyter.testing.execute(notebook.uri, setupCode);
 
+    recordAcceptanceProgress("verify:notebook:pandas-basic:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
       notebookUri: notebook.uri
@@ -1140,6 +1164,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(active?.metadata.backend, "pandas");
     assert.equal(active?.metadata.capabilities.notebookInsert, true);
     if (!active) throw new Error("Pandas notebook session did not become active.");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:page");
     const pandasPage = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -1153,6 +1178,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(pandasPage.kind, "page");
     if (pandasPage.kind !== "page") throw new Error("Pandas notebook page did not resolve.");
     assert.equal(pandasPage.page.rows[1]?.values[0]?.display, "2");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:preview");
     const preview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -1173,6 +1199,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     assert.equal(preview.kind, "stepPreview");
     if (preview.kind !== "stepPreview") throw new Error("Pandas notebook step did not preview.");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:apply");
     const applied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -1186,6 +1213,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     const editedNotebookCode = "# edited notebook export\ndef clean_data(df):\n    return df\n";
     testing.setCodeForExport(editedNotebookCode);
     const insertionIndex = notebook.cellCount;
+    recordAcceptanceProgress("verify:notebook:pandas-basic:insert");
     await vscode.commands.executeCommand("openWrangler.insertNotebookCode");
     await waitFor(
       () => notebook.cellCount === insertionIndex + 1,
@@ -1201,9 +1229,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       insertionId: pandasInsertionMetadata.insertionId
     });
     assert.equal(typeof pandasInsertionMetadata.insertionId, "string");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the Pandas notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
 
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "duplicate_frame",
       notebookUri: notebook.uri
@@ -1266,6 +1296,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     ];
 
     for (const [index, step] of valueSteps.entries()) {
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:value:${step.kind}:preview`);
       const valuePreview = await testing.request({
         kind: "previewStep",
         ...GRID_COLUMN_WINDOW,
@@ -1323,6 +1354,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         ]);
       }
 
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:value:${step.kind}:apply`);
       const valueApplied = await testing.request({
         kind: "applyDraft",
         ...GRID_COLUMN_WINDOW,
@@ -1400,6 +1432,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     ];
 
     for (const [index, step] of duplicateSteps.entries()) {
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:rows:${step.kind}:preview`);
       const duplicatePreview = await testing.request({
         kind: "previewStep",
         ...GRID_COLUMN_WINDOW,
@@ -1430,6 +1463,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         expectedThirdColumnAfterStep[index],
         `${step.kind} must target the selected duplicate or integer-labelled column before apply.`
       );
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:rows:${step.kind}:apply`);
       const duplicateApplied = await testing.request({
         kind: "applyDraft",
         ...GRID_COLUMN_WINDOW,
@@ -1461,6 +1495,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Cleaning steps must not mutate the originating notebook dataframe before kernel recovery."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:replay");
     const duplicateGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const duplicateReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(duplicateReplacementGeneration > duplicateGeneration);
@@ -1517,6 +1552,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /"position"\s*:/u,
       "Kernel replay must retain position-free public references."
     );
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the duplicate-column Pandas notebook session");
     await waitFor(
       () => testing.diagnostics().sessionCount === 0,
@@ -1534,6 +1570,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Cleaning steps must not mutate the originating notebook dataframe."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-structural:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "structural_frame",
       notebookUri: notebook.uri
@@ -1668,6 +1705,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     let structuralCombined: ColumnReference | undefined;
     let structuralLength: ColumnReference | undefined;
     for (const [index, step] of structuralSteps.entries()) {
+      recordAcceptanceProgress(`verify:notebook:pandas-structural:${step.kind}:preview`);
       const structuralPreview = await testing.request({
         kind: "previewStep",
         ...GRID_COLUMN_WINDOW,
@@ -1757,6 +1795,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         assert.equal(renamed.position, 1, "Rename Column must bind after select and drop shifted the input twice.");
       }
 
+      recordAcceptanceProgress(`verify:notebook:pandas-structural:${step.kind}:apply`);
       const structuralApplied = await testing.request({
         kind: "applyDraft",
         ...GRID_COLUMN_WINDOW,
@@ -1835,6 +1874,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Structural operations must not mutate the originating duplicate-column dataframe."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-structural:replay");
     const structuralGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const structuralReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(structuralReplacementGeneration > structuralGeneration);
@@ -1892,6 +1932,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /\bTrue\b/u,
       "Structural replay must leave the recreated notebook dataframe immutable."
     );
+    recordAcceptanceProgress("verify:notebook:pandas-structural:close");
     await disposePackagedSessionPanel(
       testing,
       structuralSessionId,
@@ -1904,6 +1945,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
     assert.deepEqual(testing.diagnostics().sessions, [], "Structural acceptance must retain no session.");
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "identity_frame",
       notebookUri: notebook.uri
@@ -1927,6 +1969,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
     assert.equal(identityIntegerLabel.name, "7");
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:by-example-preview");
     const identityExamplePreview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -1982,6 +2025,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Private by-example positions must not leak into public draft metadata."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:by-example-apply");
     const identityExampleApplied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -1995,6 +2039,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       throw new Error("Stable-reference by-example apply did not resolve.");
     }
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:group-preview");
     const identityGroupPreview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -2047,6 +2092,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Private group-by positions must not leak into public draft metadata."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:group-apply");
     const identityGroupApplied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -2075,6 +2121,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Group-by/by-example steps must not mutate the notebook source before recovery."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:replay");
     const identityGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const identityReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(identityReplacementGeneration > identityGeneration);
@@ -2113,6 +2160,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /"position"\s*:/u,
       "Kernel replay must retain position-free public group-by/by-example references."
     );
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:close");
     await disposePackagedSessionPanel(
       testing,
       identitySessionId,
@@ -2138,6 +2186,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Recovered group-by/by-example steps must leave the notebook source immutable."
     );
 
+    recordAcceptanceProgress("verify:notebook:polars:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "polars_frame",
       notebookUri: notebook.uri
@@ -2150,6 +2199,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     active = testing.activeSession();
     assert.equal(active?.metadata.backend, "polars");
     if (!active) throw new Error("Polars notebook session did not become active.");
+    recordAcceptanceProgress("verify:notebook:polars:replay");
     const generation = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const replacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(replacementGeneration > generation);
@@ -2166,6 +2216,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(recovered.kind, "page", "The Polars notebook session must replay after kernel replacement.");
     if (recovered.kind !== "page") throw new Error("Polars notebook recovery did not return a page.");
     assert.equal(recovered.page.rows[0]?.values[0]?.display, "3");
+    recordAcceptanceProgress("verify:notebook:polars:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the Polars notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Polars notebook session to close");
 
@@ -2176,6 +2227,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       await exercisePackagedSameGroupRendererSwitch(jupyter, notebook, currentPayload, directory);
     }
 
+    recordAcceptanceProgress("verify:notebook:permission-denial");
     const denialCalls = jupyter.testing.denialCalls();
     jupyter.testing.setDenied(true);
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
@@ -2207,6 +2259,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       recordAcceptanceProgress("verify:notebook-renderer-snapshot");
       await exercisePackagedSavedSnapshot(testing, jupyter, directory);
     }
+    recordAcceptanceProgress("verify:notebook:complete");
   } finally {
     await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
     rmSync(directory, { recursive: true, force: true });
@@ -2362,6 +2415,7 @@ async function exercisePackagedSavedSnapshot(
       ],
       sort: [{ column: "score", direction: "desc", nulls: "last" }]
     };
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:page");
     const projected = await testing.request({
       kind: "getPage",
       sessionId: active.sessionId,
@@ -2387,6 +2441,7 @@ async function exercisePackagedSavedSnapshot(
     assert.equal(projected.page.totalRows, 2);
     assert.deepEqual(projected.metadata.filteredShape, { rows: 2, columns: 3 });
 
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:summary");
     const summary = await testing.request({
       kind: "getSummary",
       sessionId: active.sessionId,
@@ -2421,6 +2476,7 @@ async function exercisePackagedSavedSnapshot(
       }
     ]);
 
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:statistics");
     const statistics = await testing.request({
       kind: "getDatasetStats",
       sessionId: active.sessionId,
@@ -2441,6 +2497,7 @@ async function exercisePackagedSavedSnapshot(
       ]
     });
 
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:values");
     const values = await testing.request({
       kind: "getColumnValues",
       sessionId: active.sessionId,
@@ -2924,6 +2981,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       scrollLeft: 75
     }
   ]) {
+    recordAcceptanceProgress(`seed:${target.backend}:open`);
     const opened = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
@@ -2935,6 +2993,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     assert.equal(opened.kind, "sessionOpened");
     if (opened.kind !== "sessionOpened") continue;
 
+    recordAcceptanceProgress(`seed:${target.backend}:preview`);
     const preview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -2956,6 +3015,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     assert.equal(preview.kind, "stepPreview");
     if (preview.kind !== "stepPreview") continue;
 
+    recordAcceptanceProgress(`seed:${target.backend}:apply`);
     const applied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -2967,6 +3027,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     assert.equal(applied.kind, "planUpdated");
     if (applied.kind !== "planUpdated") continue;
 
+    recordAcceptanceProgress(`seed:${target.backend}:page`);
     const page = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -2987,12 +3048,14 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     );
     const salesColumnId = page.metadata.schema.find((column) => column.name === "sales")?.id;
     assert.ok(salesColumnId);
+    recordAcceptanceProgress(`seed:${target.backend}:view-state`);
     await testing.updateViewState(opened.metadata.sessionId, {
       columnWidths: { [salesColumnId]: target.width },
       selectedColumnId: salesColumnId,
       viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
     });
 
+    recordAcceptanceProgress(`seed:${target.backend}:close`);
     const closed = await testing.request({
       kind: "closeSession",
       sessionId: opened.metadata.sessionId,
@@ -3005,6 +3068,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       `the seeded ${target.backend} session and standalone runtime to close`
     );
 
+    recordAcceptanceProgress(`seed:${target.backend}:readback-open`);
     const readback = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
@@ -3026,6 +3090,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       selectedColumnId: salesColumnId,
       viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
     });
+    recordAcceptanceProgress(`seed:${target.backend}:readback-close`);
     const readbackClosed = await testing.request({
       kind: "closeSession",
       sessionId: readback.metadata.sessionId,
@@ -3037,6 +3102,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       10_000,
       `the ${target.backend} persistence readback session to close`
     );
+    recordAcceptanceProgress(`seed:${target.backend}:complete`);
   }
   await new Promise((resolve) => setTimeout(resolve, 1_000));
 }
