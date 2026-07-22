@@ -380,25 +380,40 @@ test(
   "bounded editor commands return capped output without a shell",
   { timeout: process.platform === "win32" ? 330_000 : 10_000 },
   async () => {
-    // A cold Windows PowerShell 5.1 Add-Type compilation can take tens of
-    // seconds under CI antivirus scanning. Prepare it once under its own hard
-    // bootstrap bound so this invocation's two-second deadline remains a real
-    // command bound instead of killing the one-time compiler halfway through.
-    if (process.platform === "win32") {
-      await prepareWindowsEditorProcessSupervisor({}, { platform: "win32" });
+    let privateRoot;
+    let removePrivateRoot = true;
+    let environment = {};
+    try {
+      // A cold Windows PowerShell 5.1 Add-Type compilation can take tens of
+      // seconds under CI antivirus scanning. Prepare it once under its own hard
+      // bootstrap bound so this invocation's two-second deadline remains a real
+      // command bound instead of killing the one-time compiler halfway through.
+      if (process.platform === "win32") {
+        environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+        const privateParent = join(tmpdir(), "ow");
+        await mkdir(privateParent, { recursive: true, mode: 0o700 });
+        privateRoot = await mkdtemp(join(privateParent, "x-"));
+        configureEditorAcceptanceTempRoot(privateRoot, environment);
+        await prepareWindowsEditorProcessSupervisor(environment, { platform: "win32" });
+      }
+      const result = await runBoundedEditorCommand(
+        {
+          executable: process.execPath,
+          args: ["-e", 'process.stdout.write("version 1.2.3\\n"); process.stderr.write("diagnostic\\n")'],
+          environment,
+          label: "acceptance command"
+        },
+        { timeoutMs: 2_000 }
+      );
+      assert.equal(result.stdout, "version 1.2.3\n");
+      assert.equal(result.stderr, "diagnostic\n");
+      assert.equal(EDITOR_COMMAND_OUTPUT_MAX_BYTES, 1024 * 1024);
+    } catch (error) {
+      if (editorProcessTreeMayBeLive(error)) removePrivateRoot = false;
+      throw error;
+    } finally {
+      if (privateRoot && removePrivateRoot) await rm(privateRoot, { recursive: true, force: true });
     }
-    const result = await runBoundedEditorCommand(
-      {
-        executable: process.execPath,
-        args: ["-e", 'process.stdout.write("version 1.2.3\\n"); process.stderr.write("diagnostic\\n")'],
-        environment: {},
-        label: "acceptance command"
-      },
-      { timeoutMs: 2_000 }
-    );
-    assert.equal(result.stdout, "version 1.2.3\n");
-    assert.equal(result.stderr, "diagnostic\n");
-    assert.equal(EDITOR_COMMAND_OUTPUT_MAX_BYTES, 1024 * 1024);
   }
 );
 
@@ -956,7 +971,7 @@ test(
               "const targetStartedAt = Date.now();",
               "process.stdout.write(JSON.stringify({ targetStartedAt }));",
               "process.stderr.write('native stderr');",
-              "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { stdio: 'ignore' }).unref();"
+              "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { detached: true, stdio: 'ignore' }).unref();"
             ].join(" ")
           ],
           environment,

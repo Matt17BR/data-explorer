@@ -610,21 +610,12 @@ async function exercisePackagedFileLaunchSurfaces(
     10_000,
     "the source tab to become active before opening its context menu"
   );
-  const tabMenuAction = page
-    .locator('.context-view.monaco-menu-container:visible [role="menuitem"]')
-    .filter({
-      has: page.locator('.action-label[aria-label="Open in Open Wrangler"]')
-    })
-    .last();
-  await activeSourceTab.click({ button: "right" });
-  try {
-    await tabMenuAction.waitFor({ state: "visible", timeout: 3_000 });
-  } catch {
-    await page.keyboard.press("Escape");
-    await activeSourceTab.click({ button: "right" });
-    await tabMenuAction.waitFor({ state: "visible", timeout: 10_000 });
-  }
-  await page.waitForTimeout(350);
+  const { menu: tabContextMenu, action: tabMenuAction } = await openEditorTabContextMenu(
+    page,
+    activeSourceTab,
+    "Open in Open Wrangler"
+  );
+  assert.ok(tabMenuAction, "The source-tab context menu must expose Open in Open Wrangler.");
   assert.equal(
     (await tabMenuAction.innerText()).trim(),
     "Open in Open Wrangler",
@@ -632,6 +623,7 @@ async function exercisePackagedFileLaunchSurfaces(
   );
   if (outputDirectory) {
     recordAcceptanceProgress("verify:file-launch:tab-context:screenshot");
+    await tabContextMenu.waitFor({ state: "visible", timeout: 1_000 });
     await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-tab-context-menu.png`));
   }
   recordAcceptanceProgress("verify:file-launch:tab-context:open");
@@ -713,10 +705,9 @@ async function exercisePackagedFileLaunchSurfaces(
     .locator(".tabs-container .tab.active")
     .filter({ hasText: path.basename(fixture.fsPath) })
     .last();
-  await openWranglerTab.click({ button: "right" });
-  await page.waitForTimeout(350);
+  const { menu: openWranglerContextMenu } = await openEditorTabContextMenu(page, openWranglerTab);
   assert.equal(
-    await tabMenuAction.count(),
+    await openWranglerContextMenu.getByRole("menuitem", { name: "Open in Open Wrangler", exact: true }).count(),
     0,
     "The Open Wrangler custom-editor tab must not offer a duplicate open action."
   );
@@ -729,6 +720,68 @@ async function exercisePackagedFileLaunchSurfaces(
   );
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   recordAcceptanceProgress("verify:file-launch:complete");
+}
+
+interface ContextMenuDiagnostic {
+  attempt: number;
+  menus: Array<{
+    text: string;
+    items: Array<{ role: string | null; text: string; ariaLabel: string | null; labelAriaLabel: string | null }>;
+  }>;
+}
+
+async function openEditorTabContextMenu(
+  page: Page,
+  tab: Locator,
+  requiredActionName?: string
+): Promise<{ menu: Locator; action?: Locator }> {
+  const diagnostics: ContextMenuDiagnostic[] = [];
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await page.keyboard.press("Escape");
+    const visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
+    await visibleMenus.waitFor({ state: "hidden", timeout: 1_000 }).catch(() => {});
+    await tab.click({ button: "right" });
+
+    const menu = visibleMenus.last();
+    const action = requiredActionName
+      ? menu.getByRole("menuitem", { name: requiredActionName, exact: true }).last()
+      : undefined;
+    try {
+      await menu.waitFor({ state: "visible", timeout: 3_000 });
+      if (action) await action.waitFor({ state: "visible", timeout: 3_000 });
+      // VS Code intentionally attaches a menu item's mouse-up handler after a
+      // 100 ms guard so the click that opened the menu cannot also invoke it.
+      await page.waitForTimeout(200);
+      return { menu, action };
+    } catch (error) {
+      lastError = error;
+      diagnostics.push({ attempt, menus: await inspectVisibleContextMenus(page) });
+    }
+  }
+
+  throw new Error(
+    `The editor-tab context menu did not expose ${requiredActionName ? JSON.stringify(requiredActionName) : "a visible HTML menu"} after two right-click attempts. Visible menu diagnostics: ${JSON.stringify(diagnostics)}`,
+    { cause: lastError }
+  );
+}
+
+async function inspectVisibleContextMenus(page: Page): Promise<ContextMenuDiagnostic["menus"]> {
+  return page.locator(".context-view.monaco-menu-container:visible").evaluateAll((menus) =>
+    menus.map((menu) => ({
+      text: (menu.textContent ?? "").replace(/\s+/gu, " ").trim(),
+      items: Array.from(menu.querySelectorAll('[role^="menuitem"]')).map((item) => {
+        const element = item as typeof menu;
+        return {
+          role: element.getAttribute("role"),
+          text: (element.textContent ?? "").replace(/\s+/gu, " ").trim(),
+          ariaLabel: element.getAttribute("aria-label"),
+          labelAriaLabel: element.querySelector(".action-label")?.getAttribute("aria-label") ?? null
+        };
+      })
+    }))
+  );
 }
 
 async function acceptDefaultDelimitedImport(page: Page): Promise<void> {

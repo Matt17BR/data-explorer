@@ -233,7 +233,11 @@ try {
                 mkdirSync(workspace, { recursive: true });
                 cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
                 writeEditorAcceptanceHarness(profile);
-                writeEditorSettings(userData, { "window.dialogStyle": "custom", "files.simpleDialog.enable": true });
+                writeEditorSettings(userData, {
+                  "window.dialogStyle": "custom",
+                  "window.menuStyle": "custom",
+                  "files.simpleDialog.enable": true
+                });
                 const fakeJupyter = resolve(profile, "fake-jupyter");
                 writeFakeJupyterExtension(fakeJupyter);
                 const sandboxArgs = [

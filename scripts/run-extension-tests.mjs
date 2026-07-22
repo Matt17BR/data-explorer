@@ -80,8 +80,13 @@ try {
   const extensions = resolve(profile, "reload-extensions");
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
   writeEditorAcceptanceHarness(harness);
-  writeEditorSettings(singleUserData, { "window.dialogStyle": "custom", "files.simpleDialog.enable": true });
-  writeEditorSettings(userData, { "window.dialogStyle": "custom", "files.simpleDialog.enable": true });
+  const workbenchSettings = {
+    "window.dialogStyle": "custom",
+    "window.menuStyle": "custom",
+    "files.simpleDialog.enable": true
+  };
+  writeEditorSettings(singleUserData, workbenchSettings);
+  writeEditorSettings(userData, workbenchSettings);
   const editor = {
     name: "VS Code",
     key: "vscode",
