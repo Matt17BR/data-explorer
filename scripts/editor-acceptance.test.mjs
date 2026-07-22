@@ -42,6 +42,7 @@ import {
   spawnOwnedEditorProcess,
   runEditorAcceptancePhase,
   sanitizeEditorAcceptanceDiagnostic,
+  signalPosixEditorTree,
   startIsolatedEditorDisplay,
   validateEditorAcceptancePrivatePathOverrides,
   waitForEditorAcceptanceObservation,
@@ -375,20 +376,31 @@ test("editor runners keep profiles, runtimes, and subprocess temporaries under o
   }
 });
 
-test("bounded editor commands return capped output without a shell", async () => {
-  const result = await runBoundedEditorCommand(
-    {
-      executable: process.execPath,
-      args: ["-e", 'process.stdout.write("version 1.2.3\\n"); process.stderr.write("diagnostic\\n")'],
-      environment: {},
-      label: "acceptance command"
-    },
-    { timeoutMs: 2_000 }
-  );
-  assert.equal(result.stdout, "version 1.2.3\n");
-  assert.equal(result.stderr, "diagnostic\n");
-  assert.equal(EDITOR_COMMAND_OUTPUT_MAX_BYTES, 1024 * 1024);
-});
+test(
+  "bounded editor commands return capped output without a shell",
+  { timeout: process.platform === "win32" ? 330_000 : 10_000 },
+  async () => {
+    // A cold Windows PowerShell 5.1 Add-Type compilation can take tens of
+    // seconds under CI antivirus scanning. Prepare it once under its own hard
+    // bootstrap bound so this invocation's two-second deadline remains a real
+    // command bound instead of killing the one-time compiler halfway through.
+    if (process.platform === "win32") {
+      await prepareWindowsEditorProcessSupervisor({}, { platform: "win32" });
+    }
+    const result = await runBoundedEditorCommand(
+      {
+        executable: process.execPath,
+        args: ["-e", 'process.stdout.write("version 1.2.3\\n"); process.stderr.write("diagnostic\\n")'],
+        environment: {},
+        label: "acceptance command"
+      },
+      { timeoutMs: 2_000 }
+    );
+    assert.equal(result.stdout, "version 1.2.3\n");
+    assert.equal(result.stderr, "diagnostic\n");
+    assert.equal(EDITOR_COMMAND_OUTPUT_MAX_BYTES, 1024 * 1024);
+  }
+);
 
 test("editor downloads run each retry through the bounded isolated helper protocol", async () => {
   const calls = [];
@@ -584,6 +596,19 @@ test("downloaded macOS editors use the official CLI resolver instead of the GUI 
     "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
   );
   assert.equal(resolveDownloadedEditorCliPath("C:\\VSCode\\Code.exe", "win32"), "C:\\VSCode\\Code.exe");
+});
+
+test("the Windows supervisor clock stays within the Windows PowerShell 5.1 compiler surface", async () => {
+  const script = await readFile(new URL("./windows-job-supervisor.ps1", import.meta.url), "utf8");
+  const source = /\$nativeSource = @'\r?\n([\s\S]*?)\r?\n'@/u.exec(script)?.[1];
+  assert.equal(typeof source, "string");
+  const code = source.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/\/\/.*$/gmu, "");
+  assert.doesNotMatch(code, /\bEnvironment\.TickCount64\b/u);
+  assert.match(code, /terminationStarted = unchecked\(\(uint\)Environment\.TickCount\)/u);
+  assert.match(
+    code,
+    /unchecked\(\(uint\)Environment\.TickCount - terminationStarted\)\s*>\s*\(uint\)TerminationDeadlineMilliseconds/u
+  );
 });
 
 test("the Windows supervisor is compiled once per private root and pinned before launch", async () => {
@@ -3285,7 +3310,7 @@ test("harness failures and result serialization remain within their producer-sid
   assert.equal(serializeEditorAcceptanceHarnessOutcome(circular, envelope), serialized);
 });
 
-test("POSIX editor process-group probes include descendants and tolerate a fully exited tree", () => {
+test("POSIX editor process-group probes include descendants and tolerate exited or permission-mixed trees", () => {
   const probes = [];
   assert.equal(
     editorProcessGroupRunning(731, (pid, signal) => {
@@ -3302,14 +3327,54 @@ test("POSIX editor process-group probes include descendants and tolerate a fully
     }),
     false
   );
+  assert.equal(
+    editorProcessGroupRunning(731, () => {
+      const error = new Error("permission denied");
+      error.code = "EPERM";
+      throw error;
+    }),
+    true,
+    "Darwin EPERM proves the process group still has at least one member"
+  );
+});
+
+test("POSIX process-group permission failures fall back to the owned leader without weakening final verification", () => {
+  const child = fakeCommandChild(739);
+  const directSignals = [];
+  child.kill = (signal) => {
+    directSignals.push(signal);
+    return true;
+  };
+  signalPosixEditorTree(
+    child,
+    () => true,
+    true,
+    "SIGTERM",
+    (pid, signal) => {
+      assert.deepEqual([pid, signal], [-739, "SIGTERM"]);
+      const error = new Error("permission-mixed Darwin process group");
+      error.code = "EPERM";
+      throw error;
+    }
+  );
+  assert.deepEqual(directSignals, ["SIGTERM"]);
+
+  child.kill = () => false;
   assert.throws(
     () =>
-      editorProcessGroupRunning(731, () => {
-        const error = new Error("permission denied");
-        error.code = "EPERM";
-        throw error;
-      }),
-    { code: "EPERM" }
+      signalPosixEditorTree(
+        child,
+        () => true,
+        true,
+        "SIGKILL",
+        () => {
+          const error = new Error("permission-mixed Darwin process group");
+          error.code = "EPERM";
+          throw error;
+        }
+      ),
+    { code: "EPERM" },
+    "an unsignalled leader must leave ownership unverified"
   );
 });
 

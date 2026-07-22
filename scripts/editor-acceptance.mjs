@@ -3481,15 +3481,25 @@ async function signalEditorTree(
     );
     return;
   }
+  signalPosixEditorTree(child, isRunning, ownsProcessGroup, signal);
+}
+
+export function signalPosixEditorTree(child, isRunning, ownsProcessGroup, signal, signalProcess = process.kill) {
+  let groupPermissionError;
   if (ownsProcessGroup && child.pid !== undefined) {
     try {
-      process.kill(-child.pid, signal);
+      signalProcess(-child.pid, signal);
       return;
     } catch (error) {
-      if (!(error && typeof error === "object" && error.code === "ESRCH")) throw error;
+      if (error && typeof error === "object" && error.code === "EPERM") groupPermissionError = error;
+      else if (!(error && typeof error === "object" && error.code === "ESRCH")) throw error;
     }
   }
-  if (isRunning()) child.kill(signal);
+  if (isRunning()) {
+    const signaled = child.kill(signal);
+    if (signaled || !groupPermissionError) return;
+  }
+  if (groupPermissionError) throw groupPermissionError;
 }
 
 function boundedErrorMessage(error) {
@@ -3526,6 +3536,10 @@ export function editorProcessGroupRunning(pid, signalProcess = process.kill) {
     return true;
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ESRCH") return false;
+    // Darwin reports EPERM when any member of a process group cannot be
+    // signalled. The group still exists, so keep treating it as live and let
+    // termination fall back to the owned group leader before re-probing.
+    if (error && typeof error === "object" && error.code === "EPERM") return true;
     throw error;
   }
 }

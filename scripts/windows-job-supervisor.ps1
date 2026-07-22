@@ -1093,7 +1093,7 @@ namespace OpenWrangler.Acceptance
                     controlThread.Start();
 
                     bool terminating = false;
-                    long terminationStarted = 0;
+                    uint terminationStarted = 0;
                     while (true)
                     {
                         ControlEvent control;
@@ -1118,7 +1118,12 @@ namespace OpenWrangler.Acceptance
                                 job.Terminate(ExplicitTerminationExitCode);
                             }
                             terminating = true;
-                            terminationStarted = Environment.TickCount64;
+                            // Windows PowerShell 5.1's Add-Type compiler targets
+                            // the .NET Framework reference surface, where
+                            // Environment.TickCount64 is unavailable. Unsigned
+                            // subtraction keeps the 32-bit counter wrap-safe for
+                            // this bounded ten-second interval.
+                            terminationStarted = unchecked((uint)Environment.TickCount);
                         }
 
                         uint active = job.ActiveProcessCount();
@@ -1136,7 +1141,8 @@ namespace OpenWrangler.Acceptance
                         }
 
                         if (terminating &&
-                            Environment.TickCount64 - terminationStarted > TerminationDeadlineMilliseconds)
+                            unchecked((uint)Environment.TickCount - terminationStarted) >
+                            (uint)TerminationDeadlineMilliseconds)
                             throw new NativeFailure("termination-timeout");
                     }
                 }
