@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  opendirSync,
   readSync,
   realpathSync,
   renameSync,
@@ -18,7 +19,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, posix, relative, resolve } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -917,11 +918,168 @@ function parseEditorDownloadResult(stdout, version) {
 }
 
 export function resolveDownloadedEditorCliPath(executablePath, platform = process.platform) {
-  if (platform === "win32") return executablePath;
+  if (platform === "win32") {
+    const executableName = win32.basename(executablePath).toLowerCase();
+    if (executableName !== "code.exe" && executableName !== "code - insiders.exe") {
+      throw new Error("A downloaded Windows VS Code executable has an unsupported product filename.");
+    }
+    return win32.resolve(
+      win32.dirname(executablePath),
+      "bin",
+      executableName === "code - insiders.exe" ? "code-insiders.cmd" : "code.cmd"
+    );
+  }
   if (platform === "darwin") {
     return posix.resolve(posix.dirname(executablePath), "../Resources/app/bin/code");
   }
   return resolveCliPathFromVSCodeExecutablePath(executablePath, platform);
+}
+
+function isContainedWindowsPath(parent, candidate) {
+  const child = win32.relative(parent, candidate);
+  return child.length > 0 && child !== ".." && !child.startsWith(`..${win32.sep}`) && !win32.isAbsolute(child);
+}
+
+function validateWindowsEditorCliPath(path, description) {
+  if (
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.length > 16_384 ||
+    /[\0\r\n]/u.test(path) ||
+    !win32.isAbsolute(path)
+  ) {
+    throw new Error(`The Windows editor ${description} must be one absolute, bounded path.`);
+  }
+  return win32.resolve(path);
+}
+
+function readBoundedWindowsEditorInstallationEntries(root) {
+  const directory = opendirSync(root);
+  const entries = [];
+  try {
+    while (true) {
+      const entry = directory.readSync();
+      if (!entry) return entries;
+      if (entries.length >= 4_096) {
+        throw new Error("The Windows editor installation root contains too many entries for bounded discovery.");
+      }
+      entries.push(entry);
+    }
+  } finally {
+    directory.closeSync();
+  }
+}
+
+/**
+ * Resolve the direct equivalent of VS Code's Windows `bin/code.cmd` launcher.
+ * The wrapper itself is deliberately never executed: setup remains shell-free,
+ * while Electron runs the installation's own CLI entry point in Node mode.
+ */
+export function resolveEditorCliLaunch(
+  editor,
+  environment = createEditorAcceptanceEnvironment(),
+  {
+    platform = process.platform,
+    lstatPath = lstatSync,
+    realpathPath = realpathSync,
+    readInstallationEntries = readBoundedWindowsEditorInstallationEntries
+  } = {}
+) {
+  if (!editor || typeof editor !== "object") throw new Error("An editor CLI launch requires editor metadata.");
+  if (platform !== "win32") {
+    if (typeof editor.cli !== "string" || editor.cli.length === 0) {
+      throw new Error("An editor CLI launch requires a CLI executable.");
+    }
+    return { executable: editor.cli, argsPrefix: [], environment };
+  }
+
+  const executable = validateWindowsEditorCliPath(editor.executable, "executable");
+  const wrapper = validateWindowsEditorCliPath(editor.cli, "CLI wrapper");
+  const installationRoot = win32.dirname(executable);
+  const wrapperDirectory = win32.resolve(installationRoot, "bin");
+  if (
+    win32.dirname(wrapper).toLowerCase() !== wrapperDirectory.toLowerCase() ||
+    win32.extname(wrapper).toLowerCase() !== ".cmd"
+  ) {
+    throw new Error("The Windows editor CLI wrapper must be a direct child of its installation's bin directory.");
+  }
+  let canonicalRoot;
+  let canonicalExecutable;
+  let canonicalWrapper;
+  let canonicalEntryPoint;
+  let cliEntryPoint;
+  try {
+    const rootSnapshot = lstatPath(installationRoot);
+    const executableSnapshot = lstatPath(executable);
+    const wrapperSnapshot = lstatPath(wrapper);
+    if (
+      rootSnapshot.isSymbolicLink() ||
+      !rootSnapshot.isDirectory() ||
+      executableSnapshot.isSymbolicLink() ||
+      !executableSnapshot.isFile() ||
+      wrapperSnapshot.isSymbolicLink() ||
+      !wrapperSnapshot.isFile()
+    ) {
+      throw new Error("invalid editor installation file type");
+    }
+
+    const entryPointCandidates = [win32.resolve(installationRoot, "resources", "app", "out", "cli.js")];
+    const entries = readInstallationEntries(installationRoot);
+    if (!Array.isArray(entries) || entries.length > 4_096) throw new Error("invalid bounded directory result");
+    for (const entry of entries) {
+      if (!entry || typeof entry.name !== "string" || entry.name.length > 255) {
+        throw new Error("invalid editor installation directory entry");
+      }
+      if (!/^[0-9a-f]{10}$/iu.test(entry.name)) continue;
+      if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("invalid versioned editor directory");
+      const versionRoot = win32.resolve(installationRoot, entry.name);
+      const versionSnapshot = lstatPath(versionRoot);
+      if (versionSnapshot.isSymbolicLink() || !versionSnapshot.isDirectory()) {
+        throw new Error("invalid versioned editor directory type");
+      }
+      entryPointCandidates.push(win32.resolve(versionRoot, "resources", "app", "out", "cli.js"));
+    }
+
+    const verifiedEntryPoints = [];
+    for (const candidate of entryPointCandidates) {
+      let candidateSnapshot;
+      try {
+        candidateSnapshot = lstatPath(candidate);
+      } catch (error) {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR") continue;
+        throw error;
+      }
+      if (candidateSnapshot.isSymbolicLink() || !candidateSnapshot.isFile()) {
+        throw new Error("invalid editor CLI entry point type");
+      }
+      verifiedEntryPoints.push(candidate);
+    }
+    if (verifiedEntryPoints.length !== 1) throw new Error("ambiguous editor CLI entry point layout");
+    [cliEntryPoint] = verifiedEntryPoints;
+
+    canonicalRoot = realpathPath(installationRoot);
+    canonicalExecutable = realpathPath(executable);
+    canonicalWrapper = realpathPath(wrapper);
+    canonicalEntryPoint = realpathPath(cliEntryPoint);
+  } catch {
+    throw new Error("The Windows editor CLI launch requires a complete regular installation layout.");
+  }
+  if (
+    !isContainedWindowsPath(canonicalRoot, canonicalExecutable) ||
+    !isContainedWindowsPath(canonicalRoot, canonicalWrapper) ||
+    !isContainedWindowsPath(canonicalRoot, canonicalEntryPoint)
+  ) {
+    throw new Error("The Windows editor CLI launch escaped its verified installation root.");
+  }
+
+  return {
+    executable,
+    argsPrefix: [cliEntryPoint],
+    environment: {
+      ...createEditorAcceptanceEnvironmentForPlatform(environment, {}, "win32"),
+      ELECTRON_RUN_AS_NODE: "1"
+    }
+  };
 }
 
 const windowsJobSupervisorBuilds = new Map();
@@ -1635,6 +1793,33 @@ export async function runBoundedEditorCommand(
   }
   if (commandFailure) throw commandFailure;
   return { stdout, stderr };
+}
+
+export async function runBoundedEditorCliCommand(
+  { editor, args = [], environment = createEditorAcceptanceEnvironment(), label = "Editor CLI command" },
+  {
+    platform = process.platform,
+    lstatPath = lstatSync,
+    realpathPath = realpathSync,
+    readInstallationEntries = readBoundedWindowsEditorInstallationEntries,
+    ...commandOptions
+  } = {}
+) {
+  const launch = resolveEditorCliLaunch(editor, environment, {
+    platform,
+    lstatPath,
+    realpathPath,
+    readInstallationEntries
+  });
+  return runBoundedEditorCommand(
+    {
+      executable: launch.executable,
+      args: [...launch.argsPrefix, ...args],
+      environment: launch.environment,
+      label
+    },
+    { ...commandOptions, platform }
+  );
 }
 
 function destroyCapturedCommandStdio(child) {

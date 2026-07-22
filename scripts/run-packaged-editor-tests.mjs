@@ -13,7 +13,7 @@ import {
   editorAcceptanceProgressPath,
   editorProcessTreeMayBeLive,
   resolveDownloadedEditorCliPath,
-  runBoundedEditorCommand,
+  runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
   startIsolatedEditorDisplay,
   validateEditorAcceptancePrivatePathOverrides,
@@ -245,23 +245,15 @@ try {
                   ...editorDisplayLaunchArgs()
                 ];
                 const editorEnvironment = createEditorAcceptanceEnvironment();
-                const commandExecutable = process.platform === "win32" ? editor.executable : editor.cli;
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:editor-version");
                 identifiedEditor = {
                   ...editor,
-                  version: await readEditorVersion(
-                    commandExecutable,
-                    editor,
-                    userData,
-                    extensions,
-                    sandboxArgs,
-                    editorEnvironment
-                  )
+                  version: await readEditorVersion(editor, userData, extensions, sandboxArgs, editorEnvironment)
                 };
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-extension");
-                await runBoundedEditorCommand(
+                await runBoundedEditorCliCommand(
                   {
-                    executable: commandExecutable,
+                    editor,
                     args: [
                       "--user-data-dir",
                       userData,
@@ -278,9 +270,9 @@ try {
                   { timeoutMs: 60_000 }
                 );
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
-                const { stdout: installed } = await runBoundedEditorCommand(
+                const { stdout: installed } = await runBoundedEditorCliCommand(
                   {
-                    executable: commandExecutable,
+                    editor,
                     args: [
                       "--user-data-dir",
                       userData,
@@ -643,10 +635,10 @@ function editorEvidenceArtifactBase() {
   return resolve(runnerTemp, "openwrangler-editor-acceptance-artifacts");
 }
 
-async function readEditorVersion(executable, editor, userData, extensions, sandboxArgs, environment) {
-  const { stdout } = await runBoundedEditorCommand(
+async function readEditorVersion(editor, userData, extensions, sandboxArgs, environment) {
+  const { stdout } = await runBoundedEditorCliCommand(
     {
-      executable,
+      editor,
       args: ["--user-data-dir", userData, "--extensions-dir", extensions, "--version", ...sandboxArgs],
       environment,
       label: `${editor.name} version probe`

@@ -37,7 +37,9 @@ import {
   readXvfbDisplayNumber,
   reserveEditorDebugPort,
   resolveDownloadedEditorCliPath,
+  resolveEditorCliLaunch,
   runBoundedEditorCommand,
+  runBoundedEditorCliCommand,
   serializeEditorAcceptanceHarnessOutcome,
   spawnOwnedEditorProcess,
   runEditorAcceptancePhase,
@@ -155,6 +157,7 @@ test("editor subprocesses inherit only an explicit platform and isolation allowl
       PYTHONSTARTUP: "/private/python-startup.py",
       NODE_OPTIONS: "--require=/private/node-hook.cjs",
       NODE_PATH: "/private/node-modules",
+      ELECTRON_RUN_AS_NODE: "1",
       LD_PRELOAD: "/private/preload.so",
       LD_LIBRARY_PATH: "/private/libraries",
       DYLD_INSERT_LIBRARIES: "/private/injected.dylib",
@@ -610,7 +613,310 @@ test("downloaded macOS editors use the official CLI resolver instead of the GUI 
     resolveDownloadedEditorCliPath(executable, "darwin"),
     "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
   );
-  assert.equal(resolveDownloadedEditorCliPath("C:\\VSCode\\Code.exe", "win32"), "C:\\VSCode\\Code.exe");
+  assert.equal(resolveDownloadedEditorCliPath("C:\\VSCode\\Code.exe", "win32"), "C:\\VSCode\\bin\\code.cmd");
+  assert.equal(
+    resolveDownloadedEditorCliPath("C:\\VSCode Insiders\\Code - Insiders.exe", "win32"),
+    "C:\\VSCode Insiders\\bin\\code-insiders.cmd"
+  );
+  assert.throws(
+    () => resolveDownloadedEditorCliPath("C:\\VSCode\\renamed.exe", "win32"),
+    /unsupported product filename/u
+  );
+});
+
+function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
+  const root = "C:\\Program Files\\Microsoft VS Code";
+  const executable = `${root}\\Code.exe`;
+  const cli = `${root}\\bin\\code.cmd`;
+  const entryPoint = versionFolder
+    ? `${root}\\${versionFolder}\\resources\\app\\out\\cli.js`
+    : `${root}\\resources\\app\\out\\cli.js`;
+  const knownFiles = new Set([executable, cli, entryPoint].map((value) => value.toLowerCase()));
+  const knownDirectories = new Set(
+    [root, ...(versionFolder ? [`${root}\\${versionFolder}`] : [])].map((value) => value.toLowerCase())
+  );
+  return {
+    editor: { name: "VS Code", key: "vscode", executable, cli },
+    entryPoint,
+    lstatPath(path) {
+      if (knownDirectories.has(path.toLowerCase())) {
+        return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+      }
+      if (!knownFiles.has(path.toLowerCase())) {
+        const error = new Error("missing synthetic editor path");
+        error.code = "ENOENT";
+        throw error;
+      }
+      return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
+    },
+    realpathPath(path) {
+      if (path.toLowerCase() === entryPoint.toLowerCase() && canonicalEntryPoint) return canonicalEntryPoint;
+      return path;
+    },
+    readInstallationEntries() {
+      return versionFolder
+        ? [
+            {
+              name: versionFolder,
+              isDirectory: () => true,
+              isSymbolicLink: () => false
+            }
+          ]
+        : [];
+    }
+  };
+}
+
+test("Windows editor CLI launches use the verified cli.js entry point and an exact CLI-only environment", () => {
+  const layout = windowsEditorCliLayout();
+  const sourceEnvironment = {
+    Path: "C:\\Windows\\System32",
+    SystemRoot: "C:\\Windows",
+    Temp: "C:\\private\\tmp",
+    ELECTRON_RUN_AS_NODE: "0",
+    VSCODE_DEV: "C:\\untrusted-development-tree",
+    GITHUB_TOKEN: "untrusted-token"
+  };
+  const launch = resolveEditorCliLaunch(layout.editor, sourceEnvironment, {
+    platform: "win32",
+    lstatPath: layout.lstatPath,
+    realpathPath: layout.realpathPath,
+    readInstallationEntries: layout.readInstallationEntries
+  });
+  assert.deepEqual(launch, {
+    executable: layout.editor.executable,
+    argsPrefix: [layout.entryPoint],
+    environment: {
+      PATH: "C:\\Windows\\System32",
+      SYSTEMROOT: "C:\\Windows",
+      TEMP: "C:\\private\\tmp",
+      ELECTRON_RUN_AS_NODE: "1"
+    }
+  });
+  assert.equal(sourceEnvironment.ELECTRON_RUN_AS_NODE, "0", "the caller's environment must remain immutable");
+});
+
+test("Windows editor CLI launch validation rejects wrappers and canonical entry points outside one installation", () => {
+  const layout = windowsEditorCliLayout();
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        { ...layout.editor, executable: "relative\\Code.exe" },
+        { SYSTEMROOT: "C:\\Windows" },
+        { platform: "win32" }
+      ),
+    /must be one absolute, bounded path/u
+  );
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        { ...layout.editor, cli: `${layout.editor.cli}\0escaped` },
+        { SYSTEMROOT: "C:\\Windows" },
+        { platform: "win32" }
+      ),
+    /must be one absolute, bounded path/u
+  );
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        { ...layout.editor, cli: "C:\\other-product\\bin\\code.cmd" },
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath: layout.lstatPath,
+          realpathPath: layout.realpathPath,
+          readInstallationEntries: layout.readInstallationEntries
+        }
+      ),
+    /direct child of its installation's bin directory/u
+  );
+
+  const escaped = windowsEditorCliLayout({ canonicalEntryPoint: "C:\\outside\\cli.js" });
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        escaped.editor,
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath: escaped.lstatPath,
+          realpathPath: escaped.realpathPath,
+          readInstallationEntries: escaped.readInstallationEntries
+        }
+      ),
+    /escaped its verified installation root/u
+  );
+
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        layout.editor,
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath(path) {
+            if (path.toLowerCase() === layout.entryPoint.toLowerCase()) {
+              const error = new Error("missing CLI entry point");
+              error.code = "ENOENT";
+              throw error;
+            }
+            return layout.lstatPath(path);
+          },
+          realpathPath: layout.realpathPath,
+          readInstallationEntries: layout.readInstallationEntries
+        }
+      ),
+    /complete regular installation layout/u,
+    "an installation without a CLI entry point must fail closed"
+  );
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        layout.editor,
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath: layout.lstatPath,
+          realpathPath: layout.realpathPath,
+          readInstallationEntries: () => Array.from({ length: 4_097 }, () => ({ name: "ordinary-file" }))
+        }
+      ),
+    /complete regular installation layout/u,
+    "directory discovery must reject an oversized result before inspecting entries"
+  );
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        layout.editor,
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath: layout.lstatPath,
+          realpathPath: layout.realpathPath,
+          readInstallationEntries: () => [{ name: "bdd88df003", isDirectory: () => true, isSymbolicLink: () => true }]
+        }
+      ),
+    /complete regular installation layout/u,
+    "a version-shaped symlink must fail closed"
+  );
+});
+
+test("Windows editor CLI launch accepts exactly one verified legacy or 10-hex versioned entry point", () => {
+  const versioned = windowsEditorCliLayout({ versionFolder: "bdd88df003" });
+  const launch = resolveEditorCliLaunch(
+    versioned.editor,
+    { SYSTEMROOT: "C:\\Windows" },
+    {
+      platform: "win32",
+      lstatPath: versioned.lstatPath,
+      realpathPath: versioned.realpathPath,
+      readInstallationEntries: versioned.readInstallationEntries
+    }
+  );
+  assert.deepEqual(launch.argsPrefix, [versioned.entryPoint]);
+
+  const legacy = windowsEditorCliLayout();
+  const secondVersion = "39d5031f21";
+  const secondEntry = `C:\\Program Files\\Microsoft VS Code\\${secondVersion}\\resources\\app\\out\\cli.js`;
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        legacy.editor,
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath(path) {
+            if (path.toLowerCase() === `C:\\Program Files\\Microsoft VS Code\\${secondVersion}`.toLowerCase()) {
+              return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+            }
+            if (path.toLowerCase() === secondEntry.toLowerCase()) {
+              return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
+            }
+            return legacy.lstatPath(path);
+          },
+          realpathPath: legacy.realpathPath,
+          readInstallationEntries() {
+            return [{ name: secondVersion, isDirectory: () => true, isSymbolicLink: () => false }];
+          }
+        }
+      ),
+    /complete regular installation layout/u,
+    "simultaneous legacy and versioned entry points must fail closed"
+  );
+
+  const firstVersion = windowsEditorCliLayout({ versionFolder: "bdd88df003" });
+  const otherVersion = "39d5031f21";
+  const otherVersionRoot = `C:\\Program Files\\Microsoft VS Code\\${otherVersion}`;
+  const otherVersionEntry = `${otherVersionRoot}\\resources\\app\\out\\cli.js`;
+  assert.throws(
+    () =>
+      resolveEditorCliLaunch(
+        firstVersion.editor,
+        { SYSTEMROOT: "C:\\Windows" },
+        {
+          platform: "win32",
+          lstatPath(path) {
+            if (path.toLowerCase() === otherVersionRoot.toLowerCase()) {
+              return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+            }
+            if (path.toLowerCase() === otherVersionEntry.toLowerCase()) {
+              return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
+            }
+            return firstVersion.lstatPath(path);
+          },
+          realpathPath: firstVersion.realpathPath,
+          readInstallationEntries() {
+            return [
+              { name: "bdd88df003", isDirectory: () => true, isSymbolicLink: () => false },
+              { name: otherVersion, isDirectory: () => true, isSymbolicLink: () => false }
+            ];
+          }
+        }
+      ),
+    /complete regular installation layout/u,
+    "two versioned entry points must fail closed"
+  );
+});
+
+test("bounded Windows CLI commands prepend cli.js without invoking a command shell", async () => {
+  const layout = windowsEditorCliLayout();
+  const child = fakeCommandChild(17310);
+  let invocation;
+  const running = runBoundedEditorCliCommand(
+    {
+      editor: layout.editor,
+      args: ["--version"],
+      environment: { SystemRoot: "C:\\Windows", Temp: "C:\\private\\tmp", GITHUB_TOKEN: "untrusted-token" },
+      label: "shell-free Windows CLI"
+    },
+    {
+      platform: "win32",
+      timeoutMs: 1_000,
+      lstatPath: layout.lstatPath,
+      realpathPath: layout.realpathPath,
+      readInstallationEntries: layout.readInstallationEntries,
+      spawnProcess(executable, args, options) {
+        invocation = { executable, args, options };
+        return child;
+      },
+      windowsTreeKill: async () => undefined
+    }
+  );
+  child.stdout.write("1.129.0\n");
+  child.exitCode = 0;
+  child.emit("exit", 0, null);
+  child.stdout.end();
+  child.stderr.end();
+  child.emit("close", 0, null);
+  assert.deepEqual(await running, { stdout: "1.129.0\n", stderr: "" });
+  assert.equal(invocation.executable, layout.editor.executable);
+  assert.deepEqual(invocation.args, [layout.entryPoint, "--version"]);
+  assert.equal(invocation.options.shell, undefined);
+  assert.deepEqual(invocation.options.env, {
+    SYSTEMROOT: "C:\\Windows",
+    TEMP: "C:\\private\\tmp",
+    ELECTRON_RUN_AS_NODE: "1"
+  });
 });
 
 test("the Windows supervisor clock stays within the Windows PowerShell 5.1 compiler surface", async () => {
@@ -1955,6 +2261,7 @@ test("editor phases pass only runner-owned test values through the environment",
           GIT_CONFIG_COUNT: "1",
           GIT_CONFIG_KEY_0: "core.fsmonitor",
           GIT_CONFIG_VALUE_0: "/attacker/hook",
+          ELECTRON_RUN_AS_NODE: "1",
           NODE_OPTIONS: "--require=/attacker/hook.cjs",
           PYTHONPATH: "/attacker/python-hook",
           LD_PRELOAD: "/attacker/preload.so",

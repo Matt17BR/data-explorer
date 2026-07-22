@@ -9,7 +9,7 @@ import {
   editorDisplayLaunchArgs,
   editorProcessTreeMayBeLive,
   resolveDownloadedEditorCliPath,
-  runBoundedEditorCommand,
+  runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
   sanitizeEditorAcceptanceDiagnostic,
   startIsolatedEditorDisplay,
@@ -71,8 +71,14 @@ try {
   writeFakeJupyterExtension(fakeJupyter);
   editorDisplay = await startIsolatedEditorDisplay();
   const editorEnvironment = createEditorAcceptanceEnvironment();
-  const versionExecutable = resolveDownloadedEditorCliPath(vscodeExecutablePath);
-  const editorVersion = await readEditorVersion(versionExecutable, editorEnvironment);
+  const vscodeCliPath = resolveDownloadedEditorCliPath(vscodeExecutablePath);
+  const editorLaunch = {
+    name: "VS Code",
+    key: "vscode",
+    executable: vscodeExecutablePath,
+    cli: vscodeCliPath
+  };
+  const editorVersion = await readEditorVersion(editorLaunch, editorEnvironment);
   const harness = resolve(profile, "harness");
   const singleUserData = resolve(profile, "single-user-data");
   const singleExtensions = resolve(profile, "single-extensions");
@@ -92,6 +98,7 @@ try {
     key: "vscode",
     version: editorVersion,
     executable: vscodeExecutablePath,
+    cli: vscodeCliPath,
     sharedDataDir: true
   };
 
@@ -160,10 +167,10 @@ if (finalError) {
   process.exitCode = 1;
 }
 
-async function readEditorVersion(executable, environment) {
-  const { stdout } = await runBoundedEditorCommand(
+async function readEditorVersion(editor, environment) {
+  const { stdout } = await runBoundedEditorCliCommand(
     {
-      executable,
+      editor,
       args: ["--version", ...editorDisplayLaunchArgs()],
       environment,
       label: "VS Code version probe"

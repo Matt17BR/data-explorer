@@ -792,9 +792,33 @@ async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
   ]) {
     const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
     await quickInput.waitFor({ state: "visible", timeout: 10_000 });
-    const defaultOption = quickInput.locator(".monaco-list-row").filter({ hasText: option }).first();
+    const defaultOption = quickInput.getByRole("option", { name: option, exact: true }).first();
     await defaultOption.waitFor({ state: "visible", timeout: 10_000 });
-    await defaultOption.click();
+    assert.match(
+      (await defaultOption.getAttribute("class")) ?? "",
+      /(?:^|\s)focused(?:\s|$)/u,
+      `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
+    );
+    assert.equal(
+      await quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
+      true,
+      `${title} must own keyboard focus before accepting its default option.`
+    );
+    await page.keyboard.press("Enter");
+    try {
+      await quickInput.waitFor({ state: "hidden", timeout: 3_000 });
+    } catch (error) {
+      const visibleOptions = await quickInput.getByRole("option").evaluateAll((options) =>
+        options.map((candidate) => ({
+          label: candidate.getAttribute("aria-label"),
+          className: candidate.getAttribute("class")
+        }))
+      );
+      throw new Error(
+        `${title} did not advance after accepting focused default ${JSON.stringify(option)} with Enter. Visible options: ${JSON.stringify(visibleOptions)}`,
+        { cause: error }
+      );
+    }
   }
   const quoteInput = page.locator(".quick-input-widget:visible").filter({ hasText: "Quote character" }).last();
   await quoteInput.waitFor({ state: "visible", timeout: 10_000 });
