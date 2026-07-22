@@ -42,17 +42,35 @@ interface MissingDependencies {
   readonly selectionEpoch: number;
 }
 
+const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple Python runtime shutdown failures.";
 const execFileAsync = promisify(execFile);
+
+async function joinProcessStops(previous: Promise<void>, current: Promise<void>): Promise<void> {
+  const results = await Promise.allSettled([previous, current]);
+  const failures = results.flatMap((result) => {
+    if (result.status === "fulfilled") return [];
+    if (result.reason instanceof AggregateError && result.reason.message === PROCESS_SHUTDOWN_AGGREGATE_MESSAGE) {
+      return [...result.reason.errors];
+    }
+    return [result.reason];
+  });
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, PROCESS_SHUTDOWN_AGGREGATE_MESSAGE);
+}
 
 export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private process: ChildProcessWithoutNullStreams | undefined;
   private processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
+  private processStop: Promise<void> | undefined;
+  private shutdownPromise: Promise<void> | undefined;
+  private readonly stoppingProcesses = new Set<ChildProcessWithoutNullStreams>();
   private runtimeExitError: Error | undefined;
   private stderrBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
   private readonly cancellationTargets = new Map<string, string>();
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private readonly executeFile = execFileAsync;
+  private readonly spawnProcess = spawn;
   private readonly configurationSubscription: vscode.Disposable;
   private generation = 0;
   private runtimeEpoch = 0;
@@ -76,7 +94,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   get runtimeRunning(): boolean {
-    return Boolean((this.process && !this.process.killed) || this.processStart);
+    return Boolean(this.process || this.processStart || this.processStop);
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
@@ -174,7 +192,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.process = undefined;
     this.processStart = undefined;
     this.rejectAll(new Error(reason));
-    proc?.kill();
+    if (proc) this.trackProcessStop(proc, 0);
   }
 
   reportDiagnostic(message: string): void {
@@ -182,7 +200,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   onIdle(): void {
-    if (this.runtimeRunning) {
+    if (this.process || this.processStart) {
       this.stopGracefully("Open Wrangler runtime stopped after its last session closed.");
     }
   }
@@ -325,26 +343,60 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   dispose(): void {
-    if (this.disposed) return;
+    void this.shutdown().catch(() => undefined);
+  }
+
+  shutdown(): Promise<void> {
+    this.shutdownPromise ??= this.shutdownBridge();
+    return this.shutdownPromise;
+  }
+
+  private async shutdownBridge(): Promise<void> {
     this.disposed = true;
-    this.configurationSubscription.dispose();
-    this.stopGracefully("Open Wrangler runtime stopped.");
-    this.output.dispose();
+    const failures: unknown[] = [];
+    try {
+      this.configurationSubscription.dispose();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      this.stopGracefully("Open Wrangler runtime stopped.");
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.processStop;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      this.output.dispose();
+    } catch (error) {
+      failures.push(error);
+    }
+
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Open Wrangler Python bridge shutdown encountered multiple failures.");
+    }
   }
 
   private stopGracefully(reason: string): void {
-    this.output.appendLine(reason);
+    try {
+      this.output.appendLine(reason);
+    } catch {
+      // Lifecycle cleanup must continue even if the diagnostic channel is unavailable.
+    }
     this.runtimeEpoch += 1;
     const proc = this.process;
     this.process = undefined;
     this.processStart = undefined;
+    if (proc) this.trackProcessStop(proc);
     this.rejectAll(new Error(reason));
-    if (!proc) return;
-    stopChildProcessGracefully(proc);
   }
 
   private async ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams> {
-    if (this.process && !this.process.killed) {
+    if (this.process) {
       return this.process;
     }
     if (this.processStart) return this.processStart;
@@ -360,7 +412,20 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private async startProcess(request: OpenWranglerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams> {
-    if (this.process && !this.process.killed) return this.process;
+    const stopping = this.processStop;
+    if (stopping) {
+      try {
+        await stopping;
+      } catch (error) {
+        throw new Error(
+          `Open Wrangler could not confirm shutdown of its previous Python runtime: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    if (stopping && (this.disposed || epoch !== this.runtimeEpoch)) {
+      throw new Error("Open Wrangler runtime start was cancelled.");
+    }
+    if (this.process) return this.process;
 
     this.runtimeExitError = undefined;
     this.stderrBuffer = "";
@@ -370,11 +435,11 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (this.disposed || epoch !== this.runtimeEpoch) {
       throw new Error("Open Wrangler runtime start was cancelled.");
     }
-    if (this.process && !this.process.killed) return this.process;
+    if (this.process) return this.process;
     const pythonPath = environment.executable;
     const runtimeRoot = path.join(this.context.extensionPath, "python");
 
-    const proc = spawn(pythonPath, ["-m", "openwrangler_runtime.server"], {
+    const proc = this.spawnProcess(pythonPath, ["-m", "openwrangler_runtime.server"], {
       cwd: this.context.extensionPath,
       env: {
         ...process.env,
@@ -407,6 +472,36 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
     this.process = proc;
     return proc;
+  }
+
+  private trackProcessStop(proc: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void {
+    const current = stopChildProcessGracefully(proc, gracefulTimeoutMs);
+    const previous = this.processStop;
+    const stopping = previous ? joinProcessStops(previous, current) : current;
+    this.stoppingProcesses.add(proc);
+    this.processStop = stopping;
+    const confirmLateExit = (): void => {
+      this.stoppingProcesses.delete(proc);
+      if (this.stoppingProcesses.size === 0) this.processStop = undefined;
+    };
+    proc.once("exit", confirmLateExit);
+    void current.then(
+      () => {
+        proc.off("exit", confirmLateExit);
+        this.stoppingProcesses.delete(proc);
+        if (this.stoppingProcesses.size === 0) this.processStop = undefined;
+      },
+      (error: unknown) => {
+        try {
+          this.output.appendLine(
+            `Open Wrangler could not confirm Python runtime shutdown: ${error instanceof Error ? error.message : String(error)}`
+          );
+        } catch {
+          // Disposal may close the output channel before a bounded shutdown settles.
+        }
+      }
+    );
+    void stopping.catch(() => undefined);
   }
 
   private handleProcessFailure(proc: ChildProcessWithoutNullStreams, error: Error): void {

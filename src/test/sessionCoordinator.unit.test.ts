@@ -33,6 +33,20 @@ const inspectionStep: TransformStep = {
 };
 
 describe("SessionCoordinator", () => {
+  it("observes asynchronous shutdown rejection from its synchronous disposable fallback", () => {
+    const coordinator = new SessionCoordinator();
+    const observeRejection = vi.fn((_onRejected: (reason: unknown) => unknown) => Promise.resolve());
+    const shutdown = vi
+      .spyOn(coordinator, "shutdown")
+      .mockReturnValue({ catch: observeRejection } as unknown as Promise<void>);
+
+    coordinator.dispose();
+
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(observeRejection).toHaveBeenCalledOnce();
+    expect(observeRejection.mock.calls[0][0]).toBeTypeOf("function");
+  });
+
   it("keeps bounded notebook-output snapshots ephemeral and ignores stale persisted state", async () => {
     const source = { kind: "notebookOutput" as const, label: "Saved sales preview" };
     const runtimeOpened = openedResponse();

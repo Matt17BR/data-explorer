@@ -641,6 +641,20 @@ async function exercisePackagedFileLaunchSurfaces(
     "the editor-tab launch session to dispose"
   );
 
+  // A custom-editor tab becomes active in the extension host before Electron
+  // has necessarily rebound editor/title actions to that tab's resource. Drop
+  // the prior source tab so a still-rendering action can never retain its URI,
+  // then require the third-party webview itself before clicking the action.
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => vscode.window.tabGroups.all.every((group) => group.tabs.length === 0),
+    10_000,
+    "all prior file-launch tabs to close before third-party editor routing"
+  );
+  await page.bringToFront();
+  await activeEditorGroup.locator(".tabs-container .tab.active").last().waitFor({ state: "hidden", timeout: 10_000 });
+  await titleAction.first().waitFor({ state: "hidden", timeout: 10_000 });
+
   recordAcceptanceProgress("verify:file-launch:third-party-editor:source");
   const customEditorFixture = vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.csv"));
   const customEditorSourceBytes = readFileSync(customEditorFixture.fsPath);
@@ -663,11 +677,15 @@ async function exercisePackagedFileLaunchSurfaces(
     "the third-party CSV custom editor before file-launch interaction"
   );
   await page.bringToFront();
-  await titleAction.first().waitFor({ state: "visible", timeout: 10_000 });
+  const customEditorTitleAction = await waitForThirdPartyCustomEditorWorkbench(
+    page,
+    activeEditorGroup,
+    customEditorFixture
+  );
   recordAcceptanceProgress("verify:file-launch:third-party-editor:open");
-  await titleAction.first().click();
+  await customEditorTitleAction.click();
   recordAcceptanceProgress("verify:file-launch:third-party-editor:import");
-  await acceptDefaultDelimitedImport(page);
+  await acceptDefaultDelimitedImport(page, testing, customEditorFixture);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === customEditorFixture.fsPath,
     30_000,
@@ -784,14 +802,91 @@ async function inspectVisibleContextMenus(page: Page): Promise<ContextMenuDiagno
   );
 }
 
-async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
+interface CustomEditorFrameDiagnostic {
+  page: string;
+  frame: string;
+  markerCount: number;
+  visibleMarkerCount: number;
+}
+
+async function waitForThirdPartyCustomEditorWorkbench(
+  page: Page,
+  activeEditorGroup: Locator,
+  fixture: vscode.Uri
+): Promise<Locator> {
+  const activeTab = activeEditorGroup
+    .locator(".tabs-container .tab.active")
+    .filter({ hasText: path.basename(fixture.fsPath) })
+    .last();
+  const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible');
+  const deadline = Date.now() + 10_000;
+  do {
+    const frames = await inspectThirdPartyCustomEditorFrames(page);
+    if (
+      (await activeTab.isVisible().catch(() => false)) &&
+      frames.some((frame) => frame.visibleMarkerCount === 1) &&
+      (await titleAction.count()) === 1
+    ) {
+      return titleAction.first();
+    }
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  const activeTabs = await page
+    .locator(".part.editor .tabs-container .tab.active:visible")
+    .allInnerTexts()
+    .catch(() => []);
+  const visibleEditorLabels = await activeEditorGroup
+    .locator("[aria-label]:visible")
+    .evaluateAll((elements) => elements.slice(0, 64).map((element) => element.getAttribute("aria-label")))
+    .catch(() => []);
+  throw new Error(
+    `The third-party CSV editor did not become renderer-active before its title action was used. ` +
+      `Expected URI: ${JSON.stringify(fixture.toString())}. Active workbench tabs: ${JSON.stringify(activeTabs)}. ` +
+      `Visible editor labels: ${JSON.stringify(visibleEditorLabels)}. Webview frames: ${JSON.stringify(await inspectThirdPartyCustomEditorFrames(page))}.`
+  );
+}
+
+async function inspectThirdPartyCustomEditorFrames(page: Page): Promise<CustomEditorFrameDiagnostic[]> {
+  const browser = page.context().browser();
+  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [page];
+  const diagnostics = await Promise.all(
+    pages.slice(0, 16).flatMap((candidate) =>
+      candidate
+        .frames()
+        .slice(0, 32)
+        .map(async (frame) => {
+          const markers = frame.locator('[aria-label="Acceptance CSV Editor"]');
+          const markerCount = await markers.count().catch(() => 0);
+          let visibleMarkerCount = 0;
+          for (let index = 0; index < markerCount; index += 1) {
+            if (
+              await markers
+                .nth(index)
+                .isVisible()
+                .catch(() => false)
+            )
+              visibleMarkerCount += 1;
+          }
+          return {
+            page: candidate.url(),
+            frame: frame.url(),
+            markerCount,
+            visibleMarkerCount
+          };
+        })
+    )
+  );
+  return diagnostics.filter((diagnostic) => diagnostic.markerCount > 0);
+}
+
+async function acceptDefaultDelimitedImport(page: Page, testing: TestApi, expectedSource: vscode.Uri): Promise<void> {
   for (const { title, option } of [
     { title: "Delimiter", option: "Comma" },
     { title: "Text encoding", option: "utf-8" },
     { title: "Header row", option: "First row contains column names" }
   ]) {
-    const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
-    await quickInput.waitFor({ state: "visible", timeout: 10_000 });
+    const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
     const defaultOption = quickInput.getByRole("option", { name: option, exact: true }).first();
     await defaultOption.waitFor({ state: "visible", timeout: 10_000 });
     assert.match(
@@ -820,12 +915,90 @@ async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
       );
     }
   }
-  const quoteInput = page.locator(".quick-input-widget:visible").filter({ hasText: "Quote character" }).last();
-  await quoteInput.waitFor({ state: "visible", timeout: 10_000 });
+  const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character");
   const field = quoteInput.locator(".quick-input-box input").first();
   await field.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await field.inputValue(), '"');
   await field.press("Enter");
+}
+
+async function waitForImportQuickInput(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  title: string
+): Promise<Locator> {
+  const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+  const deadline = Date.now() + 10_000;
+  do {
+    if (await quickInput.isVisible().catch(() => false)) return quickInput;
+    const active = testing.activeSession();
+    if (active) {
+      throw new Error(
+        `The editor-title action created a dataframe session before the ${JSON.stringify(title)} import prompt appeared. ` +
+          `Expected source: ${JSON.stringify(expectedSource.fsPath)}. Actual source: ${JSON.stringify(active.metadata.source.path)}.`
+      );
+    }
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  const compactText = (value: string): string => value.replace(/\s+/gu, " ").trim().slice(0, 1_000);
+  const quickInputs = (
+    await page
+      .locator(".quick-input-widget:visible")
+      .allInnerTexts()
+      .catch(() => [])
+  )
+    .slice(0, 8)
+    .map(compactText);
+  const notifications = (
+    await page
+      .locator(
+        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+      )
+      .allInnerTexts()
+      .catch(() => [])
+  )
+    .slice(0, 8)
+    .map(compactText);
+  const dialogs = (
+    await page
+      .locator(".monaco-dialog-box:visible")
+      .allInnerTexts()
+      .catch(() => [])
+  )
+    .slice(0, 8)
+    .map(compactText);
+  const activeTabs = (
+    await page
+      .locator(".part.editor .tabs-container .tab.active:visible")
+      .allInnerTexts()
+      .catch(() => [])
+  )
+    .slice(0, 8)
+    .map(compactText);
+  const hostInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  const activeSession = testing.activeSession();
+  throw new Error(
+    `The ${JSON.stringify(title)} import prompt did not appear after the real editor-title action. ` +
+      `Expected source: ${JSON.stringify(expectedSource.toString())}. ` +
+      `Active host input: ${JSON.stringify(describeTabInput(hostInput))}. ` +
+      `Active dataframe source: ${JSON.stringify(activeSession?.metadata.source.uri)}. ` +
+      `Visible quick inputs: ${JSON.stringify(quickInputs)}. Notifications: ${JSON.stringify(notifications)}. ` +
+      `Dialogs: ${JSON.stringify(dialogs)}. Active workbench tabs: ${JSON.stringify(activeTabs)}. ` +
+      `Webview frames: ${JSON.stringify(await inspectThirdPartyCustomEditorFrames(page))}.`
+  );
+}
+
+function describeTabInput(input: unknown): unknown {
+  if (input instanceof vscode.TabInputText) return { kind: "text", uri: input.uri.toString() };
+  if (input instanceof vscode.TabInputTextDiff) {
+    return { kind: "textDiff", original: input.original.toString(), modified: input.modified.toString() };
+  }
+  if (input instanceof vscode.TabInputCustom) {
+    return { kind: "custom", viewType: input.viewType, uri: input.uri.toString() };
+  }
+  return input === undefined ? undefined : { kind: typeof input };
 }
 
 let editorWorkbenchPage: Promise<Page> | undefined;
@@ -3204,6 +3377,7 @@ async function verifyPersistedReplayAndRecovery(
   fixture: vscode.Uri
 ): Promise<void> {
   const sourceText = readFileSync(fixture.fsPath, "utf8");
+  recordAcceptanceProgress("verify:replay-recovery:polars-open");
   const restored = await testing.request({
     kind: "openSession",
     ...GRID_COLUMN_WINDOW,
@@ -3214,6 +3388,7 @@ async function verifyPersistedReplayAndRecovery(
   });
   assert.equal(restored.kind, "sessionOpened");
   if (restored.kind !== "sessionOpened") return;
+  recordAcceptanceProgress("verify:replay-recovery:polars-opened");
   assert.deepEqual(
     restored.metadata.steps.map((step) => step.id),
     ["packaged-score"]
@@ -3233,6 +3408,7 @@ async function verifyPersistedReplayAndRecovery(
 
   const secondFixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv");
   const secondSourceText = readFileSync(secondFixture.fsPath, "utf8");
+  recordAcceptanceProgress("verify:replay-recovery:pandas-open");
   const second = await testing.request({
     kind: "openSession",
     ...GRID_COLUMN_WINDOW,
@@ -3243,7 +3419,9 @@ async function verifyPersistedReplayAndRecovery(
   });
   assert.equal(second.kind, "sessionOpened");
   if (second.kind !== "sessionOpened") return;
+  recordAcceptanceProgress("verify:replay-recovery:pandas-opened");
   assert.notEqual(second.metadata.sessionId, restored.metadata.sessionId);
+  recordAcceptanceProgress("verify:replay-recovery:duckdb-open");
   const third = await testing.request({
     kind: "openSession",
     ...GRID_COLUMN_WINDOW,
@@ -3254,6 +3432,7 @@ async function verifyPersistedReplayAndRecovery(
   });
   assert.equal(third.kind, "sessionOpened");
   if (third.kind !== "sessionOpened") return;
+  recordAcceptanceProgress("verify:replay-recovery:duckdb-opened");
   assert.deepEqual(
     third.metadata.steps.map((step) => step.id),
     ["packaged-duckdb-score"]
@@ -3282,7 +3461,9 @@ async function verifyPersistedReplayAndRecovery(
 
   const beforeRestart = testing.diagnostics();
   const generation = testing.runtimeGeneration();
+  recordAcceptanceProgress("verify:replay-recovery:restart");
   testing.restartRuntime("Injected packaged-editor recovery test.");
+  recordAcceptanceProgress("verify:replay-recovery:concurrent-replay");
   const [restoredPage, secondPage, thirdPage] = await Promise.all([
     testing.request({
       kind: "getPage",
@@ -3315,6 +3496,7 @@ async function verifyPersistedReplayAndRecovery(
       filterModel: third.metadata.filterModel
     })
   ]);
+  recordAcceptanceProgress("verify:replay-recovery:replayed");
   assert.equal(restoredPage.kind, "page", `Polars recovery returned ${JSON.stringify(restoredPage)}.`);
   assert.equal(secondPage.kind, "page", `Pandas recovery returned ${JSON.stringify(secondPage)}.`);
   assert.equal(thirdPage.kind, "page", `DuckDB recovery returned ${JSON.stringify(thirdPage)}.`);

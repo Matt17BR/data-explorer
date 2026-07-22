@@ -72,9 +72,21 @@ export async function deactivate(): Promise<void> {
   const bridge = activeBridge;
   activeCoordinator = undefined;
   activeBridge = undefined;
+
+  const failures: unknown[] = [];
   try {
     await coordinator?.shutdown();
-  } finally {
-    bridge?.dispose();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await bridge?.shutdown();
+  } catch (error) {
+    failures.push(error);
+  }
+
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Open Wrangler extension deactivation encountered multiple shutdown failures.");
   }
 }

@@ -1,4 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -201,6 +203,301 @@ describe("PythonBridge transport validation and timeout isolation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("PythonBridge process lifecycle", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+  });
+
+  it("reports the runtime as running until graceful shutdown confirms process exit", async () => {
+    const { bridge, internals, process } = createLifecycleHarness();
+
+    expect(bridge.runtimeRunning).toBe(true);
+    bridge.onIdle();
+
+    expect(process.stdin.end).toHaveBeenCalledOnce();
+    expect(bridge.runtimeRunning).toBe(true);
+    const stopping = internals.processStop;
+    expect(stopping).toBeDefined();
+
+    process.emit("exit", 0, null);
+    await expect(stopping).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(bridge.runtimeRunning).toBe(false);
+  });
+
+  it("joins terminal shutdown until the exact process exits and disposes owned resources once", async () => {
+    const { bridge, internals, process, configurationSubscription, output } = createLifecycleHarness();
+
+    const first = bridge.shutdown();
+    const second = bridge.shutdown();
+
+    expect(second).toBe(first);
+    expect(internals.disposed).toBe(true);
+    expect(process.stdin.end).toHaveBeenCalledOnce();
+    expect(configurationSubscription.dispose).toHaveBeenCalledOnce();
+    expect(output.dispose).not.toHaveBeenCalled();
+
+    process.emit("exit", 0, null);
+    await expect(first).resolves.toBeUndefined();
+    expect(output.dispose).toHaveBeenCalledOnce();
+
+    bridge.dispose();
+    await expect(bridge.shutdown()).resolves.toBeUndefined();
+    expect(configurationSubscription.dispose).toHaveBeenCalledOnce();
+    expect(output.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("still stops the child and disposes output when configuration-listener disposal fails", async () => {
+    const { bridge, process, configurationSubscription, output } = createLifecycleHarness();
+    const listenerFailure = new Error("configuration listener disposal failed");
+    configurationSubscription.dispose.mockImplementation(() => {
+      throw listenerFailure;
+    });
+
+    const shutdown = bridge.shutdown();
+    expect(process.stdin.end).toHaveBeenCalledOnce();
+    expect(output.dispose).not.toHaveBeenCalled();
+
+    process.emit("exit", 0, null);
+    await expect(shutdown).rejects.toBe(listenerFailure);
+    expect(output.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("still stops the child when the shutdown diagnostic channel is unavailable", async () => {
+    const { bridge, process, output } = createLifecycleHarness();
+    output.appendLine.mockImplementationOnce(() => {
+      throw new Error("diagnostic channel unavailable");
+    });
+
+    const shutdown = bridge.shutdown();
+    expect(process.stdin.end).toHaveBeenCalledOnce();
+
+    process.emit("exit", 0, null);
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(output.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("retains process-stop and output-disposal failures in cleanup order", async () => {
+    vi.useFakeTimers();
+    const { bridge, process, output } = createLifecycleHarness();
+    const outputFailure = new Error("output disposal failed");
+    output.dispose.mockImplementation(() => {
+      throw outputFailure;
+    });
+
+    const shutdown = bridge.shutdown();
+    const rejected = shutdown.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const error = await rejected;
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toHaveLength(2);
+    expect((error as AggregateError).errors[0]).toMatchObject({
+      message: expect.stringContaining("could not confirm that its Python runtime exited")
+    });
+    expect((error as AggregateError).errors[1]).toBe(outputFailure);
+    expect(process.kill).toHaveBeenCalledOnce();
+
+    process.emit("exit", null, "SIGKILL");
+  });
+
+  it("surfaces missing exit confirmation through awaited shutdown while synchronous dispose observes it", async () => {
+    vi.useFakeTimers();
+    const { bridge, process, configurationSubscription, output } = createLifecycleHarness();
+
+    const shutdown = bridge.shutdown();
+    bridge.dispose();
+    const rejection = expect(shutdown).rejects.toThrow("could not confirm that its Python runtime exited");
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    await rejection;
+    expect(process.kill).toHaveBeenCalledOnce();
+    expect(configurationSubscription.dispose).toHaveBeenCalledOnce();
+    expect(output.dispose).toHaveBeenCalledOnce();
+    expect(bridge.shutdown()).toBe(shutdown);
+
+    process.emit("exit", null, "SIGKILL");
+  });
+
+  it("does not start a replacement until the preceding shutdown settles", async () => {
+    const { internals } = createLifecycleHarness();
+    const stopping = deferred<void>();
+    internals.process = undefined;
+    internals.processStop = stopping.promise;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
+
+    const starting = internals.ensureProcess(initializeRequest);
+    await Promise.resolve();
+    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+
+    internals.runtimeEpoch += 1;
+    stopping.resolve(undefined);
+    await expect(starting).rejects.toThrow("runtime start was cancelled");
+    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("fails closed instead of spawning after forced shutdown lacks exit confirmation", async () => {
+    vi.useFakeTimers();
+    const { bridge, internals, process } = createLifecycleHarness();
+
+    bridge.onIdle();
+    const stopping = internals.processStop;
+    expect(stopping).toBeDefined();
+    const rejected = expect(stopping).rejects.toThrow("could not confirm that its Python runtime exited");
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    await rejected;
+    expect(process.kill).toHaveBeenCalledOnce();
+    expect(bridge.runtimeRunning).toBe(true);
+    await expect(internals.ensureProcess(initializeRequest)).rejects.toThrow(
+      "could not confirm shutdown of its previous Python runtime"
+    );
+    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+
+    process.emit("exit", null, "SIGKILL");
+    expect(bridge.runtimeRunning).toBe(false);
+  });
+
+  it("releases an overlapping rejected stop barrier after every exact child later exits", async () => {
+    vi.useFakeTimers();
+    const { bridge, internals, process: first } = createLifecycleHarness();
+    const second = new LifecycleChildProcess();
+    internals.process = undefined;
+
+    internals.trackProcessStop(first as unknown as ChildProcessWithoutNullStreams, 0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    internals.trackProcessStop(second as unknown as ChildProcessWithoutNullStreams, 0);
+    const overlappingStop = internals.processStop;
+    expect(overlappingStop).toBeDefined();
+    let stopSettled = false;
+    void overlappingStop?.then(
+      () => {
+        stopSettled = true;
+      },
+      () => {
+        stopSettled = true;
+      }
+    );
+    const rejection = expect(overlappingStop).rejects.toThrow("could not confirm that its Python runtime exited");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(stopSettled).toBe(false);
+    expect(bridge.runtimeRunning).toBe(true);
+
+    second.emit("exit", null, "SIGKILL");
+    await rejection;
+    expect(stopSettled).toBe(true);
+    expect(bridge.runtimeRunning).toBe(true);
+
+    first.emit("exit", null, "SIGKILL");
+    await Promise.resolve();
+    expect(internals.processStop).toBeUndefined();
+    expect(bridge.runtimeRunning).toBe(false);
+  });
+
+  it("waits for and preserves every overlapping bounded stop failure in order", async () => {
+    vi.useFakeTimers();
+    const { bridge, internals, process: first } = createLifecycleHarness();
+    const second = new LifecycleChildProcess();
+    first.kill.mockReturnValue(false);
+    second.kill.mockImplementation(() => {
+      throw new Error("second child termination threw");
+    });
+    internals.process = undefined;
+
+    internals.trackProcessStop(first as unknown as ChildProcessWithoutNullStreams, 0);
+    internals.trackProcessStop(second as unknown as ChildProcessWithoutNullStreams, 0);
+    const overlappingStop = internals.processStop;
+    expect(overlappingStop).toBeDefined();
+    const rejected = overlappingStop?.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    const error = await rejected;
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toHaveLength(2);
+    expect((error as AggregateError).errors[0]).toMatchObject({
+      message: expect.stringContaining("operating system did not accept the termination signal")
+    });
+    expect((error as AggregateError).errors[1]).toMatchObject({
+      message: expect.stringContaining("second child termination threw")
+    });
+    expect(bridge.runtimeRunning).toBe(true);
+
+    first.emit("exit", null, "SIGKILL");
+    second.emit("exit", null, "SIGKILL");
+    await Promise.resolve();
+    expect(internals.processStop).toBeUndefined();
+    expect(bridge.runtimeRunning).toBe(false);
+  });
+
+  it("releases a pre-exited overlapping child independently of an earlier failed stop", async () => {
+    vi.useFakeTimers();
+    const { bridge, internals, process: first } = createLifecycleHarness();
+    const alreadyExited = new LifecycleChildProcess();
+    alreadyExited.exitCode = 0;
+    internals.process = undefined;
+
+    internals.trackProcessStop(first as unknown as ChildProcessWithoutNullStreams, 0);
+    internals.trackProcessStop(alreadyExited as unknown as ChildProcessWithoutNullStreams, 0);
+    const overlappingStop = internals.processStop;
+    expect(overlappingStop).toBeDefined();
+    const rejection = expect(overlappingStop).rejects.toThrow("could not confirm that its Python runtime exited");
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await rejection;
+    expect(bridge.runtimeRunning).toBe(true);
+
+    first.emit("exit", null, "SIGKILL");
+    await Promise.resolve();
+    expect(internals.processStop).toBeUndefined();
+    expect(bridge.runtimeRunning).toBe(false);
+  });
+
+  it("forces restart termination immediately but retains ownership until exit", async () => {
+    vi.useFakeTimers();
+    const { bridge, internals, process } = createLifecycleHarness();
+
+    bridge.restart("Acceptance restart.");
+
+    expect(process.kill).toHaveBeenCalledOnce();
+    expect(process.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(bridge.runtimeRunning).toBe(true);
+    const stopping = internals.processStop;
+    expect(stopping).toBeDefined();
+    process.emit("exit", null, "SIGTERM");
+    await expect(stopping).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(bridge.runtimeRunning).toBe(false);
+  });
+
+  it("spawns one replacement only after restart observes the prior process exit", async () => {
+    const { bridge, internals, process } = createLifecycleHarness();
+    const replacement = new LifecycleChildProcess();
+    internals.spawnProcess.mockReturnValue(replacement as unknown as ChildProcessWithoutNullStreams);
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      executable: "/env/bin/python",
+      version: "3.12.4",
+      source: "configuration"
+    });
+
+    bridge.restart("Acceptance restart.");
+    const starting = internals.ensureProcess(initializeRequest);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+
+    process.emit("exit", null, "SIGKILL");
+    await expect(starting).resolves.toBe(replacement);
+    expect(internals.spawnProcess).toHaveBeenCalledOnce();
+
+    bridge.restart("Acceptance cleanup.");
+    const cleanup = internals.processStop;
+    replacement.emit("exit", null, "SIGKILL");
+    await expect(cleanup).resolves.toBeUndefined();
   });
 });
 
@@ -698,6 +995,77 @@ interface BridgeInternals {
   prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
   ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
   handleRuntimeLine(line: string): void;
+}
+
+interface LifecycleBridgeInternals {
+  process: ChildProcessWithoutNullStreams | undefined;
+  processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
+  processStop: Promise<void> | undefined;
+  disposed: boolean;
+  runtimeEpoch: number;
+  spawnProcess: ReturnType<typeof vi.fn>;
+  ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
+  trackProcessStop(proc: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void;
+}
+
+class LifecycleChildProcess extends EventEmitter {
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly kill = vi.fn(() => {
+    this.killed = true;
+    return true;
+  });
+  killed = false;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+
+  constructor() {
+    super();
+    vi.spyOn(this.stdin, "end");
+  }
+}
+
+function createLifecycleHarness(): {
+  bridge: PythonBridge;
+  internals: LifecycleBridgeInternals;
+  process: LifecycleChildProcess;
+  configurationSubscription: { dispose: ReturnType<typeof vi.fn> };
+  output: { appendLine: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> };
+} {
+  const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
+  const process = new LifecycleChildProcess();
+  const configurationSubscription = { dispose: vi.fn() };
+  const output = { appendLine: vi.fn(), dispose: vi.fn() };
+  Object.assign(bridge as object, {
+    context: { extensionPath: "/extension" } as vscode.ExtensionContext,
+    process: process as unknown as ChildProcessWithoutNullStreams,
+    processStart: undefined,
+    processStop: undefined,
+    shutdownPromise: undefined,
+    stoppingProcesses: new Set<ChildProcessWithoutNullStreams>(),
+    runtimeExitError: undefined,
+    stderrBuffer: "",
+    runtimeEpoch: 0,
+    selectionEpoch: 0,
+    generation: 0,
+    disposed: false,
+    environmentPromise: undefined,
+    dependencyCache: new Map<string, string[]>(),
+    lastMissingDependencies: undefined,
+    pending: new Map<string, unknown>(),
+    cancellationTargets: new Map<string, string>(),
+    spawnProcess: vi.fn(),
+    configurationSubscription,
+    output
+  });
+  return {
+    bridge,
+    internals: bridge as unknown as LifecycleBridgeInternals,
+    process,
+    configurationSubscription,
+    output
+  };
 }
 
 interface EnvironmentBridgeInternals {

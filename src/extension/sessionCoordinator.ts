@@ -221,7 +221,7 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   dispose(): void {
-    void this.shutdown();
+    void this.shutdown().catch(() => undefined);
   }
 
   shutdown(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<void> {
