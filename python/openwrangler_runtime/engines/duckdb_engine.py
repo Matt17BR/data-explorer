@@ -49,6 +49,7 @@ class DuckDBEngine(DataFrameEngine):
     """
 
     name = "duckdb"
+    runtime_modules = ("duckdb",)
     capabilities = EngineCapabilities(
         # A relation may be detected for custom-code validation, but notebook
         # ownership is deliberately not advertised until host/kernel lifecycle

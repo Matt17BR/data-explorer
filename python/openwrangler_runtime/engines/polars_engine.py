@@ -41,6 +41,7 @@ _POLARS_INTEGER_LIMB_COUNT = 5
 
 class PolarsEngine(DataFrameEngine):
     name = "polars"
+    runtime_modules = ("polars",)
     capabilities = EngineCapabilities(
         source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
         supports_editing=True,

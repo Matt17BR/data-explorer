@@ -195,6 +195,11 @@ def main() -> None:
                         )
                     write(response_envelope(request_id, response))
                     continue
+                if request["kind"] == "openSession":
+                    # CPython imports and native backend initialization must
+                    # run on this process-owned thread. In particular, loading
+                    # Pandas after Polars from a Windows worker can deadlock.
+                    manager.prepare_backend(request["source"], request.get("backend"))
                 executor = background_executor if priority == "background" else interactive_executor
                 future = executor.submit(dispatch, manager, request)
                 with pending_lock:
@@ -204,6 +209,11 @@ def main() -> None:
                 )
             except ProtocolError as error:
                 response = error_response(str(error), code="invalid_request", recoverable=False)
+                if view_request_id:
+                    response["viewRequestId"] = view_request_id
+                write(response_envelope(request_id, response))
+            except EngineError as error:
+                response = error_response(str(error), code="engine_error")
                 if view_request_id:
                     response["viewRequestId"] = view_request_id
                 write(response_envelope(request_id, response))

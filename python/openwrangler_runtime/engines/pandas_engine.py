@@ -45,6 +45,7 @@ _PORTABLE_INTEGER_LIMIT = 10**38
 
 class PandasEngine(DataFrameEngine):
     name = "pandas"
+    runtime_modules = ("pandas",)
     capabilities = EngineCapabilities(
         source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
         supports_editing=True,

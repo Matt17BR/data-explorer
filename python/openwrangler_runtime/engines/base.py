@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from importlib import import_module
 from math import isfinite, isinf, isnan
 from numbers import Integral, Real
 from typing import Any, Literal
@@ -457,6 +458,12 @@ class ColumnSchema:
 class DataFrameEngine(ABC):
     name: str
     capabilities: EngineCapabilities
+    runtime_modules: tuple[str, ...] = ()
+
+    def prepare(self) -> None:
+        """Load optional native dependencies on the caller-owned thread."""
+        for module_name in self.runtime_modules:
+            import_module(module_name)
 
     def interrupt(self) -> None:
         """Request interruption of current work when the engine supports it."""

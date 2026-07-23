@@ -279,6 +279,97 @@ def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) ->
     assert return_code == 0, output.stderr_tail()
 
 
+def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypatch) -> None:
+    reader_thread = threading.current_thread()
+    dispatched = threading.Event()
+
+    class TrackingManager:
+        def __init__(self) -> None:
+            self.prepare_thread: threading.Thread | None = None
+            self.dispatch_thread: threading.Thread | None = None
+
+        def prepare_backend(self, source: dict[str, Any], backend: str | None) -> None:
+            assert source["path"] == "sample.csv"
+            assert backend == "pandas"
+            self.prepare_thread = threading.current_thread()
+
+        def open_session(self, *_args: Any) -> dict[str, Any]:
+            self.dispatch_thread = threading.current_thread()
+            dispatched.set()
+            return {"kind": "sessionOpened"}
+
+        def close_all(self) -> None:
+            return None
+
+    manager = TrackingManager()
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "main-thread-prepare",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.csv", "path": "sample.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+
+    def input_lines():
+        yield f"{json.dumps(envelope)}\n"
+        assert dispatched.wait(5)
+
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", input_lines())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    server.main()
+
+    response = json.loads(output.getvalue())
+    assert response["requestId"] == "main-thread-prepare"
+    assert response["response"]["kind"] == "sessionOpened"
+    assert manager.prepare_thread is reader_thread
+    assert manager.dispatch_thread is not None
+    assert manager.dispatch_thread is not reader_thread
+
+
+def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
+    class FailingManager:
+        def prepare_backend(self, _source: dict[str, Any], _backend: str | None) -> None:
+            raise server.EngineError("native import failed")
+
+        def close_all(self) -> None:
+            return None
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "prepare-failed",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.csv", "path": "sample.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", FailingManager)
+    monkeypatch.setattr(server.sys, "stdin", StringIO(f"{json.dumps(envelope)}\n"))
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    server.main()
+
+    response = json.loads(output.getvalue())
+    assert response["requestId"] == "prepare-failed"
+    assert response["response"]["kind"] == "error"
+    assert response["response"]["code"] == "engine_error"
+    assert response["response"]["message"] == "native import failed"
+
+
 def test_stdio_server_closes_all_sessions_when_input_ends(monkeypatch) -> None:
     class TrackingManager:
         def __init__(self) -> None:

@@ -40,6 +40,19 @@ class EngineRegistry:
                 return self._create_validated(expected_name, factory)
         raise EngineError(f"Unsupported backend: {backend}")
 
+    def prepare(self, backend: str) -> None:
+        """Load one backend through an independently owned transient adapter."""
+        engine = self.create(backend)
+        try:
+            engine.prepare()
+        except Exception as error:
+            self._close_safely(engine)
+            raise EngineError(f"Could not prepare the {backend} backend: {error}") from error
+        try:
+            engine.close()
+        except Exception as error:
+            raise EngineError(f"Could not close the prepared {backend} backend: {error}") from error
+
     def detect(self, value: Any) -> DataFrameEngine:
         for expected_name, factory in self._factories:
             try:
