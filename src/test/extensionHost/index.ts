@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -76,8 +77,71 @@ const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
 
-function removeAcceptanceTemporaryDirectory(directory: string): void {
-  rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+function resolveAcceptanceTemporaryDirectory(directory: string): string {
+  const isolatedTempRoot = path.resolve(tmpdir());
+  const candidate = path.resolve(directory);
+  const relative = path.relative(isolatedTempRoot, candidate);
+  assert.ok(
+    relative.length > 0 &&
+      !path.isAbsolute(relative) &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !relative.includes(path.sep),
+    "Acceptance fixture directories must be direct children of the isolated editor temp root."
+  );
+  const metadata = lstatSync(candidate);
+  assert.ok(
+    metadata.isDirectory() && !metadata.isSymbolicLink(),
+    "An acceptance fixture root must remain a real directory."
+  );
+  return candidate;
+}
+
+function cleanupAcceptanceTemporaryDirectory(directory: string): void {
+  const ownedDirectory = resolveAcceptanceTemporaryDirectory(directory);
+  if (process.platform === "win32") {
+    const isolatedTempRoot = path.resolve(tmpdir());
+    assert.equal(
+      process.env.OPEN_WRANGLER_EXTENSION_TESTS,
+      "1",
+      "Windows fixture cleanup may be deferred only inside the editor acceptance harness."
+    );
+    assert.equal(
+      path.basename(path.dirname(isolatedTempRoot)).toLowerCase(),
+      "ow",
+      "Deferred Windows acceptance fixtures require the runner-owned temp parent."
+    );
+    assert.match(
+      path.basename(isolatedTempRoot),
+      /^x-[A-Za-z0-9]+$/u,
+      "Deferred Windows acceptance fixtures require the runner-owned random temp root."
+    );
+    assert.match(
+      path.basename(ownedDirectory),
+      /^openwrangler-[A-Za-z0-9-]+$/u,
+      "Deferred Windows acceptance fixtures must use an Open Wrangler-owned random directory name."
+    );
+    // VS Code's Windows file service may retain a fixture-directory handle until
+    // the workbench exits even after its custom editor and runtime are closed.
+    // The outer acceptance runner owns this temp root and removes it only after
+    // the Job Object is proven empty, which is the first safe deletion boundary.
+    return;
+  }
+  rmSync(ownedDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+function exerciseAcceptanceTemporaryDirectoryCleanupContract(): void {
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-cleanup-contract-"));
+  assert.throws(
+    () => cleanupAcceptanceTemporaryDirectory(path.join(directory, "nested")),
+    /direct children of the isolated editor temp root/u
+  );
+  cleanupAcceptanceTemporaryDirectory(directory);
+  assert.equal(
+    existsSync(directory),
+    process.platform === "win32",
+    "Windows retains fixture roots until job-empty cleanup; other platforms remove them immediately."
+  );
 }
 
 function columnReference(metadata: SessionMetadata, name: string): ColumnReference {
@@ -115,6 +179,7 @@ export async function run(): Promise<void> {
   const testing = extensionApi?.testing;
   assert.ok(testing, "The isolated acceptance harness must enable the test-only extension API.");
   assert.equal(extension.isActive, true, "The extension must activate successfully.");
+  exerciseAcceptanceTemporaryDirectoryCleanupContract();
   recordAcceptanceProgress("activation:complete");
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
@@ -2527,7 +2592,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:complete");
   } finally {
     await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
-    removeAcceptanceTemporaryDirectory(directory);
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -3563,7 +3628,7 @@ async function verifyPersistedReplayAndRecovery(
       "Pandas export must not modify the source fixture."
     );
   } finally {
-    removeAcceptanceTemporaryDirectory(exportDirectory);
+    cleanupAcceptanceTemporaryDirectory(exportDirectory);
   }
 
   const firstClosed = await testing.request({
@@ -3725,7 +3790,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
-    removeAcceptanceTemporaryDirectory(directory);
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -3892,7 +3957,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     try {
       await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
     } finally {
-      removeAcceptanceTemporaryDirectory(directory);
+      cleanupAcceptanceTemporaryDirectory(directory);
     }
   }
 }
@@ -4144,7 +4209,7 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
     );
     assert.equal(readFileSync(sourcePath, "utf8"), source, "Wide projection must not mutate the source.");
   } finally {
-    removeAcceptanceTemporaryDirectory(directory);
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -4352,7 +4417,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       "Operation previews and applies must not alter the source."
     );
   } finally {
-    removeAcceptanceTemporaryDirectory(directory);
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
