@@ -3384,6 +3384,16 @@ export function readBoundedAcceptanceText(
     if (expectedPathSnapshot && !sameAcceptanceFileSnapshot(pathMetadata, expectedPathSnapshot)) {
       throw new Error(`The ${description} path changed after it was first observed.`);
     }
+    if (
+      acceptancePathSnapshotShowsAtomicPublication(
+        pathMetadata,
+        openedMetadata,
+        maximumSize,
+        allowAtomicPathReplacement
+      )
+    ) {
+      throw acceptanceFileReplacedDuringRead(description);
+    }
     if (!pathMetadata.isFile() || pathMetadata.isSymbolicLink()) {
       throw new Error(`The ${description} must be a regular file and may not be a symbolic link.`);
     }
@@ -3394,25 +3404,32 @@ export function readBoundedAcceptanceText(
       throw new Error(`The ${description} exceeds its ${maximumBytes}-byte limit.`);
     }
     if (!sameAcceptanceFileSnapshot(openedMetadata, pathMetadata)) {
-      if (
-        allowAtomicPathReplacement &&
-        openedMetadata.size <= maximumSize &&
-        (openedMetadata.dev !== pathMetadata.dev || openedMetadata.ino !== pathMetadata.ino)
-      ) {
-        throw acceptanceFileReplacedDuringRead(description);
-      }
       throw new Error(`The ${description} changed before it could be read safely.`);
     }
     afterInitialPathSnapshot?.();
 
     const readyMetadata = fstatSync(descriptor, { bigint: true });
     if (!sameAcceptanceFileSnapshot(readyMetadata, openedMetadata)) {
-      if (allowAtomicPathReplacement && sameAcceptanceDescriptorAfterUnlink(readyMetadata, openedMetadata)) {
+      if (
+        allowAtomicPathReplacement &&
+        (sameAcceptanceDescriptorAfterUnlink(readyMetadata, openedMetadata) ||
+          sameAcceptanceFileSnapshotExceptCtime(readyMetadata, openedMetadata))
+      ) {
         throw acceptanceFileReplacedDuringRead(description);
       }
       throw new Error(`The ${description} changed before it could be read safely.`);
     }
     const readyPathMetadata = lstatSync(path, { bigint: true });
+    if (
+      acceptancePathSnapshotShowsAtomicPublication(
+        readyPathMetadata,
+        readyMetadata,
+        maximumSize,
+        allowAtomicPathReplacement
+      )
+    ) {
+      throw acceptanceFileReplacedDuringRead(description);
+    }
     if (
       !readyPathMetadata.isFile() ||
       readyPathMetadata.isSymbolicLink() ||
@@ -3426,7 +3443,8 @@ export function readBoundedAcceptanceText(
         !readyPathMetadata.isSymbolicLink() &&
         readyPathMetadata.nlink === 1n &&
         readyPathMetadata.size <= maximumSize &&
-        sameAcceptanceDescriptorAfterUnlink(descriptorAfterPathChange, readyMetadata)
+        (sameAcceptanceDescriptorAfterUnlink(descriptorAfterPathChange, readyMetadata) ||
+          sameAcceptanceFileSnapshotExceptCtime(descriptorAfterPathChange, readyMetadata))
       ) {
         throw acceptanceFileReplacedDuringRead(description);
       }
@@ -3442,13 +3460,27 @@ export function readBoundedAcceptanceText(
     }
     const completedMetadata = fstatSync(descriptor, { bigint: true });
     if (!sameAcceptanceFileSnapshot(completedMetadata, readyMetadata)) {
-      if (allowAtomicPathReplacement && sameAcceptanceDescriptorAfterUnlink(completedMetadata, readyMetadata)) {
+      if (
+        allowAtomicPathReplacement &&
+        (sameAcceptanceDescriptorAfterUnlink(completedMetadata, readyMetadata) ||
+          sameAcceptanceFileSnapshotExceptCtime(completedMetadata, readyMetadata))
+      ) {
         throw acceptanceFileReplacedDuringRead(description);
       }
       throw new Error(`The ${description} changed while it was being read.`);
     }
     beforeFinalPathSnapshot?.();
     const finalPathMetadata = lstatSync(path, { bigint: true });
+    if (
+      acceptancePathSnapshotShowsAtomicPublication(
+        finalPathMetadata,
+        completedMetadata,
+        maximumSize,
+        allowAtomicPathReplacement
+      )
+    ) {
+      throw acceptanceFileReplacedDuringRead(description);
+    }
     if (
       !finalPathMetadata.isFile() ||
       finalPathMetadata.isSymbolicLink() ||
@@ -3462,7 +3494,8 @@ export function readBoundedAcceptanceText(
         !finalPathMetadata.isSymbolicLink() &&
         finalPathMetadata.nlink === 1n &&
         finalPathMetadata.size <= maximumSize &&
-        sameAcceptanceDescriptorAfterUnlink(descriptorAfterPathChange, completedMetadata)
+        (sameAcceptanceDescriptorAfterUnlink(descriptorAfterPathChange, completedMetadata) ||
+          sameAcceptanceFileSnapshotExceptCtime(descriptorAfterPathChange, completedMetadata))
       ) {
         throw acceptanceFileReplacedDuringRead(description);
       }
@@ -3476,6 +3509,26 @@ export function readBoundedAcceptanceText(
   } finally {
     closeSync(descriptor);
   }
+}
+
+export function acceptancePathSnapshotShowsAtomicPublication(
+  pathMetadata,
+  openedMetadata,
+  maximumSize,
+  allowAtomicPathReplacement
+) {
+  if (
+    !allowAtomicPathReplacement ||
+    !pathMetadata.isFile() ||
+    pathMetadata.isSymbolicLink() ||
+    pathMetadata.size > maximumSize
+  ) {
+    return false;
+  }
+  if (pathMetadata.nlink === 0n) return true;
+  if (pathMetadata.nlink !== 1n || openedMetadata.nlink !== 1n) return false;
+  if (pathMetadata.dev !== openedMetadata.dev || pathMetadata.ino !== openedMetadata.ino) return true;
+  return sameAcceptanceFileSnapshotExceptCtime(pathMetadata, openedMetadata);
 }
 
 function acceptanceFileReplacedDuringRead(description) {
@@ -3494,6 +3547,18 @@ function sameAcceptanceDescriptorAfterUnlink(current, opened) {
     current.mtimeNs === opened.mtimeNs &&
     opened.nlink === 1n &&
     current.nlink === 0n
+  );
+}
+
+function sameAcceptanceFileSnapshotExceptCtime(left, right) {
+  return (
+    left.ctimeNs !== right.ctimeNs &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs
   );
 }
 

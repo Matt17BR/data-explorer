@@ -76,6 +76,10 @@ const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
 
+function removeAcceptanceTemporaryDirectory(directory: string): void {
+  rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 function columnReference(metadata: SessionMetadata, name: string): ColumnReference {
   const column = metadata.schema.find((candidate) => candidate.name === name);
   assert.ok(column, `Expected ${name} in the opened session schema.`);
@@ -2523,7 +2527,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:complete");
   } finally {
     await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
-    rmSync(directory, { recursive: true, force: true });
+    removeAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -3559,7 +3563,7 @@ async function verifyPersistedReplayAndRecovery(
       "Pandas export must not modify the source fixture."
     );
   } finally {
-    rmSync(exportDirectory, { recursive: true, force: true });
+    removeAcceptanceTemporaryDirectory(exportDirectory);
   }
 
   const firstClosed = await testing.request({
@@ -3721,7 +3725,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
-    rmSync(directory, { recursive: true, force: true });
+    removeAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -3888,7 +3892,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     try {
       await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
     } finally {
-      rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      removeAcceptanceTemporaryDirectory(directory);
     }
   }
 }
@@ -4140,7 +4144,7 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
     );
     assert.equal(readFileSync(sourcePath, "utf8"), source, "Wide projection must not mutate the source.");
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    removeAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -4348,7 +4352,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       "Operation previews and applies must not alter the source."
     );
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    removeAcceptanceTemporaryDirectory(directory);
   }
 }
 

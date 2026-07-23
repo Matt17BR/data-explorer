@@ -8,6 +8,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
+  acceptancePathSnapshotShowsAtomicPublication,
   acceptanceProgressCheckpoint,
   acceptanceProgressDetail,
   collectEditorAcceptancePrivateDiagnosticPaths,
@@ -3497,6 +3498,65 @@ test("progress reads retry verified atomic publication races without accepting i
   }
 });
 
+test("progress reads retry only bounded path snapshots that show an atomic publication transition", () => {
+  const snapshot = ({
+    dev = 1n,
+    ino = 2n,
+    mode = 0o100600n,
+    nlink = 1n,
+    size = 512n,
+    mtimeNs = 3n,
+    ctimeNs = 4n,
+    file = true,
+    symbolicLink = false
+  } = {}) => ({
+    dev,
+    ino,
+    mode,
+    nlink,
+    size,
+    mtimeNs,
+    ctimeNs,
+    isFile: () => file,
+    isSymbolicLink: () => symbolicLink
+  });
+  const maximumSize = BigInt(EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES);
+  const opened = snapshot();
+
+  assert.equal(acceptancePathSnapshotShowsAtomicPublication(snapshot({ nlink: 0n }), opened, maximumSize, true), true);
+  assert.equal(acceptancePathSnapshotShowsAtomicPublication(snapshot({ ino: 3n }), opened, maximumSize, true), true);
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ ctimeNs: 5n }), opened, maximumSize, true),
+    true
+  );
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ nlink: 0n }), opened, maximumSize, false),
+    false
+  );
+  assert.equal(acceptancePathSnapshotShowsAtomicPublication(snapshot(), opened, maximumSize, true), false);
+  assert.equal(acceptancePathSnapshotShowsAtomicPublication(snapshot({ nlink: 2n }), opened, maximumSize, true), false);
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ size: maximumSize + 1n }), opened, maximumSize, true),
+    false
+  );
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ symbolicLink: true }), opened, maximumSize, true),
+    false
+  );
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ file: false }), opened, maximumSize, true),
+    false
+  );
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ mtimeNs: 5n, ctimeNs: 5n }), opened, maximumSize, true),
+    false
+  );
+  assert.equal(
+    acceptancePathSnapshotShowsAtomicPublication(snapshot({ mode: 0o100400n, ctimeNs: 5n }), opened, maximumSize, true),
+    false
+  );
+});
+
 test("result reads reject atomic replacement immediately after descriptor open", async (context) => {
   if (process.platform === "win32") {
     context.skip("Open-descriptor unlink semantics for the POSIX result reader are not portable to Windows.");
@@ -3539,7 +3599,9 @@ test("a live timed-out editor phase terminates its child and removes signal hook
     SIGINT: process.listenerCount("SIGINT"),
     SIGTERM: process.listenerCount("SIGTERM")
   };
+  let clock = 0;
   let child;
+  let spawnedLive = false;
   try {
     await assert.rejects(
       runEditorAcceptancePhase(input, {
@@ -3548,10 +3610,15 @@ test("a live timed-out editor phase terminates its child and removes signal hook
             detached: process.platform !== "win32",
             stdio: "ignore"
           });
+          spawnedLive = child.pid !== undefined && child.exitCode === null && child.signalCode === null;
           return child;
         },
-        phaseTimeoutMs: 150,
-        inactivityTimeoutMs: 1_000,
+        now: () => clock,
+        wait: async (milliseconds) => {
+          clock += milliseconds;
+        },
+        phaseTimeoutMs: 5_000,
+        inactivityTimeoutMs: 10_000,
         gracefulExitMs: 0,
         windowsTreeKill:
           process.platform === "win32"
@@ -3567,6 +3634,7 @@ test("a live timed-out editor phase terminates its child and removes signal hook
         error.details.timeoutKind === "phase"
     );
     assert.ok(child);
+    assert.equal(spawnedLive, true);
     assert.notEqual(child.exitCode === null && child.signalCode === null, true);
     assert.equal(process.listenerCount("SIGINT"), signalListeners.SIGINT);
     assert.equal(process.listenerCount("SIGTERM"), signalListeners.SIGTERM);
