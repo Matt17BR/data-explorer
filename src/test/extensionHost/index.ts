@@ -179,6 +179,7 @@ export async function run(): Promise<void> {
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.sessionOpenTimeoutMs"]);
   const enabledFileTypes = contributions.configuration?.properties?.["openWrangler.enabledFileTypes"] as
     { items?: { enum?: string[] }; default?: string[] } | undefined;
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));

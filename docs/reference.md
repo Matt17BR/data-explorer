@@ -53,7 +53,8 @@
 | `openWrangler.fetchColumnBlockSize` | `number`  | `16`                                           | —                                            | Number of dataframe columns fetched for each horizontal grid block.                                                                                 |
 | `openWrangler.panelRevealBehavior`  | `string`  | `"onDraft"`                                    | `"onDraft"`, `"always"`, `"never"`           | When to reveal the bottom-panel Code Preview.                                                                                                       |
 | `openWrangler.pythonPath`           | `string`  | `""`                                           | —                                            | Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter. |
-| `openWrangler.requestTimeoutMs`     | `number`  | `30000`                                        | —                                            | Maximum runtime request duration before recovery restarts and replays the session.                                                                  |
+| `openWrangler.sessionOpenTimeoutMs` | `number`  | `60000`                                        | —                                            | Maximum duration for opening a dataframe session, including cold engine and notebook-kernel initialization.                                         |
+| `openWrangler.requestTimeoutMs`     | `number`  | `30000`                                        | —                                            | Maximum duration for runtime requests other than session opening before recovery restarts and replays the session.                                  |
 
 ## Transformation operations
 

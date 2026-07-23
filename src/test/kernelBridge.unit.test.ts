@@ -288,6 +288,27 @@ describe("kernel retry classification", () => {
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
+  it("uses the dedicated configured deadline for a cold kernel session open", async () => {
+    vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(key: string, fallback: T): T =>
+        (key === "sessionOpenTimeoutMs" ? 25 : key === "requestTimeoutMs" ? 5_000 : fallback) as T
+    } as vscode.WorkspaceConfiguration);
+    const requests: OpenWranglerRequest[] = [];
+    const kernel = fakeKernel((request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return HANG;
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      return initializedResponse;
+    });
+    const getExtension = mockKernel(kernel);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(openRequest())).rejects.toThrow("timed out after 25 ms");
+
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(getExtension).toHaveBeenCalledOnce();
+  });
+
   it("closes both identities on the exact kernel when a wrong-id response arrives after provenance is lost", async () => {
     const document = notebookDocument();
     setOpenNotebookDocuments(document);

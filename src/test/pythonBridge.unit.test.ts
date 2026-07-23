@@ -204,6 +204,26 @@ describe("PythonBridge transport validation and timeout isolation", () => {
       vi.useRealTimers();
     }
   });
+
+  it("uses the dedicated configured deadline for a cold session open", async () => {
+    const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(key: string, fallback: T): T =>
+        (key === "sessionOpenTimeoutMs" ? 25 : key === "requestTimeoutMs" ? 5_000 : fallback) as T
+    } as vscode.WorkspaceConfiguration);
+    try {
+      const harness = createHarness();
+      const response = harness.bridge.request(openSessionRequest(remoteFileSource()));
+      const outcome = response.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(harness.writes()[0]?.request.kind).toBe("openSession"));
+
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("openSession timed out after 25 ms");
+      expect(harness.restart).toHaveBeenCalledOnce();
+    } finally {
+      configuration.mockRestore();
+    }
+  });
 });
 
 describe("PythonBridge process lifecycle", () => {

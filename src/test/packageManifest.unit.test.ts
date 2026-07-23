@@ -120,6 +120,27 @@ describe("grid block configuration", () => {
   });
 });
 
+describe("runtime deadline configuration", () => {
+  it("keeps cold session initialization separate from steady-state recovery", () => {
+    expect(manifest.contributes?.configuration?.properties?.["openWrangler.sessionOpenTimeoutMs"]).toEqual(
+      expect.objectContaining({
+        type: "number",
+        default: 60_000,
+        minimum: 1_000,
+        maximum: 600_000
+      })
+    );
+    expect(manifest.contributes?.configuration?.properties?.["openWrangler.requestTimeoutMs"]).toEqual(
+      expect.objectContaining({
+        type: "number",
+        default: 30_000,
+        minimum: 1_000,
+        maximum: 600_000
+      })
+    );
+  });
+});
+
 describe("notebook renderer contribution", () => {
   it("keeps static output portable while always activating desktop messaging", () => {
     expect(manifest.activationEvents).toContain("onRenderer:openWrangler.renderer");

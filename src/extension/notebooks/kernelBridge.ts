@@ -13,7 +13,7 @@ import { isRuntimeResponseEnvelope } from "../../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../dataBridge";
 import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
-import { getSetting } from "../configuration";
+import { runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 export class KernelBridge implements OpenWranglerBridge {
@@ -68,7 +68,7 @@ export class KernelBridge implements OpenWranglerBridge {
     }
     const framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
     const tokenSource = new vscode.CancellationTokenSource();
-    const timeoutMs = options.timeoutMs ?? getSetting<number>("requestTimeoutMs", 30_000);
+    const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
     const abort = (): void => {
       tokenSource.cancel();
       // A timed-out acquisition must not trap future cleanup requests behind the
@@ -187,7 +187,7 @@ export class KernelBridge implements OpenWranglerBridge {
     try {
       return await withKernelTimeout(
         this.executeFramedRequest(kernel, framed, tokenSource.token),
-        options.timeoutMs ?? getSetting<number>("requestTimeoutMs", 30_000),
+        runtimeRequestTimeoutMs(request, options.timeoutMs),
         abort,
         options.cancellation,
         abort

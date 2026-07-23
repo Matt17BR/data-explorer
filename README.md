@@ -58,6 +58,8 @@ In the Extensions view, choose **Views and More Actions → Install from VSIX…
 
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently.
 
+Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
+
 ## Engines and formats
 
 | Backend | File sessions                   | Notebook variables | Notes                                                            |

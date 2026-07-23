@@ -16,7 +16,7 @@ import type {
 import { PROTOCOL_VERSION } from "../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
-import { getSetting } from "./configuration";
+import { runtimeRequestTimeoutMs } from "./configuration";
 import {
   automaticBackends,
   probeDependencies,
@@ -134,7 +134,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           : "interactive"),
       request: runtimeRequest
     };
-    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs();
+    const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
 
     return new Promise<OpenWranglerResponse>((resolve, reject) => {
       if (this.runtimeExitError) {
@@ -612,10 +612,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.cancellationTargets.delete(requestId);
     const pending = this.pending.get(targetRequestId);
     if (pending?.cancellationRequestId === requestId) pending.cancellationRequestId = undefined;
-  }
-
-  private defaultTimeoutMs(): number {
-    return getSetting<number>("requestTimeoutMs", 30_000);
   }
 
   private environment(resource?: vscode.Uri): Promise<PythonEnvironment> {

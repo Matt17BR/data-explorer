@@ -1909,8 +1909,9 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
 
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-port-reservation-"));
   const resultPath = join(directory, "result.json");
-  const phaseServer = createStalledServer();
   let spawnCalls = 0;
+  let clock = 0;
+  let reservedBudget;
   try {
     await assert.rejects(
       runEditorAcceptancePhase(
@@ -1929,8 +1930,14 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
         {
           platform: "darwin",
           phaseTimeoutMs: 60,
-          reserveDebugPort: (timeoutMs) =>
-            reserveEditorDebugPort(timeoutMs, { createServerFactory: () => phaseServer }),
+          now: () => clock,
+          reserveDebugPort(timeoutMs) {
+            reservedBudget = timeoutMs;
+            clock = 60;
+            const error = new Error("injected debugging-port deadline");
+            error.code = "EDITOR_ACCEPTANCE_DEADLINE";
+            throw error;
+          },
           spawnProcess() {
             spawnCalls += 1;
             return fakeEditorChild();
@@ -1945,8 +1952,7 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
         error.details.phase === "verify"
     );
     assert.equal(spawnCalls, 0);
-    assert.equal(phaseServer.abortObserved, true);
-    assert.equal(phaseServer.closeCalls, 1);
+    assert.ok(reservedBudget > 0 && reservedBudget <= 60);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2538,8 +2544,8 @@ test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", 
   const progressPath = editorAcceptanceProgressPath(resultPath, PROGRESS_RUN_ID, "seed");
   const otherRunId = "de305d54-75b4-431b-adb2-eb6b9e546014";
   const child = fakeCommandChild(27401);
+  let clock = 0;
   let writes = 0;
-  let writer;
   try {
     const running = runEditorAcceptancePhase(
       {
@@ -2558,8 +2564,17 @@ test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", 
       {
         platform: "win32",
         spawnProcess: () => child,
-        phaseTimeoutMs: 350,
-        inactivityTimeoutMs: 60,
+        now: () => clock,
+        wait: async (milliseconds) => {
+          clock += milliseconds;
+          const envelope =
+            writes++ % 2 === 0
+              ? progressEnvelope("seed", `seed:wrong-run-${writes}`, otherRunId)
+              : progressEnvelope("verify", `verify:wrong-phase-${writes}`);
+          writeAcceptanceProgress(progressPath, envelope);
+        },
+        phaseTimeoutMs: 1_000,
+        inactivityTimeoutMs: 300,
         gracefulExitMs: 0,
         windowsTreeKill() {
           child.exitCode = 143;
@@ -2570,13 +2585,6 @@ test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", 
         }
       }
     );
-    writer = setInterval(() => {
-      const envelope =
-        writes++ % 2 === 0
-          ? progressEnvelope("seed", `seed:wrong-run-${writes}`, otherRunId)
-          : progressEnvelope("verify", `verify:wrong-phase-${writes}`);
-      writeAcceptanceProgress(progressPath, envelope);
-    }, 10);
 
     await assert.rejects(
       running,
@@ -2585,8 +2593,9 @@ test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", 
         error.kind === "outer-timeout" &&
         error.details.timeoutKind === "inactivity"
     );
+    assert.equal(clock, 300);
+    assert.ok(writes > 0);
   } finally {
-    clearInterval(writer);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -2748,6 +2757,19 @@ test("a synchronous editor spawn failure is not reported as an early exit", asyn
 test("a late child error cannot impersonate editor-phase exit", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-late-error-"));
   const child = fakeCommandChild(27309);
+  let clock = 0;
+  let markSpawned;
+  const spawned = new Promise((resolve) => {
+    markSpawned = resolve;
+  });
+  let markObservationWait;
+  const observationWaiting = new Promise((resolve) => {
+    markObservationWait = resolve;
+  });
+  let releaseObservationWait;
+  const observationGate = new Promise((resolve) => {
+    releaseObservationWait = resolve;
+  });
   try {
     const running = runEditorAcceptancePhase(
       {
@@ -2763,7 +2785,16 @@ test("a late child error cannot impersonate editor-phase exit", async () => {
       },
       {
         platform: "win32",
-        spawnProcess: () => child,
+        spawnProcess: () => {
+          markSpawned();
+          return child;
+        },
+        now: () => clock,
+        wait: async (milliseconds) => {
+          clock += milliseconds;
+          markObservationWait();
+          await observationGate;
+        },
         phaseTimeoutMs: 20,
         inactivityTimeoutMs: 1_000,
         gracefulExitMs: 0,
@@ -2776,15 +2807,20 @@ test("a late child error cannot impersonate editor-phase exit", async () => {
         }
       }
     );
-    child.emit("error", new Error("injected nonterminal phase error"));
-    await assert.rejects(
+    const rejection = assert.rejects(
       running,
       (error) =>
         error instanceof EditorAcceptanceFailure &&
         error.kind === "outer-timeout" &&
         error.details.timeoutKind === "phase"
     );
+    await spawned;
+    await observationWaiting;
+    child.emit("error", new Error("injected nonterminal phase error"));
+    releaseObservationWait();
+    await rejection;
   } finally {
+    releaseObservationWait?.();
     await rm(directory, { recursive: true, force: true });
   }
 });

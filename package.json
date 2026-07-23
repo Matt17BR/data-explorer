@@ -579,12 +579,19 @@
           "default": "",
           "description": "Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter."
         },
+        "openWrangler.sessionOpenTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Maximum duration for opening a dataframe session, including cold engine and notebook-kernel initialization."
+        },
         "openWrangler.requestTimeoutMs": {
           "type": "number",
           "default": 30000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Maximum runtime request duration before recovery restarts and replays the session."
+          "description": "Maximum duration for runtime requests other than session opening before recovery restarts and replays the session."
         }
       }
     }
