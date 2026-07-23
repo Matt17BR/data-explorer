@@ -3727,15 +3727,8 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
 
 async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscode.Uri, python: string): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-runtime-selection-"));
-  const isolatedPython = path.join(directory, "python-without-site-packages");
   const invocationLog = path.join(directory, "python-invocations.log");
-  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
-  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
-  writeFileSync(
-    isolatedPython,
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`
-  );
-  chmodSync(isolatedPython, 0o755);
+  const isolatedPython = createDependencyIsolatedPython(directory, python, invocationLog);
   const config = vscode.workspace.getConfiguration("openWrangler");
   const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
 
@@ -3895,9 +3888,54 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     try {
       await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
     } finally {
-      rmSync(directory, { recursive: true, force: true });
+      rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
+}
+
+function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
+  if (process.platform === "win32") {
+    const environment = path.join(directory, "environment");
+    execFileSync(python, ["-m", "venv", "--without-pip", environment], {
+      stdio: "pipe",
+      timeout: 30_000,
+      windowsHide: true
+    });
+    const sitePackages = path.join(environment, "Lib", "site-packages");
+    const siteCustomize = path.join(sitePackages, "sitecustomize.py");
+    writeFileSync(
+      siteCustomize,
+      [
+        "import sys",
+        'sys.path[:] = [entry for entry in sys.path if entry != ""]',
+        "import os",
+        "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
+        "sys.path[:] = [",
+        "    entry",
+        "    for entry in sys.path",
+        "    if os.path.normcase(os.path.abspath(entry)) != cwd",
+        "]",
+        `with open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8") as stream:`,
+        '    stream.write("invoked\\n")',
+        ""
+      ].join("\n"),
+      { encoding: "utf8", flag: "wx" }
+    );
+    const executable = path.join(environment, "Scripts", "python.exe");
+    assert.ok(existsSync(executable), "The Windows dependency-isolated Python environment is missing python.exe.");
+    return executable;
+  }
+
+  const executable = path.join(directory, "python-without-site-packages");
+  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
+  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
+  writeFileSync(
+    executable,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`,
+    { encoding: "utf8", flag: "wx" }
+  );
+  chmodSync(executable, 0o755);
+  return executable;
 }
 
 async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.Uri): Promise<void> {
