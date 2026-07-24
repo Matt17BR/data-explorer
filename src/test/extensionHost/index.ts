@@ -30,6 +30,7 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
+import { ignoreRetiredRendererProbeFailure, isRetiredRendererTarget } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 interface TestApi {
@@ -2929,7 +2930,9 @@ async function exercisePackagedSameGroupRendererSwitch(
 
   let switchedNotebook: vscode.NotebookDocument | undefined;
   try {
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:connect");
     const workbench = await connectToEditorWorkbench();
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:open");
     switchedNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
     const switchedEditor = await vscode.window.showNotebookDocument(switchedNotebook, {
       viewColumn: vscode.ViewColumn.One,
@@ -2937,6 +2940,7 @@ async function exercisePackagedSameGroupRendererSwitch(
       preview: false
     });
     switchedEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:button");
     await waitForNotebookRendererButton(workbench, label);
     assert.equal(
       jupyter.testing.stats(switchedNotebook.uri),
@@ -2946,13 +2950,17 @@ async function exercisePackagedSameGroupRendererSwitch(
 
     const switchedTab = notebookTab(switchedNotebook.uri);
     assert.ok(switchedTab, "The same-group renderer fixture tab must be open.");
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:close");
     assert.equal(await vscode.window.tabGroups.close(switchedTab, true), true);
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:restore");
     await vscode.window.showNotebookDocument(originNotebook, {
       viewColumn: vscode.ViewColumn.One,
       preserveFocus: false,
       preview: false
     });
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:restored-button");
     await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:complete");
   } finally {
     const switchedTab = switchedNotebook ? notebookTab(switchedNotebook.uri) : undefined;
     if (switchedTab) await vscode.window.tabGroups.close(switchedTab, true).then(undefined, () => undefined);
@@ -3262,22 +3270,36 @@ async function waitForNotebookRendererButton(
   const deadline = Date.now() + 30_000;
   do {
     const browser = workbench.context().browser();
+    if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
+    if (browser !== null && !browser.isConnected()) {
+      throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
+    }
     const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
     for (const page of pages) {
+      if (page !== workbench && page.isClosed()) continue;
       for (const frame of page.frames()) {
-        const preview = frame.locator("section.openwrangler-notebook").filter({
-          hasText: `Open Wrangler preview: ${label}`
-        });
-        const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
-        if ((await button.count()) > 0) {
-          await button.scrollIntoViewIfNeeded().catch(() => undefined);
-          if (await button.isVisible()) return button;
+        if (isRetiredRendererTarget(workbench, page, frame)) continue;
+        try {
+          const preview = frame.locator("section.openwrangler-notebook").filter({
+            hasText: `Open Wrangler preview: ${label}`
+          });
+          const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
+          if ((await button.count()) > 0) {
+            await button.scrollIntoViewIfNeeded();
+            if (await button.isVisible()) return button;
+          }
+        } catch (error) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, page, frame, error);
         }
       }
     }
-    await workbench.waitForTimeout(50);
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
   const browser = workbench.context().browser();
+  if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
+  if (browser !== null && !browser.isConnected()) {
+    throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
+  }
   const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
   const diagnostics = await Promise.all(
     pages.flatMap((page) =>
