@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { chromium, type Locator, type Page } from "playwright-core";
-import { getSetting } from "../../extension/configuration";
+import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
 import type {
@@ -76,6 +76,7 @@ interface FakeJupyterApi {
 const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
+const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_000;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -463,7 +464,7 @@ async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.
         active.metadata.steps.some((step) => step.id === "packaged-score")
       );
     },
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the packaged custom editor to restore its applied cleaning step"
   );
   await waitForSettledViewState(testing, "the confirmed packaged-editor view before step selection");
@@ -647,7 +648,7 @@ async function exercisePackagedFileLaunchSurfaces(
   await titleAction.first().click();
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-title action to open the selected source"
   );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
@@ -700,7 +701,7 @@ async function exercisePackagedFileLaunchSurfaces(
   await tabMenuAction.click();
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-tab context action to open the selected source"
   );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-tab action must not modify its source.");
@@ -758,7 +759,7 @@ async function exercisePackagedFileLaunchSurfaces(
   await acceptDefaultDelimitedImport(page, testing, customEditorFixture);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === customEditorFixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the third-party custom-editor title action to open the selected CSV source"
   );
   assert.deepEqual(testing.activeSession()?.metadata.source.importOptions, {
@@ -783,7 +784,7 @@ async function exercisePackagedFileLaunchSurfaces(
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the custom editor before duplicate-action verification"
   );
   await page.bringToFront();
@@ -1180,7 +1181,7 @@ async function capturePackagedEditorScreenshots(
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the custom editor before screenshot capture"
   );
   await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
@@ -1487,7 +1488,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "pandas_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged Pandas notebook variable session"
     );
     let active = testing.activeSession();
@@ -1570,7 +1571,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "duplicate_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged duplicate-column Pandas notebook variable session"
     );
     active = testing.activeSession();
@@ -1907,7 +1908,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "structural_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged structural duplicate-column Pandas notebook variable session"
     );
     active = testing.activeSession();
@@ -2282,7 +2283,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "identity_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged group-by/by-example duplicate-column Pandas notebook session"
     );
     active = testing.activeSession();
@@ -2523,7 +2524,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "polars_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged Polars notebook variable session"
     );
     active = testing.activeSession();
@@ -2697,7 +2698,7 @@ async function exercisePackagedSavedSnapshot(
         const source = testing.activeSession()?.metadata.source;
         return source?.kind === "notebookOutput" && source.label === label;
       },
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the saved MIME-v2 renderer output to become a coordinator-owned session"
     );
 
@@ -3100,7 +3101,7 @@ async function exercisePackagedRendererProvenance(
           source.uri === originNotebook.uri.toString()
         );
       },
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "notebook A's renderer event to open notebook A while notebook B was active"
     );
 
@@ -3690,6 +3691,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     );
     const parquetLaunchUri = vscode.Uri.file(path.join(directory, "sample.parquet"));
     const parquetSource = readFileSync(parquetLaunchUri.fsPath);
+    recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:open");
     await config.update("defaultBackend", "polars", vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand("openWrangler.openFile", parquetLaunchUri);
     await waitFor(
@@ -3702,9 +3704,16 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           active.metadata.shape.columns === 3
         );
       },
-      30_000,
-      "the editor-menu file URI to open through the canonical launch command"
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the editor-menu file URI to open through the canonical launch command",
+      () =>
+        packagedFileOpenDiagnostics(testing, {
+          sourceLabel: path.basename(parquetLaunchUri.fsPath),
+          backend: "polars",
+          shape: { rows: 2, columns: 3 }
+        })
     );
+    recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:opened");
     assert.deepEqual(
       readFileSync(parquetLaunchUri.fsPath),
       parquetSource,
@@ -3716,6 +3725,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       10_000,
       "the editor-menu file session to dispose"
     );
+    recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:closed");
 
     const fixtures = [
       {
@@ -3761,6 +3771,9 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     ];
 
     for (const fixture of fixtures) {
+      const extension = path.extname(fixture.uri.fsPath).slice(1).toLowerCase();
+      const checkpoint = `verify:file-inputs:${fixture.backend}:${extension}`;
+      recordAcceptanceProgress(`${checkpoint}:open`);
       await config.update("defaultBackend", fixture.backend, vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand(
         "vscode.openWith",
@@ -3778,20 +3791,55 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
             active.metadata.shape.columns === fixture.shape.columns
           );
         },
-        30_000,
-        `${path.basename(fixture.uri.fsPath)} to open through the packaged custom editor`
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        `${path.basename(fixture.uri.fsPath)} to open through the packaged custom editor`,
+        () =>
+          packagedFileOpenDiagnostics(testing, {
+            sourceLabel: path.basename(fixture.uri.fsPath),
+            backend: fixture.backend,
+            shape: fixture.shape
+          })
       );
+      recordAcceptanceProgress(`${checkpoint}:opened`);
       await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
       await waitFor(
         () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
         10_000,
         `${path.basename(fixture.uri.fsPath)} to dispose its session and runtime`
       );
+      recordAcceptanceProgress(`${checkpoint}:closed`);
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
     cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+function packagedFileOpenDiagnostics(
+  testing: TestApi,
+  expected: {
+    sourceLabel: string;
+    backend: "polars" | "duckdb" | "pandas";
+    shape: { rows: number; columns: number };
+  }
+): string {
+  const active = testing.activeSession();
+  const diagnostics = testing.diagnostics();
+  return JSON.stringify({
+    expected,
+    configuredOpenTimeoutMs: getSetting("sessionOpenTimeoutMs", DEFAULT_SESSION_OPEN_TIMEOUT_MS),
+    runtimeRunning: testing.runtimeRunning(),
+    runtimeGeneration: testing.runtimeGeneration(),
+    sessionCount: diagnostics.sessionCount,
+    sessions: diagnostics.sessions.map(({ sourceLabel }) => sourceLabel),
+    active: active
+      ? {
+          sourceLabel: active.metadata.source.label,
+          backend: active.metadata.backend,
+          shape: active.metadata.shape
+        }
+      : undefined
+  });
 }
 
 async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscode.Uri, python: string): Promise<void> {
@@ -4484,10 +4532,18 @@ function tsvSource(uri: vscode.Uri): SessionSource {
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs: number, expectation: string): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number,
+  expectation: string,
+  diagnostics?: () => string
+): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
-    if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for ${expectation}.`);
+    if (Date.now() - started > timeoutMs) {
+      const detail = diagnostics ? ` Last state: ${diagnostics()}.` : "";
+      throw new Error(`Timed out waiting for ${expectation}.${detail}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }

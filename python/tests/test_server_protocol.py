@@ -279,6 +279,77 @@ def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) ->
     assert return_code == 0, output.stderr_tail()
 
 
+def test_stdio_server_opens_polars_excel_in_a_fresh_process(tmp_path: Path) -> None:
+    required_modules = ("polars", "fastexcel", "openpyxl")
+    if any(find_spec(module_name) is None for module_name in required_modules):
+        pytest.skip("The Polars Excel server regression requires Polars, fastexcel, and openpyxl.")
+    from openpyxl import Workbook
+
+    workbook_path = tmp_path / "native-reader.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    assert worksheet is not None
+    worksheet.title = "Sales"
+    worksheet.append(["city", "sales"])
+    worksheet.append(["Berlin", 12])
+    worksheet.append(["Paris", 7])
+    workbook.save(workbook_path)
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    try:
+        response = _send_server_request(
+            process,
+            output,
+            "open-polars-excel",
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "label": workbook_path.name, "path": str(workbook_path)},
+                "requestedSessionId": "polars-excel",
+                "backend": "polars",
+                "mode": "editing",
+                "pageSize": 20,
+                "columnOffset": 0,
+                "columnLimit": 16,
+            },
+            timeout=60.0,
+        )
+        assert response["kind"] == "sessionOpened", response
+        assert response["metadata"]["sessionId"] == "polars-excel"
+        assert response["metadata"]["backend"] == "polars"
+        assert response["metadata"]["shape"] == {"rows": 2, "columns": 2}
+
+        response = _send_server_request(
+            process,
+            output,
+            "close-polars-excel",
+            {"kind": "closeSession", "sessionId": "polars-excel", "revision": 0},
+            timeout=30.0,
+        )
+        assert response == {"kind": "sessionClosed", "sessionId": "polars-excel"}
+
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+
+    assert return_code == 0, output.stderr_tail()
+
+
 def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypatch) -> None:
     reader_thread = threading.current_thread()
     dispatched = threading.Event()

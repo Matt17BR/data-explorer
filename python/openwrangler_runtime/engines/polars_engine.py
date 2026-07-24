@@ -51,6 +51,14 @@ class PolarsEngine(DataFrameEngine):
         supports_request_cancellation=False,
     )
 
+    def runtime_modules_for_source(self, source: Mapping[str, Any] | None) -> tuple[str, ...]:
+        if source is None or source.get("kind") != "file":
+            return ()
+        path = source.get("path")
+        if isinstance(path, str) and Path(path).suffix.lower() in {".xlsx", ".xls"}:
+            return ("fastexcel",)
+        return ()
+
     def detect(self, value: Any) -> bool:
         try:
             import polars as pl

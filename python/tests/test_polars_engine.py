@@ -6,6 +6,7 @@ from typing import Any, cast
 import polars as pl
 import pytest
 
+import openwrangler_runtime.engines.base as engine_base
 from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.engines.polars_engine import SUMMARY_VISUALIZATION_SAMPLE_LIMIT, PolarsEngine
 from openwrangler_runtime.session import SessionManager
@@ -178,6 +179,29 @@ def test_polars_excel_reader_pins_the_probed_calamine_engine(monkeypatch):
     runtime.read_file("legacy.xls", {"sheet": 1})
 
     assert calls == [("modern.xlsx", 2, "calamine"), ("legacy.xls", 2, "calamine")]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (None, ["polars"]),
+        ({"kind": "notebookVariable", "path": "book.xlsx"}, ["polars"]),
+        ({"kind": "file", "path": "sample.csv"}, ["polars"]),
+        ({"kind": "file", "path": "modern.XLSX"}, ["polars", "fastexcel"]),
+        ({"kind": "file", "path": "legacy.xls"}, ["polars", "fastexcel"]),
+    ],
+)
+def test_polars_prepares_the_native_excel_reader_only_for_excel_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    source: dict[str, Any] | None,
+    expected: list[str],
+) -> None:
+    imported: list[str] = []
+    monkeypatch.setattr(engine_base, "import_module", imported.append)
+
+    PolarsEngine().prepare(source)
+
+    assert imported == expected
 
 
 def test_lazy_polars_schema_discovery_does_not_collect_column_profiles(monkeypatch):
