@@ -604,7 +604,7 @@
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.2.3",
     "@vscode/codicons": "^0.0.45",
-    "react": "^19.2.6",
+    "react": "^19.2.8",
     "react-dom": "^19.2.6"
   },
   "devDependencies": {
@@ -612,7 +612,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/vscode": "^1.105.0",
     "@vitejs/plugin-react": "^6.0.2",
