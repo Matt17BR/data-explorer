@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -31,12 +31,10 @@ class TrackedEngine(PandasEngine):
         self.prepare_error = prepare_error
         self.close_error = close_error
         self.prepared = False
-        self.prepared_source: Mapping[str, Any] | None = None
         self.closed = False
 
-    def prepare(self, source: Mapping[str, Any] | None = None) -> None:
+    def prepare(self) -> None:
         self.prepared = True
-        self.prepared_source = source
         if self.prepare_error is not None:
             raise self.prepare_error
 
@@ -161,12 +159,9 @@ def test_file_backend_preparation_uses_the_automatic_polars_default() -> None:
     polars = TrackedEngine("polars", True)
     pandas = TrackedEngine("pandas", True)
     manager = SessionManager(EngineRegistry((("polars", factory(polars)), ("pandas", factory(pandas)))))
-    source = {"kind": "file", "path": "sample.xlsx"}
-
-    manager.prepare_backend(source, None)
+    manager.prepare_backend({"kind": "file"}, None)
 
     assert polars.prepared
-    assert polars.prepared_source is source
     assert polars.closed
     assert not pandas.prepared
     assert not pandas.closed
@@ -176,14 +171,11 @@ def test_explicit_backend_preparation_overrides_the_file_default() -> None:
     polars = TrackedEngine("polars", True)
     pandas = TrackedEngine("pandas", True)
     manager = SessionManager(EngineRegistry((("polars", factory(polars)), ("pandas", factory(pandas)))))
-    source = {"kind": "file", "path": "sample.tsv"}
-
-    manager.prepare_backend(source, "pandas")
+    manager.prepare_backend({"kind": "file"}, "pandas")
 
     assert not polars.prepared
     assert not polars.closed
     assert pandas.prepared
-    assert pandas.prepared_source is source
     assert pandas.closed
 
 

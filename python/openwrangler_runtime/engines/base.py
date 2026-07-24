@@ -460,13 +460,9 @@ class DataFrameEngine(ABC):
     capabilities: EngineCapabilities
     runtime_modules: tuple[str, ...] = ()
 
-    def runtime_modules_for_source(self, source: Mapping[str, Any] | None) -> tuple[str, ...]:
-        """Return optional modules that must be initialized for one source."""
-        return ()
-
-    def prepare(self, source: Mapping[str, Any] | None = None) -> None:
+    def prepare(self) -> None:
         """Load optional native dependencies on the caller-owned thread."""
-        for module_name in (*self.runtime_modules, *self.runtime_modules_for_source(source)):
+        for module_name in self.runtime_modules:
             import_module(module_name)
 
     def interrupt(self) -> None:

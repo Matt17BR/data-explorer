@@ -241,7 +241,7 @@ class SessionManager:
         if selected_backend is None and source.get("kind") == "file":
             selected_backend = "polars"
         if selected_backend is not None:
-            self.registry.prepare(selected_backend, source)
+            self.registry.prepare(selected_backend)
 
     def open_session(
         self,
